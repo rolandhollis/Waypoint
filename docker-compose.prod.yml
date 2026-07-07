@@ -1,0 +1,34 @@
+# Full prod-like stack — builds the Dockerfile locally, wires it to the
+# same Postgres container the dev compose file already provides. The image
+# self-migrates on boot so no explicit migrator step here.
+#
+# Usage:
+#     docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build
+#     # then open http://localhost:8080
+
+services:
+  postgres:
+    # Inherits from docker-compose.yml, but drops the host port mapping so
+    # nothing else on the machine can talk to it while this stack runs.
+    ports: []
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: waypoint-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Same network → talk to postgres by service name, not localhost.
+      DATABASE_URL: postgres://waypoint:waypoint@postgres:5432/waypoint
+      PORT: "4000"
+      # Mock auth is fine for local prod-like testing. Flip to
+      # cloudflare-access or okta and add the matching env vars when
+      # you're pointing at a real IdP.
+      AUTH_MODE: mock
+      REPORTING_TIMEZONE: America/Chicago
+    ports:
+      - "8080:4000"

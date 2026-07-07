@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend typecheck + smoke
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: waypoint
+          POSTGRES_PASSWORD: waypoint
+          POSTGRES_DB: waypoint
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U waypoint -d waypoint"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+    env:
+      DATABASE_URL: postgres://waypoint:waypoint@localhost:5432/waypoint
+      AUTH_MODE: mock
+      PORT: "4000"
+      REPORTING_TIMEZONE: America/Chicago
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        working-directory: backend
+        run: npm ci
+      - name: Typecheck
+        working-directory: backend
+        run: npm run typecheck
+      - name: Build
+        working-directory: backend
+        run: npm run build
+      - name: Migrate + seed
+        working-directory: backend
+        run: |
+          npm run migrate
+          npm run seed
+      - name: Boot API
+        working-directory: backend
+        run: |
+          node dist/index.js > /tmp/api.log 2>&1 &
+          echo $! > /tmp/api.pid
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:4000/api/health && break
+            sleep 1
+          done
+      - name: Smoke test
+        run: ./scripts/smoke.sh
+      - name: API log on failure
+        if: failure()
+        run: cat /tmp/api.log || true
+
+  frontend:
+    name: Frontend typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+      - name: Build
+        working-directory: frontend
+        run: npm run build

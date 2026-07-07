@@ -1,0 +1,34 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-1.5 rounded-md border border-transparent px-3 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-wp-red text-white hover:bg-wp-red-dark;
+  }
+  .btn-secondary {
+    @apply btn border-wp-stone bg-white text-wp-ink hover:bg-wp-stone/40;
+  }
+  .btn-ghost {
+    @apply btn text-wp-slate hover:bg-wp-stone/40;
+  }
+  .input {
+    @apply w-full rounded-md border border-wp-stone bg-white px-2.5 py-1.5 text-sm text-wp-ink outline-none placeholder:text-wp-slate/60 focus:border-wp-red focus:ring-1 focus:ring-wp-red;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-wp-stone bg-white px-2 py-0.5 text-xs text-wp-slate;
+  }
+  .card-surface {
+    @apply rounded-lg border border-wp-stone bg-white shadow-sm;
+  }
+}

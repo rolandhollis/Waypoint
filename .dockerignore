@@ -1,0 +1,28 @@
+# Build artifacts (the image rebuilds them in-stage).
+**/node_modules
+**/dist
+**/build
+**/*.tsbuildinfo
+
+# Local DB volume must never end up in the image.
+postgres-data/
+
+# VCS + IDE + OS cruft.
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+.DS_Store
+
+# Deploy manifests are for the cluster, not the container.
+deploy/
+
+# Never bake local secrets into the image.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Docs live in the repo, not the image.
+*.md
+docs/

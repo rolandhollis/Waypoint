@@ -1,0 +1,49 @@
+# Fly.io launch config for Waypoint.
+#
+# The Dockerfile at repo root builds a single image that serves both the
+# React SPA and the Express API on internal port 4000. Postgres lives
+# outside this app — attach a Fly Postgres cluster with:
+#
+#     fly postgres create --name waypoint-db --region iad
+#     fly postgres attach waypoint-db --app waypoint
+#
+# The attach step writes DATABASE_URL into this app's secrets, so nothing
+# to configure by hand.
+
+app = "waypoint"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret defaults. `AUTH_MODE=mock` is intentional here — the app
+# renders a "demo mode" banner at the top and the smoke test exercises
+# the full lifecycle. Flip to `cloudflare-access` or `okta` (and set
+# the matching `fly secrets set …`) when there's real data behind it.
+[env]
+  NODE_ENV = "production"
+  PORT = "4000"
+  AUTH_MODE = "mock"
+  REPORTING_TIMEZONE = "America/Chicago"
+
+# Standard Fly HTTP service: force HTTPS, expose 4000 internally, keep at
+# least one machine hot so cold starts don't hit health checks.
+[http_service]
+  internal_port = 4000
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "get"
+  path = "/api/health"
+
+# Modest VM — this app is IO-bound on Postgres, not CPU/RAM.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

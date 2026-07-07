@@ -1,0 +1,39 @@
+import cron from "node-cron";
+import { config } from "../config.js";
+import { pool } from "../db/pool.js";
+import { dueAtForWeek, weekOfMonday } from "../lib/time.js";
+
+/**
+ * Weekly rollover — Monday 00:05 in reporting timezone.
+ * We don't need to materialize rows in advance (an update row is
+ * created lazily on first save), but this job is the hook to backfill
+ * or archive any bookkeeping in the future.
+ */
+async function rolloverJob() {
+  const week = weekOfMonday(new Date());
+  const iso = week.toISOString().slice(0, 10);
+  console.log(`[cron] weekly rollover — new week_of=${iso}, due_at=${dueAtForWeek(week).toISOString()}`);
+}
+
+/**
+ * Overdue flip — Friday 00:05 in reporting timezone.
+ * Purely informational: the "who's incomplete" query already computes overdue
+ * state on demand, but running this job lets us log/notify at the boundary.
+ */
+async function overdueJob() {
+  const week = weekOfMonday(new Date());
+  const { rows } = await pool.query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n
+       FROM weekly_status_updates
+      WHERE week_of = $1::date AND completed = FALSE`,
+    [week.toISOString().slice(0, 10)],
+  );
+  console.log(`[cron] overdue check — ${rows[0]?.n ?? 0} update rows still incomplete for week ${week.toISOString().slice(0, 10)}`);
+}
+
+export function startCron() {
+  const tz = config.reportingTimezone;
+  cron.schedule("5 0 * * 1", () => rolloverJob().catch(console.error), { timezone: tz });
+  cron.schedule("5 0 * * 5", () => overdueJob().catch(console.error), { timezone: tz });
+  console.log(`[cron] scheduled weekly jobs in ${tz}`);
+}
