@@ -10,6 +10,7 @@ import { GripVertical, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useMe, useProductAreas, useProjects, useSwimLanes, useUsers } from "../lib/queries";
 import type { ProductArea, Project, SwimLane, User } from "../lib/types";
+import { MutationErrorBanner } from "../components/MutationErrorBanner";
 
 export function AdminSettingsView() {
   const me = useMe();
@@ -44,6 +45,7 @@ function ArchivedProjectsAdmin() {
   return (
     <section className="card-surface p-4">
       <h2 className="text-base font-semibold">Archived cards</h2>
+      <MutationErrorBanner mutation={restore} className="mt-3" />
       {archived.length === 0 ? (
         <p className="mt-2 text-xs text-wp-slate">No archived cards.</p>
       ) : (
@@ -121,6 +123,11 @@ function SwimLanesAdmin() {
     <section className="card-surface p-4">
       <h2 className="text-base font-semibold">Swim lanes</h2>
       <p className="mt-1 text-xs text-wp-slate">Drag to reorder. Deleting a lane with cards will prompt to reassign them.</p>
+
+      <MutationErrorBanner mutation={create} className="mt-3" />
+      <MutationErrorBanner mutation={patch} className="mt-3" />
+      <MutationErrorBanner mutation={reorder} className="mt-3" />
+      <MutationErrorBanner mutation={del} className="mt-3" />
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={(lanes.data ?? []).map((l) => l.id)} strategy={verticalListSortingStrategy}>
@@ -253,6 +260,9 @@ function ProductAreasAdmin() {
   return (
     <section className="card-surface p-4">
       <h2 className="text-base font-semibold">Product Areas</h2>
+      <MutationErrorBanner mutation={create} className="mt-3" />
+      <MutationErrorBanner mutation={patch} className="mt-3" />
+      <MutationErrorBanner mutation={del} className="mt-3" />
       <ul className="mt-3 divide-y divide-wp-stone">
         {areas.data?.map((a) => (
           <li key={a.id} className="flex items-center gap-3 py-2">
@@ -296,6 +306,7 @@ function UsersAdmin() {
   return (
     <section className="card-surface p-4">
       <h2 className="text-base font-semibold">Users &amp; roles</h2>
+      <MutationErrorBanner mutation={patch} className="mt-3" />
       <ul className="mt-3 divide-y divide-wp-stone">
         {users.data?.map((u) => (
           <li key={u.id} className="flex items-center gap-3 py-2">

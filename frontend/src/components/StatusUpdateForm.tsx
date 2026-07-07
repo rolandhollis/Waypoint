@@ -6,6 +6,7 @@ import { usePendingStatus, useProjectStatusUpdates } from "../lib/queries";
 import type { HealthFlag, WeeklyStatusUpdate } from "../lib/types";
 import { StatusPill } from "./StatusPill";
 import { HealthFlagSelect } from "./HealthFlagSelect";
+import { MutationErrorBanner } from "./MutationErrorBanner";
 import { format } from "date-fns";
 
 const SOFT_SUMMARY_LIMIT = 400;
@@ -114,6 +115,8 @@ export function StatusUpdateForm({ projectId }: { projectId: string }) {
           </button>
         </div>
       </div>
+
+      <MutationErrorBanner mutation={mutation} />
 
       <div className="flex justify-end gap-2">
         <button

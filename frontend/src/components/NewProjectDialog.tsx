@@ -5,6 +5,7 @@ import { X } from "lucide-react";
 import { api } from "../lib/api";
 import { useMe, useProductAreas, useSwimLanes, useUsers } from "../lib/queries";
 import type { Project } from "../lib/types";
+import { MutationErrorBanner } from "./MutationErrorBanner";
 
 export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: string | null; onClose: () => void }) {
   const me = useMe();
@@ -79,6 +80,7 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
               </label>
             </div>
           </div>
+          <MutationErrorBanner mutation={create} className="mt-4" />
           <div className="mt-5 flex justify-end gap-2">
             <button className="btn-secondary" onClick={onClose}>Cancel</button>
             <button

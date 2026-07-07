@@ -7,6 +7,7 @@ import { api } from "../lib/api";
 import type { Project, StatusHistoryEntry, WeeklyStatusUpdate } from "../lib/types";
 import { useMe, useProductAreas, useProjectHistory, useProjectStatusUpdates, useSwimLanes, useUsers } from "../lib/queries";
 import { computePhases } from "../lib/phaseCompute";
+import { MutationErrorBanner } from "./MutationErrorBanner";
 import { StatusPill } from "./StatusPill";
 import { StatusUpdateForm } from "./StatusUpdateForm";
 
@@ -117,7 +118,7 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
                   disabled={!canWrite}
                 />
               </Field>
-              <Field label="Development" className="col-span-2">
+              <Field label="Development" className="col-span-2" hint={!merged.target_date ? "Set Discovery ‘Ready for dev’ first — Development picks up from there." : undefined}>
                 <PairedDates
                   startLabel="Start"
                   startValue={merged.dev_start_date ?? merged.target_date}
@@ -127,10 +128,10 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
                   endValue={merged.dev_end_date ?? addIsoDays(merged.dev_start_date ?? merged.target_date, 7)}
                   endMin={merged.dev_start_date ?? merged.target_date}
                   onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, dev_end_date: v }, project))}
-                  disabled={!canWrite}
+                  disabled={!canWrite || !merged.target_date}
                 />
               </Field>
-              <Field label="Post-Dev Optimization" className="col-span-2">
+              <Field label="Post-Dev Optimization" className="col-span-2" hint={!merged.dev_end_date && !merged.target_date ? "Set Discovery and Development dates first." : (!merged.dev_end_date ? "Set a Development end date first." : undefined)}>
                 <PairedDates
                   startLabel="Start"
                   startValue={merged.optimization_start_date ?? merged.dev_end_date}
@@ -143,7 +144,7 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
                   }
                   endMin={merged.optimization_start_date ?? merged.dev_end_date}
                   onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, optimization_end_date: v }, project))}
-                  disabled={!canWrite}
+                  disabled={!canWrite || !merged.dev_end_date}
                 />
               </Field>
             </div>
@@ -209,15 +210,18 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
           </div>
 
           {canWrite ? (
-            <div className="flex items-center justify-between border-t border-wp-stone bg-white px-5 py-3">
-              <button className="btn-ghost text-xs" onClick={onClose}>Cancel</button>
-              <button
-                className="btn-primary"
-                disabled={Object.keys(draft).length === 0 || patch.isPending}
-                onClick={() => patch.mutate(draft)}
-              >
-                {patch.isPending ? "Saving…" : "Save changes"}
-              </button>
+            <div className="border-t border-wp-stone bg-white px-5 py-3">
+              <MutationErrorBanner mutation={patch} className="mb-2" />
+              <div className="flex items-center justify-between">
+                <button className="btn-ghost text-xs" onClick={onClose}>Cancel</button>
+                <button
+                  className="btn-primary"
+                  disabled={Object.keys(draft).length === 0 || patch.isPending}
+                  onClick={() => patch.mutate(draft)}
+                >
+                  {patch.isPending ? "Saving…" : "Save changes"}
+                </button>
+              </div>
             </div>
           ) : (
             <div className="border-t border-wp-stone bg-white px-5 py-3 text-xs text-wp-slate">
@@ -230,10 +234,13 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
   );
 }
 
-function Field({ label, className, children }: { label: string; className?: string; children: React.ReactNode }) {
+function Field({ label, className, hint, children }: { label: string; className?: string; hint?: string; children: React.ReactNode }) {
   return (
     <label className={`block ${className ?? ""}`}>
-      <span className="mb-1 block text-xs font-medium text-wp-slate">{label}</span>
+      <span className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="text-xs font-medium text-wp-slate">{label}</span>
+        {hint ? <span className="text-[10px] italic text-wp-slate/80">{hint}</span> : null}
+      </span>
       {children}
     </label>
   );

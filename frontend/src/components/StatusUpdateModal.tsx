@@ -8,6 +8,7 @@ import { usePendingStatus, useProjectStatusUpdates, useProjects } from "../lib/q
 import type { HealthFlag, WeeklyStatusUpdate } from "../lib/types";
 import { StatusPill } from "./StatusPill";
 import { HealthFlagSelect } from "./HealthFlagSelect";
+import { MutationErrorBanner } from "./MutationErrorBanner";
 
 const SOFT_SUMMARY_LIMIT = 400;
 
@@ -153,6 +154,7 @@ export function StatusUpdateModal({ projectId, onClose }: { projectId: string; o
             </div>
           </div>
 
+          <MutationErrorBanner mutation={save} className="mt-4" />
           <div className="mt-5 flex items-center justify-between">
             <p className="text-xs text-wp-slate">
               {canSubmit ? "Ready to save." : "Pick a status to save."}

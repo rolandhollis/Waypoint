@@ -96,8 +96,10 @@ export function GanttTimeline(props: Props) {
       }
       return { prev };
     },
-    onError: (_e, _v, ctx) => {
+    onError: (err, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(["projects"], ctx.prev);
+      const msg = err instanceof Error ? err.message : "Roadmap change didn't save. Try again.";
+      alert(msg);
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });

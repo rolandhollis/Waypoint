@@ -1,9 +1,20 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import type { Project, SwimLane } from "../lib/types";
 import { useMe } from "../lib/queries";
+
+// Dropdowns close immediately on click so we can't render an inline
+// error banner; surface failures via a native alert instead.
+function alertMutationError(err: unknown) {
+  const msg = err instanceof ApiError
+    ? err.message
+    : err instanceof Error
+      ? err.message
+      : "Something went wrong. Try again.";
+  alert(msg);
+}
 
 export function LaneMoveMenu({
   projectId,
@@ -27,10 +38,12 @@ export function LaneMoveMenu({
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["pendingStatus"] });
     },
+    onError: alertMutationError,
   });
   const deleteMutation = useMutation({
     mutationFn: () => api<Project>(`/projects/${projectId}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+    onError: alertMutationError,
   });
 
   if (!canWrite) return null;
