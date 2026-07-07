@@ -77,11 +77,15 @@ const DEFAULT_LANES = [
   },
 ];
 
-const PRODUCT_AREAS = [
+// Cross-functional pods that "own" a chunk of work. Projects can belong
+// to more than one — e.g. a Loyalty initiative built by the Martech pod
+// gets both. Renamed from "product areas" in migration 006.
+const TEAMS = [
   { name: "Coupons", color: "#ef4444" },
   { name: "SEO", color: "#3b82f6" },
   { name: "Mobile App", color: "#10b981" },
   { name: "Loyalty", color: "#f59e0b" },
+  { name: "Martech", color: "#8b5cf6" },
 ];
 
 // Roland and Mag are admins; everyone else is an owner (can create/edit
@@ -104,7 +108,7 @@ const USERS = [
 async function main() {
   await withTransaction(async (client) => {
     console.log("Clearing existing data...");
-    await client.query("TRUNCATE weekly_status_updates, status_history, projects, product_areas, swim_lanes, users RESTART IDENTITY CASCADE");
+    await client.query("TRUNCATE weekly_status_updates, status_history, project_teams, projects, teams, swim_lanes, users RESTART IDENTITY CASCADE");
 
     console.log("Seeding users...");
     const userIds: Record<string, string> = {};
@@ -134,15 +138,15 @@ async function main() {
       laneIds[l.name] = rows[0]!.id;
     }
 
-    console.log("Seeding product areas...");
-    const areaIds: Record<string, string> = {};
-    for (let i = 0; i < PRODUCT_AREAS.length; i++) {
-      const a = PRODUCT_AREAS[i]!;
+    console.log("Seeding teams...");
+    const teamIds: Record<string, string> = {};
+    for (let i = 0; i < TEAMS.length; i++) {
+      const t = TEAMS[i]!;
       const { rows } = await client.query<{ id: string }>(
-        `INSERT INTO product_areas (name, color, "order", created_by) VALUES ($1, $2, $3, $4) RETURNING id`,
-        [a.name, a.color, i, adminId],
+        `INSERT INTO teams (name, color, "order", created_by) VALUES ($1, $2, $3, $4) RETURNING id`,
+        [t.name, t.color, i, adminId],
       );
-      areaIds[a.name] = rows[0]!.id;
+      teamIds[t.name] = rows[0]!.id;
     }
 
     console.log("Seeding projects...");
@@ -152,7 +156,7 @@ async function main() {
       description: string;
       lane: string;
       owner: string;
-      area: string;
+      teams: string[];
       tags: string[];
       start_date?: Date;
       target_date?: Date;
@@ -167,7 +171,7 @@ async function main() {
         description: "Modernize the coupon detail page with clearer merchant hierarchy and improved CTA placement.",
         lane: "In Dev",
         owner: owner1Id,
-        area: "Coupons",
+        teams: ["Coupons"],
         tags: ["revenue", "web"],
         start_date: addDays(today, -35),
         target_date: addDays(today, -7),
@@ -179,7 +183,7 @@ async function main() {
         description: "Automated A/B for title tag templates across top merchant pages.",
         lane: "Dev Ready",
         owner: owner2Id,
-        area: "SEO",
+        teams: ["SEO"],
         tags: ["experiment"],
         start_date: addDays(today, -21),
         target_date: addDays(today, 3),
@@ -188,10 +192,10 @@ async function main() {
       },
       {
         title: "Loyalty tier visibility on receipts",
-        description: "Show a customer's current tier and points-to-next-tier on receipt emails.",
+        description: "Show a customer's current tier and points-to-next-tier on receipt emails. Owned by Loyalty as the initiative, built by Martech as the delivery team.",
         lane: "Design",
         owner: owner1Id,
-        area: "Loyalty",
+        teams: ["Loyalty", "Martech"],
         tags: ["email", "retention"],
         start_date: addDays(today, -10),
         target_date: addDays(today, 20),
@@ -203,7 +207,7 @@ async function main() {
         description: "Reduce iOS/Android cold start to under 1.5s p95.",
         lane: "Discovery",
         owner: owner2Id,
-        area: "Mobile App",
+        teams: ["Mobile App"],
         tags: ["performance"],
       },
       {
@@ -211,7 +215,7 @@ async function main() {
         description: "Idea placeholder — future consideration only.",
         lane: "Parking Lot",
         owner: owner1Id,
-        area: "Loyalty",
+        teams: ["Loyalty"],
         tags: ["idea"],
       },
       {
@@ -219,7 +223,7 @@ async function main() {
         description: "Rewrite structured data on merchant pages to unlock rich snippets. Dev intentionally deferred one week after ready-for-dev to coordinate with the SEO agency review.",
         lane: "Scoping",
         owner: owner2Id,
-        area: "SEO",
+        teams: ["SEO"],
         tags: ["seo"],
         start_date: addDays(today, -5),
         target_date: addDays(today, 25),
@@ -233,16 +237,15 @@ async function main() {
     for (let i = 0; i < projects.length; i++) {
       const p = projects[i]!;
       const laneId = laneIds[p.lane]!;
-      const areaId = areaIds[p.area]!;
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO projects
-           (title, description, swim_lane_id, position, owner_id, product_area_id, tags,
+           (title, description, swim_lane_id, position, owner_id, tags,
             start_date, target_date, dev_start_date, dev_end_date,
             optimization_start_date, optimization_end_date, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          RETURNING id`,
         [
-          p.title, p.description, laneId, i, p.owner, areaId, p.tags,
+          p.title, p.description, laneId, i, p.owner, p.tags,
           p.start_date ?? null,
           p.target_date ?? null,
           p.dev_start_date ?? null,
@@ -254,6 +257,16 @@ async function main() {
       );
       const pid = rows[0]!.id;
       projectIds.push(pid);
+
+      for (const teamName of p.teams) {
+        const teamId = teamIds[teamName];
+        if (!teamId) continue;
+        await client.query(
+          `INSERT INTO project_teams (project_id, team_id) VALUES ($1, $2)`,
+          [pid, teamId],
+        );
+      }
+
       await client.query(
         `INSERT INTO status_history (project_id, from_swim_lane_id, to_swim_lane_id, moved_by_user_id)
          VALUES ($1, NULL, $2, $3)`,

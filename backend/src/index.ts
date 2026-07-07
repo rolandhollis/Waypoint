@@ -8,7 +8,7 @@ import { authenticate } from "./middleware/auth.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 import { usersRouter } from "./routes/users.js";
 import { swimLanesRouter } from "./routes/swimLanes.js";
-import { productAreasRouter } from "./routes/productAreas.js";
+import { teamsRouter } from "./routes/teams.js";
 import { projectsRouter } from "./routes/projects.js";
 import { projectStatusUpdatesRouter, statusUpdatesRouter } from "./routes/statusUpdates.js";
 import { startCron } from "./jobs/weeklyStatus.js";
@@ -29,7 +29,7 @@ app.use("/api/users", (req, res, next) => {
 }, usersRouter);
 
 app.use("/api/swim-lanes", authenticate, swimLanesRouter);
-app.use("/api/product-areas", authenticate, productAreasRouter);
+app.use("/api/teams", authenticate, teamsRouter);
 app.use("/api/projects", authenticate, projectsRouter);
 app.use("/api/projects/:id/status-updates", authenticate, projectStatusUpdatesRouter);
 app.use("/api/status-updates", authenticate, statusUpdatesRouter);

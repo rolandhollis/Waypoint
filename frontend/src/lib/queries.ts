@@ -2,11 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import type {
   PendingStatusResponse,
-  ProductArea,
   Project,
   StatusHistoryEntry,
   StatusReportResponse,
   SwimLane,
+  Team,
   User,
   WeeklyStatusUpdate,
 } from "./types";
@@ -57,10 +57,10 @@ export function useSwimLanes() {
   });
 }
 
-export function useProductAreas() {
+export function useTeams() {
   return useQuery({
-    queryKey: ["productAreas"],
-    queryFn: () => api<ProductArea[]>("/product-areas"),
+    queryKey: ["teams"],
+    queryFn: () => api<Team[]>("/teams"),
     refetchInterval: POLL_MS,
   });
 }

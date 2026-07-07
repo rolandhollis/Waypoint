@@ -71,7 +71,7 @@ admins=[u for u in d if u['role']=='admin']
 print(admins[0]['name'])")
 ok "picked admin: $ADMIN_NAME ($ADMIN_ID)"
 
-step "Reads: users, lanes, product areas"
+step "Reads: users, lanes, teams"
 me=$(call GET /users/me)
 me_role=$(echo "$me" | jq_field "print(d['role'])")
 [ "$me_role" = "admin" ] || fail "/users/me returned role=$me_role, expected admin"
@@ -96,9 +96,9 @@ else
   ok "every lane has a description"
 fi
 
-areas=$(call GET /product-areas)
-AREA1_ID=$(echo "$areas" | jq_field "print(d[0]['id'])")
-ok "$(echo "$areas" | jq_field "print(len(d))") product areas"
+teams=$(call GET /teams)
+TEAM1_ID=$(echo "$teams" | jq_field "print(d[0]['id'])")
+ok "$(echo "$teams" | jq_field "print(len(d))") teams"
 
 # ---------- create ----------
 step "Create temp project + validate all phase-date fields round-trip"
@@ -114,7 +114,7 @@ print(json.dumps({
     'title':'SMOKE-TEST ephemeral',
     'description':'auto-created by scripts/smoke.sh',
     'swim_lane_id':'$LANE1_ID',
-    'product_area_id':'$AREA1_ID',
+    'teams':['$TEAM1_ID'],
     'tags':['smoke','ephemeral'],
     'start_date':'$today',
     'target_date':'$in7',
@@ -123,6 +123,12 @@ print(json.dumps({
 }))")")
 PROJ_ID=$(echo "$created" | jq_field "print(d['id'])")
 ok "created project id=$PROJ_ID"
+
+# Multi-team round-trip: the create above sent one team, the response
+# should echo that back as a single-element array.
+got_teams=$(echo "$created" | jq_field "print(','.join(d.get('teams') or []))")
+[ "$got_teams" = "$TEAM1_ID" ] || fail "teams round-trip: expected [$TEAM1_ID], got [$got_teams]"
+ok "teams array round-tripped as expected"
 
 # Round-trip check: every date we sent should come back verbatim
 for f in start_date target_date dev_end_date optimization_end_date; do

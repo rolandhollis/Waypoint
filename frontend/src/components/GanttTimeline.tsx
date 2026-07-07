@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { computePhases } from "../lib/phaseCompute";
 import { useMe } from "../lib/queries";
-import type { ProductArea, Project, SwimLane, User } from "../lib/types";
+import type { Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy, GroupBy } from "../lib/viewState";
 
 type Zoom = "6mo" | "1yr";
@@ -12,7 +12,7 @@ type Zoom = "6mo" | "1yr";
 type Props = {
   projects: Project[];
   lanes: SwimLane[];
-  areas: ProductArea[];
+  teams: Team[];
   users: User[];
   colorBy: ColorBy;
   groupBy: GroupBy;
@@ -55,7 +55,7 @@ type DragState = {
 };
 
 export function GanttTimeline(props: Props) {
-  const { projects, lanes, areas, users, colorBy, groupBy, zoom, onOpen } = props;
+  const { projects, lanes, teams, users, colorBy, groupBy, zoom, onOpen } = props;
   const me = useMe();
   const canEdit = me.data?.role !== "viewer";
 
@@ -74,7 +74,7 @@ export function GanttTimeline(props: Props) {
     return out;
   }, [start, end]);
 
-  const groups = useMemo(() => groupProjects(projects, groupBy, users, lanes, areas), [projects, groupBy, users, lanes, areas]);
+  const groups = useMemo(() => groupProjects(projects, groupBy, users, lanes, teams), [projects, groupBy, users, lanes, teams]);
 
   const today = new Date();
   const todayX = differenceInCalendarDays(today, start) * dayPx;
@@ -253,7 +253,7 @@ export function GanttTimeline(props: Props) {
                         chartStart={start}
                         dayPx={dayPx}
                         lanes={lanes}
-                        areas={areas}
+                        teams={teams}
                         users={users}
                         colorBy={colorBy}
                         canEdit={canEdit}
@@ -294,20 +294,20 @@ function Bar(props: {
   chartStart: Date;
   dayPx: number;
   lanes: SwimLane[];
-  areas: ProductArea[];
+  teams: Team[];
   users: User[];
   colorBy: ColorBy;
   canEdit: boolean;
   activeDrag: DragState | null;
   onStartDrag: (e: React.PointerEvent, projectId: string, mode: DragMode) => void;
 }) {
-  const { project: p, y, chartStart, dayPx, lanes, areas, users, colorBy, canEdit, activeDrag, onStartDrag } = props;
+  const { project: p, y, chartStart, dayPx, lanes, teams, users, colorBy, canEdit, activeDrag, onStartDrag } = props;
   const phases = computePhases(p);
   if (!phases.scheduled) return null;
   const lane = lanes.find((l) => l.id === p.swim_lane_id);
-  const area = areas.find((a) => a.id === p.product_area_id);
+  const primaryTeam = teams.find((t) => t.id === p.teams[0]);
   const owner = users.find((u) => u.id === p.owner_id);
-  const base = pickBase(colorBy, lane, area, owner);
+  const base = pickBase(colorBy, lane, primaryTeam, owner);
 
   const barY = y + BAR_PADDING;
   const barH = ROW_HEIGHT - BAR_PADDING * 2;
@@ -494,7 +494,7 @@ function computeRange(projects: Project[], timeframeMonths: number) {
 
 type Group = { key: string; label: string | null; projects: Project[] };
 
-function groupProjects(projects: Project[], groupBy: GroupBy, users: User[], lanes: SwimLane[], areas: ProductArea[]): Group[] {
+function groupProjects(projects: Project[], groupBy: GroupBy, users: User[], lanes: SwimLane[], teams: Team[]): Group[] {
   if (groupBy === "none") {
     const sorted = [...projects].sort(byStart);
     return [{ key: "all", label: null, projects: sorted }];
@@ -503,30 +503,36 @@ function groupProjects(projects: Project[], groupBy: GroupBy, users: User[], lan
   const bucket = new Map<string, Project[]>();
   const labels = new Map<string, string>();
 
-  for (const p of projects) {
-    let key = "__unassigned";
-    let label = "Unassigned";
-    if (groupBy === "owner") {
-      const u = users.find((x) => x.id === p.owner_id);
-      key = u?.id ?? key;
-      label = u?.name ?? label;
-    } else if (groupBy === "swim_lane") {
-      const l = lanes.find((x) => x.id === p.swim_lane_id);
-      key = l?.id ?? key;
-      label = l?.name ?? label;
-    } else if (groupBy === "product_area") {
-      const a = areas.find((x) => x.id === p.product_area_id);
-      key = a?.id ?? key;
-      label = a?.name ?? label;
-    } else if (groupBy === "tag") {
-      const primary = p.tags[0] ?? null;
-      key = primary ?? key;
-      label = primary ? `#${primary}` : "No tag";
-    }
+  const put = (key: string, label: string, project: Project) => {
     labels.set(key, label);
     const arr = bucket.get(key) ?? [];
-    arr.push(p);
+    arr.push(project);
     bucket.set(key, arr);
+  };
+
+  for (const p of projects) {
+    if (groupBy === "owner") {
+      const u = users.find((x) => x.id === p.owner_id);
+      put(u?.id ?? "__unassigned", u?.name ?? "Unassigned", p);
+    } else if (groupBy === "swim_lane") {
+      const l = lanes.find((x) => x.id === p.swim_lane_id);
+      put(l?.id ?? "__unassigned", l?.name ?? "Unassigned", p);
+    } else if (groupBy === "team") {
+      // Projects can have multiple teams; render the bar under each so
+      // every team sees its own row of work.
+      if (p.teams.length === 0) {
+        put("__unassigned", "Unassigned", p);
+      } else {
+        for (const teamId of p.teams) {
+          const t = teams.find((x) => x.id === teamId);
+          if (!t) continue;
+          put(t.id, t.name, p);
+        }
+      }
+    } else if (groupBy === "tag") {
+      const primary = p.tags[0] ?? null;
+      put(primary ?? "__unassigned", primary ? `#${primary}` : "No tag", p);
+    }
   }
 
   return Array.from(bucket.entries())
@@ -538,8 +544,8 @@ function byStart(a: Project, b: Project) {
   return (a.start_date ?? "").localeCompare(b.start_date ?? "");
 }
 
-function pickBase(colorBy: ColorBy, lane?: SwimLane, area?: ProductArea, owner?: User): string {
-  if (colorBy === "product_area") return area?.color ?? "#94a3b8";
+function pickBase(colorBy: ColorBy, lane?: SwimLane, team?: Team, owner?: User): string {
+  if (colorBy === "team") return team?.color ?? "#94a3b8";
   if (colorBy === "owner") return owner?.color ?? "#94a3b8";
   return lane?.color ?? "#94a3b8";
 }

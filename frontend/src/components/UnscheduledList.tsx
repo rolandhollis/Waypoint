@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { AlertCircle } from "lucide-react";
-import type { ProductArea, Project, SwimLane, User } from "../lib/types";
+import type { Project, SwimLane, Team, User } from "../lib/types";
 
 const EXCLUDED_LANE_NAMES = new Set(["parking lot"]);
 
@@ -8,10 +8,10 @@ export function UnscheduledList(props: {
   projects: Project[];
   lanes: SwimLane[];
   users: User[];
-  areas: ProductArea[];
+  teams: Team[];
   onOpen: (id: string) => void;
 }) {
-  const { projects, lanes, users, areas, onOpen } = props;
+  const { projects, lanes, users, teams, onOpen } = props;
 
   const groups = useMemo(() => {
     // Bucket by lane id (null = unassigned) and drop excluded lanes entirely.
@@ -73,7 +73,7 @@ export function UnscheduledList(props: {
               <ul className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
                 {g.projects.map((p) => {
                   const owner = users.find((u) => u.id === p.owner_id);
-                  const area = areas.find((a) => a.id === p.product_area_id);
+                  const projectTeams = teams.filter((t) => p.teams.includes(t.id));
                   const missing: string[] = [];
                   if (!p.start_date) missing.push("start_date");
                   if (!p.target_date) missing.push("target_date");
@@ -88,7 +88,7 @@ export function UnscheduledList(props: {
                         <div className="text-sm font-medium text-wp-ink">{p.title}</div>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-wp-slate">
                           {owner ? <span>{owner.name}</span> : null}
-                          {area ? <span>· {area.name}</span> : null}
+                          {projectTeams.length ? <span>· {projectTeams.map((t) => t.name).join(", ")}</span> : null}
                         </div>
                         <div className="mt-1 text-xs text-amber-700">missing: {missing.join(", ")}</div>
                       </button>

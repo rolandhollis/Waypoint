@@ -6,7 +6,7 @@ export function applyFilters(projects: Project[], f: FilterState): Project[] {
   return projects.filter((p) => {
     if (p.deleted_at) return false;
     if (f.ownerIds.length && (!p.owner_id || !f.ownerIds.includes(p.owner_id))) return false;
-    if (f.productAreaIds.length && (!p.product_area_id || !f.productAreaIds.includes(p.product_area_id))) return false;
+    if (f.teamIds.length && !p.teams.some((t) => f.teamIds.includes(t))) return false;
     if (f.swimLaneIds.length && (!p.swim_lane_id || !f.swimLaneIds.includes(p.swim_lane_id))) return false;
     if (f.tags.length && !p.tags.some((t) => f.tags.includes(t))) return false;
     if (f.dateFrom || f.dateTo) {
@@ -25,7 +25,7 @@ export function applyFilters(projects: Project[], f: FilterState): Project[] {
 
 export function countActiveFilters(f: FilterState): number {
   return (
-    f.ownerIds.length + f.productAreaIds.length + f.swimLaneIds.length +
+    f.ownerIds.length + f.teamIds.length + f.swimLaneIds.length +
     f.tags.length +
     (f.dateFrom ? 1 : 0) + (f.dateTo ? 1 : 0)
   );

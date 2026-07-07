@@ -9,8 +9,8 @@ import { CSS } from "@dnd-kit/utilities";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { api } from "../lib/api";
-import { useMe, useProductAreas, useProjects, useSwimLanes, useUsers } from "../lib/queries";
-import type { Project, SwimLane, User } from "../lib/types";
+import { useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import type { Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore } from "../lib/viewState";
 import { applyFilters } from "../lib/filtering";
 import { FilterBar } from "../components/FilterBar";
@@ -24,7 +24,7 @@ export function BoardView() {
   const lanes = useSwimLanes();
   const projects = useProjects();
   const users = useUsers();
-  const areas = useProductAreas();
+  const teams = useTeams();
   const filters = useViewStore((s) => s.board.filters);
   const colorBy = useViewStore((s) => s.board.colorBy);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -172,7 +172,7 @@ export function BoardView() {
                 onOpen={setSelectedId}
                 colorBy={colorBy}
                 users={users.data ?? []}
-                areas={areas.data ?? []}
+                teams={teams.data ?? []}
                 lanes={laneList}
                 canWrite={canWrite}
               />
@@ -186,7 +186,7 @@ export function BoardView() {
                 onOpen={setSelectedId}
                 colorBy={colorBy}
                 users={users.data ?? []}
-                areas={areas.data ?? []}
+                teams={teams.data ?? []}
                 lanes={laneList}
                 canWrite={canWrite}
               />
@@ -199,7 +199,7 @@ export function BoardView() {
               project={activeProject}
               colorBy={colorBy}
               users={users.data ?? []}
-              areas={areas.data ?? []}
+              teams={teams.data ?? []}
               lanes={laneList}
               isDragging
             />
@@ -224,11 +224,11 @@ function LaneColumn(props: {
   onOpen: (id: string) => void;
   colorBy: import("../lib/viewState").ColorBy;
   users: User[];
-  areas: import("../lib/types").ProductArea[];
+  teams: Team[];
   lanes: SwimLane[];
   canWrite: boolean;
 }) {
-  const { lane, projects, onNewInLane, onOpen, colorBy, users, areas, lanes, canWrite } = props;
+  const { lane, projects, onNewInLane, onOpen, colorBy, users, teams, lanes, canWrite } = props;
   const laneId = lane?.id ?? "null";
   const droppableId = `lane:${laneId}`;
 
@@ -277,7 +277,7 @@ function LaneColumn(props: {
                 onOpen={() => onOpen(p.id)}
                 colorBy={colorBy}
                 users={users}
-                areas={areas}
+                teams={teams}
                 lanes={lanes}
               />
             ))}
@@ -310,10 +310,10 @@ function SortableCard(props: {
   onOpen: () => void;
   colorBy: import("../lib/viewState").ColorBy;
   users: User[];
-  areas: import("../lib/types").ProductArea[];
+  teams: Team[];
   lanes: SwimLane[];
 }) {
-  const { project, onOpen, colorBy, users, areas, lanes } = props;
+  const { project, onOpen, colorBy, users, teams, lanes } = props;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: project.id });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
   return (
@@ -322,7 +322,7 @@ function SortableCard(props: {
         project={project}
         colorBy={colorBy}
         users={users}
-        areas={areas}
+        teams={teams}
         lanes={lanes}
         onOpen={onOpen}
         dragHandleProps={{ ...attributes, ...listeners }}

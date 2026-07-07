@@ -1,6 +1,6 @@
 import { differenceInCalendarDays, format } from "date-fns";
 import { AlertTriangle, Calendar, ChevronRight, GripVertical } from "lucide-react";
-import type { ProductArea, Project, SwimLane, User } from "../lib/types";
+import type { Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy } from "../lib/viewState";
 import { cn } from "../lib/cn";
 import { StatusPill } from "./StatusPill";
@@ -11,17 +11,17 @@ export function ProjectCard(props: {
   project: Project;
   colorBy: ColorBy;
   users: User[];
-  areas: ProductArea[];
+  teams: Team[];
   lanes: SwimLane[];
   onOpen?: () => void;
   isDragging?: boolean;
   dragHandleProps?: React.HTMLAttributes<HTMLElement> & Record<string, unknown>;
 }) {
-  const { project, colorBy, users, areas, lanes, onOpen, isDragging, dragHandleProps } = props;
+  const { project, colorBy, users, teams, lanes, onOpen, isDragging, dragHandleProps } = props;
   const owner = users.find((u) => u.id === project.owner_id);
-  const area = areas.find((a) => a.id === project.product_area_id);
+  const projectTeams = teams.filter((t) => project.teams.includes(t.id));
   const lane = lanes.find((l) => l.id === project.swim_lane_id);
-  const accent = pickAccent({ colorBy, lane, area, owner });
+  const accent = pickAccent({ colorBy, lane, teams: projectTeams, owner });
 
   const daysInStage = project.updated_at
     ? Math.max(0, differenceInCalendarDays(new Date(), new Date(project.updated_at)))
@@ -58,9 +58,16 @@ export function ProjectCard(props: {
           <div className="min-w-0 flex-1 pr-4">
             <div className="line-clamp-2 text-sm font-medium text-wp-ink">{project.title}</div>
             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-wp-slate">
-              {area ? (
-                <span className="chip" style={{ borderColor: area.color, color: area.color }}>{area.name}</span>
-              ) : null}
+              {projectTeams.map((t) => (
+                <span
+                  key={t.id}
+                  className="chip"
+                  style={{ borderColor: t.color, color: t.color }}
+                  title={`Team: ${t.name}`}
+                >
+                  {t.name}
+                </span>
+              ))}
               {project.tags.slice(0, 3).map((t) => (
                 <span key={t} className="chip">#{t}</span>
               ))}
@@ -111,8 +118,8 @@ function initials(name: string) {
   return name.split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("");
 }
 
-function pickAccent(v: { colorBy: ColorBy; lane?: SwimLane; area?: ProductArea; owner?: User }): string {
-  if (v.colorBy === "product_area") return v.area?.color ?? "#94a3b8";
+function pickAccent(v: { colorBy: ColorBy; lane?: SwimLane; teams: Team[]; owner?: User }): string {
+  if (v.colorBy === "team") return v.teams[0]?.color ?? "#94a3b8";
   if (v.colorBy === "owner") return v.owner?.color ?? "#94a3b8";
   return v.lane?.color ?? "#94a3b8";
 }

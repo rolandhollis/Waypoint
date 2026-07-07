@@ -185,7 +185,7 @@ cd backend && npm ci && npm run import-users -- /tmp/users.json
 ```
 
 Roles:
-- **admin** — everything, including swim-lane/product-area/user management
+- **admin** — everything, including swim-lane / team / user management
 - **owner** — create/edit projects and submit status updates
 - **viewer** — read-only
 

@@ -5,11 +5,12 @@ import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, StatusHistoryEntry, WeeklyStatusUpdate } from "../lib/types";
-import { useMe, useProductAreas, useProjectHistory, useProjectStatusUpdates, useSwimLanes, useUsers } from "../lib/queries";
+import { useMe, useProjectHistory, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { computePhases } from "../lib/phaseCompute";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 import { StatusPill } from "./StatusPill";
 import { StatusUpdateForm } from "./StatusUpdateForm";
+import { TeamMultiSelect } from "./TeamMultiSelect";
 
 type Draft = Partial<Project>;
 
@@ -18,7 +19,7 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
   const canWrite = me.data?.role !== "viewer";
   const lanes = useSwimLanes();
   const users = useUsers();
-  const areas = useProductAreas();
+  const teams = useTeams();
   const qc = useQueryClient();
 
   const projectQuery = useQuery({
@@ -49,7 +50,7 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
   const merged: Project = { ...project, ...draft };
   const phases = computePhases(merged);
   const owner = users.data?.find((u) => u.id === merged.owner_id);
-  const area = areas.data?.find((a) => a.id === merged.product_area_id);
+  const projectTeams = (teams.data ?? []).filter((t) => merged.teams.includes(t.id));
   const lane = lanes.data?.find((l) => l.id === merged.swim_lane_id);
   const requiresStatus = !!lane?.requires_weekly_status;
 
@@ -71,7 +72,12 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-wp-slate">
                 {lane ? <span>Lane: <span className="text-wp-ink">{lane.name}</span></span> : <span>Unassigned lane</span>}
                 {owner ? <span>Owner: <span className="text-wp-ink">{owner.name}</span></span> : null}
-                {area ? <span>Area: <span className="text-wp-ink">{area.name}</span></span> : null}
+                {projectTeams.length ? (
+                  <span>
+                    Teams:{" "}
+                    <span className="text-wp-ink">{projectTeams.map((t) => t.name).join(", ")}</span>
+                  </span>
+                ) : null}
               </div>
             </div>
             <button aria-label="Close" className="btn-ghost !p-1" onClick={onClose}>
@@ -87,11 +93,13 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
                   {users.data?.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                 </select>
               </Field>
-              <Field label="Product Area">
-                <select className="input" disabled={!canWrite} value={merged.product_area_id ?? ""} onChange={(e) => setDraft((d) => ({ ...d, product_area_id: e.target.value || null }))}>
-                  <option value="">— Unassigned —</option>
-                  {areas.data?.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
+              <Field label="Teams">
+                <TeamMultiSelect
+                  teams={teams.data ?? []}
+                  value={merged.teams}
+                  onChange={(next) => setDraft((d) => ({ ...d, teams: next }))}
+                  disabled={!canWrite}
+                />
               </Field>
               <Field label="Tags (comma-separated)">
                 <input

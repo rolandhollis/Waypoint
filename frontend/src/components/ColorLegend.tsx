@@ -1,27 +1,32 @@
 import { useMemo } from "react";
-import type { ProductArea, Project, SwimLane, User } from "../lib/types";
+import type { Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy } from "../lib/viewState";
 
 export function ColorLegend(props: {
   colorBy: ColorBy;
   lanes: SwimLane[];
-  areas: ProductArea[];
+  teams: Team[];
   users: User[];
   scopedProjects: Project[];
 }) {
-  const { colorBy, lanes, areas, users, scopedProjects } = props;
+  const { colorBy, lanes, teams, users, scopedProjects } = props;
   const entries = useMemo(() => {
     if (colorBy === "swim_lane") {
       const activeIds = new Set(scopedProjects.map((p) => p.swim_lane_id));
       return lanes.filter((l) => activeIds.has(l.id)).map((l) => ({ id: l.id, label: l.name, color: l.color ?? "#94a3b8" }));
     }
-    if (colorBy === "product_area") {
-      const activeIds = new Set(scopedProjects.map((p) => p.product_area_id));
-      return areas.filter((a) => activeIds.has(a.id)).map((a) => ({ id: a.id, label: a.name, color: a.color }));
+    if (colorBy === "team") {
+      // Card accent uses the first team's color; only show teams that
+      // are actually the "primary" for at least one visible project so
+      // the legend matches what's on screen.
+      const activeIds = new Set(
+        scopedProjects.map((p) => p.teams[0]).filter((id): id is string => !!id),
+      );
+      return teams.filter((t) => activeIds.has(t.id)).map((t) => ({ id: t.id, label: t.name, color: t.color }));
     }
     const activeIds = new Set(scopedProjects.map((p) => p.owner_id));
     return users.filter((u) => activeIds.has(u.id)).map((u) => ({ id: u.id, label: u.name, color: u.color }));
-  }, [colorBy, lanes, areas, users, scopedProjects]);
+  }, [colorBy, lanes, teams, users, scopedProjects]);
 
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs text-wp-slate">

@@ -2,12 +2,12 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type ViewKey = "board" | "roadmap";
-export type ColorBy = "swim_lane" | "product_area" | "owner";
-export type GroupBy = "none" | "owner" | "swim_lane" | "product_area" | "tag";
+export type ColorBy = "swim_lane" | "team" | "owner";
+export type GroupBy = "none" | "owner" | "swim_lane" | "team" | "tag";
 
 export type FilterState = {
   ownerIds: string[];
-  productAreaIds: string[];
+  teamIds: string[];
   swimLaneIds: string[];
   tags: string[];
   dateFrom: string | null;
@@ -16,7 +16,7 @@ export type FilterState = {
 };
 
 export const emptyFilters: FilterState = {
-  ownerIds: [], productAreaIds: [], swimLaneIds: [], tags: [],
+  ownerIds: [], teamIds: [], swimLaneIds: [], tags: [],
   dateFrom: null, dateTo: null, search: "",
 };
 
@@ -47,6 +47,7 @@ export const useViewStore = create<Store>()(
       setGroupBy: (view, groupBy) => set((s) => ({ ...s, [view]: { ...s[view], groupBy } })),
       clear: (view) => set((s) => ({ ...s, [view]: defaultPerView })),
     }),
-    { name: "waypoint.viewState" },
+    // Bump the key when the shape changes (v2 = product_area→team rename).
+    { name: "waypoint.viewState.v2" },
   ),
 );

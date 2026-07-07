@@ -8,8 +8,8 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
-import { useMe, useProductAreas, useProjects, useSwimLanes, useUsers } from "../lib/queries";
-import type { ProductArea, Project, SwimLane, User } from "../lib/types";
+import { useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import type { Project, SwimLane, Team, User } from "../lib/types";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
 
 export function AdminSettingsView() {
@@ -21,7 +21,7 @@ export function AdminSettingsView() {
     <div className="mx-auto max-w-4xl space-y-8 p-6">
       <h1 className="text-xl font-semibold text-wp-ink">Admin Settings</h1>
       <SwimLanesAdmin />
-      <ProductAreasAdmin />
+      <TeamsAdmin />
       <UsersAdmin />
       <ArchivedProjectsAdmin />
     </div>
@@ -216,33 +216,33 @@ function SortableLaneRow(props: {
   );
 }
 
-function ProductAreasAdmin() {
-  const areas = useProductAreas();
+function TeamsAdmin() {
+  const teams = useTeams();
   const projects = useProjects();
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [color, setColor] = useState("#3b82f6");
 
   const create = useMutation({
-    mutationFn: () => api<ProductArea>("/product-areas", { method: "POST", body: JSON.stringify({ name, color }) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["productAreas"] }); setName(""); },
+    mutationFn: () => api<Team>("/teams", { method: "POST", body: JSON.stringify({ name, color }) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["teams"] }); setName(""); },
   });
   const patch = useMutation({
-    mutationFn: (v: { id: string; body: Partial<ProductArea> }) => api<ProductArea>(`/product-areas/${v.id}`, { method: "PATCH", body: JSON.stringify(v.body) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["productAreas"] }),
+    mutationFn: (v: { id: string; body: Partial<Team> }) => api<Team>(`/teams/${v.id}`, { method: "PATCH", body: JSON.stringify(v.body) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["teams"] }),
   });
   const del = useMutation({
-    mutationFn: (v: { id: string; reassign_to: string | null }) => api(`/product-areas/${v.id}`, { method: "DELETE", body: JSON.stringify({ reassign_to: v.reassign_to }) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["productAreas"] }); qc.invalidateQueries({ queryKey: ["projects"] }); },
+    mutationFn: (v: { id: string; reassign_to: string | null }) => api(`/teams/${v.id}`, { method: "DELETE", body: JSON.stringify({ reassign_to: v.reassign_to }) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["teams"] }); qc.invalidateQueries({ queryKey: ["projects"] }); },
   });
 
-  async function handleDelete(area: ProductArea) {
-    const count = (projects.data ?? []).filter((p) => p.product_area_id === area.id && !p.deleted_at).length;
-    const others = (areas.data ?? []).filter((a) => a.id !== area.id);
+  async function handleDelete(team: Team) {
+    const count = (projects.data ?? []).filter((p) => p.teams.includes(team.id) && !p.deleted_at).length;
+    const others = (teams.data ?? []).filter((t) => t.id !== team.id);
     let reassign: string | null = null;
     if (count > 0 && others.length > 0) {
       const target = prompt(
-        `${count} project(s) live in "${area.name}".\nReassign to which area (blank = Unassigned)?\n\n${others.map((a, i) => `${i + 1}. ${a.name}`).join("\n")}\n\nEnter the number, or leave blank:`,
+        `${count} project(s) belong to "${team.name}".\nReassign to which team (blank = drop the membership)?\n\n${others.map((t, i) => `${i + 1}. ${t.name}`).join("\n")}\n\nEnter the number, or leave blank:`,
       );
       if (target === null) return;
       if (target.trim()) {
@@ -251,46 +251,47 @@ function ProductAreasAdmin() {
         if (!dest) { alert("Invalid selection."); return; }
         reassign = dest.id;
       }
-    } else if (!confirm(`Delete "${area.name}"?`)) {
+    } else if (!confirm(`Delete "${team.name}"?`)) {
       return;
     }
-    del.mutate({ id: area.id, reassign_to: reassign });
+    del.mutate({ id: team.id, reassign_to: reassign });
   }
 
   return (
     <section className="card-surface p-4">
-      <h2 className="text-base font-semibold">Product Areas</h2>
+      <h2 className="text-base font-semibold">Teams</h2>
+      <p className="mt-1 text-xs text-wp-slate">Cross-functional pods that own or contribute to a project. Projects can belong to more than one.</p>
       <MutationErrorBanner mutation={create} className="mt-3" />
       <MutationErrorBanner mutation={patch} className="mt-3" />
       <MutationErrorBanner mutation={del} className="mt-3" />
       <ul className="mt-3 divide-y divide-wp-stone">
-        {areas.data?.map((a) => (
-          <li key={a.id} className="flex items-center gap-3 py-2">
+        {teams.data?.map((t) => (
+          <li key={t.id} className="flex items-center gap-3 py-2">
             <input
               type="color"
               className="h-7 w-10 cursor-pointer rounded border border-wp-stone"
-              value={a.color}
-              onChange={(e) => patch.mutate({ id: a.id, body: { color: e.target.value } })}
+              value={t.color}
+              onChange={(e) => patch.mutate({ id: t.id, body: { color: e.target.value } })}
             />
             <input
               className="input flex-1"
-              defaultValue={a.name}
-              onBlur={(e) => { if (e.target.value !== a.name) patch.mutate({ id: a.id, body: { name: e.target.value } }); }}
+              defaultValue={t.name}
+              onBlur={(e) => { if (e.target.value !== t.name) patch.mutate({ id: t.id, body: { name: e.target.value } }); }}
             />
-            <button className="btn-ghost !p-1 text-red-600" aria-label="Delete area" onClick={() => handleDelete(a)}><Trash2 size={14} /></button>
+            <button className="btn-ghost !p-1 text-red-600" aria-label="Delete team" onClick={() => handleDelete(t)}><Trash2 size={14} /></button>
           </li>
         ))}
       </ul>
       <div className="mt-4 flex items-end gap-2">
         <label className="flex-1 text-xs font-medium text-wp-slate">
-          New area name
+          New team name
           <input className="input mt-1" value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label className="text-xs font-medium text-wp-slate">
           Color
           <input type="color" className="mt-1 h-8 w-16 cursor-pointer rounded border border-wp-stone" value={color} onChange={(e) => setColor(e.target.value)} />
         </label>
-        <button className="btn-primary" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>Add area</button>
+        <button className="btn-primary" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>Add team</button>
       </div>
     </section>
   );

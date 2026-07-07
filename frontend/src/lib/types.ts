@@ -24,7 +24,7 @@ export type SwimLane = {
   updated_at: string;
 };
 
-export type ProductArea = {
+export type Team = {
   id: string;
   name: string;
   color: string;
@@ -40,7 +40,8 @@ export type Project = {
   swim_lane_id: string | null;
   position: number;
   owner_id: string | null;
-  product_area_id: string | null;
+  /** Team memberships (M:N via `project_teams`). Order is not meaningful. */
+  teams: string[];
   tags: string[];
   start_date: string | null;
   target_date: string | null;
@@ -95,7 +96,7 @@ export type StatusReportRow = WeeklyStatusUpdate & {
   project_title: string;
   project_position: number;
   owner_name: string | null;
-  product_area_name: string | null;
+  team_names: string[];
   swim_lane_id: string | null;
   swim_lane_name: string | null;
   swim_lane_order: number | null;

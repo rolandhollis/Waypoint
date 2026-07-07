@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 import { query, withTransaction } from "../db/pool.js";
 import { requireWrite } from "../middleware/auth.js";
@@ -6,6 +7,33 @@ import { HttpError } from "../middleware/error.js";
 import type { ProjectRow, StatusHistoryRow, SwimLaneRow } from "../types.js";
 
 export const projectsRouter = Router();
+
+/**
+ * SELECT fragment that hydrates a project row with its `teams` array
+ * (multi-team membership lives in the `project_teams` join). The alias
+ * `p` must be used for the FROM.
+ */
+const PROJECT_COLUMNS = `
+  p.*,
+  COALESCE(
+    (SELECT array_agg(pt.team_id) FROM project_teams pt WHERE pt.project_id = p.id),
+    ARRAY[]::UUID[]
+  ) AS teams
+`;
+
+/**
+ * Replace the full set of team memberships for a project. Used both by
+ * POST (initial set) and PATCH (when the client sends a `teams` field).
+ */
+async function replaceProjectTeams(client: PoolClient, projectId: string, teamIds: string[]) {
+  await client.query(`DELETE FROM project_teams WHERE project_id = $1`, [projectId]);
+  if (teamIds.length === 0) return;
+  const values = teamIds.map((_, i) => `($1, $${i + 2})`).join(", ");
+  await client.query(
+    `INSERT INTO project_teams (project_id, team_id) VALUES ${values}`,
+    [projectId, ...teamIds],
+  );
+}
 
 /**
  * Enforce phase-boundary ordering across the four phase dates. Each field
@@ -55,7 +83,7 @@ const projectBaseSchema = z.object({
   description: z.string().max(50_000).optional(),
   swim_lane_id: z.string().uuid().nullable().optional(),
   owner_id: z.string().uuid().nullable().optional(),
-  product_area_id: z.string().uuid().nullable().optional(),
+  teams: z.array(z.string().uuid()).max(10).optional(),
   tags: z.array(z.string().max(64)).max(20).optional(),
   start_date: z.string().nullable().optional(),
   target_date: z.string().nullable().optional(),
@@ -65,6 +93,15 @@ const projectBaseSchema = z.object({
   optimization_end_date: z.string().nullable().optional(),
 });
 
+/** Column names that live on the `projects` table itself (i.e. what the
+ * projects UPDATE/INSERT can touch directly). `teams` is a virtual
+ * column derived from the join, so it's excluded. */
+const PROJECT_COLUMN_KEYS = [
+  "title", "description", "swim_lane_id", "owner_id", "tags",
+  "start_date", "target_date", "dev_start_date", "dev_end_date",
+  "optimization_start_date", "optimization_end_date",
+] as const;
+
 const listSchema = z.object({
   include_deleted: z.enum(["true", "false"]).optional(),
 });
@@ -73,16 +110,16 @@ projectsRouter.get("/", async (req, res) => {
   const q = listSchema.parse(req.query);
   const includeDeleted = q.include_deleted === "true";
   const { rows } = await query<ProjectRow>(
-    `SELECT * FROM projects
-       ${includeDeleted ? "" : "WHERE deleted_at IS NULL"}
-       ORDER BY position ASC, created_at ASC`,
+    `SELECT ${PROJECT_COLUMNS} FROM projects p
+       ${includeDeleted ? "" : "WHERE p.deleted_at IS NULL"}
+       ORDER BY p.position ASC, p.created_at ASC`,
   );
   res.json(rows);
 });
 
 projectsRouter.get("/:id", async (req, res) => {
   const { rows } = await query<ProjectRow>(
-    `SELECT * FROM projects WHERE id = $1`,
+    `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
     [req.params.id],
   );
   if (!rows[0]) throw new HttpError(404, "project not found");
@@ -99,19 +136,18 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
       [body.swim_lane_id ?? null],
     );
     const position = maxRows[0]?.next ?? 0;
-    const { rows } = await client.query<ProjectRow>(
+    const { rows } = await client.query<{ id: string }>(
       `INSERT INTO projects
-         (title, description, swim_lane_id, position, owner_id, product_area_id, tags,
+         (title, description, swim_lane_id, position, owner_id, tags,
           start_date, target_date, dev_start_date, dev_end_date,
           optimization_start_date, optimization_end_date, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
       [
         body.title,
         body.description ?? "",
         body.swim_lane_id ?? null,
         position,
         body.owner_id ?? req.user!.id,
-        body.product_area_id ?? null,
         body.tags ?? [],
         body.start_date ?? null,
         body.target_date ?? null,
@@ -122,13 +158,20 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
         req.user!.id,
       ],
     );
-    const project = rows[0]!;
+    const projectId = rows[0]!.id;
+    if (body.teams?.length) {
+      await replaceProjectTeams(client, projectId, body.teams);
+    }
     await client.query(
       `INSERT INTO status_history (project_id, from_swim_lane_id, to_swim_lane_id, moved_by_user_id)
        VALUES ($1, NULL, $2, $3)`,
-      [project.id, project.swim_lane_id, req.user!.id],
+      [projectId, body.swim_lane_id ?? null, req.user!.id],
     );
-    return project;
+    const { rows: finalRows } = await client.query<ProjectRow>(
+      `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
+      [projectId],
+    );
+    return finalRows[0];
   });
   res.status(201).json(result);
 });
@@ -140,10 +183,11 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
   if (body.swim_lane_id !== undefined) {
     throw new HttpError(400, "use POST /projects/:id/move to change swim_lane_id");
   }
+  const projectId = String(req.params.id);
   const result = await withTransaction(async (client) => {
     const { rows: existingRows } = await client.query<ProjectRow>(
-      `SELECT * FROM projects WHERE id = $1 FOR UPDATE`,
-      [req.params.id],
+      `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1 FOR UPDATE`,
+      [projectId],
     );
     const existing = existingRows[0];
     if (!existing) throw new HttpError(404, "project not found");
@@ -169,21 +213,34 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
       });
     }
 
+    // `teams` is a join-table field, not a column on projects. Apply it
+    // separately as a full replacement (empty array = clear all teams).
+    if (body.teams !== undefined) {
+      await replaceProjectTeams(client, projectId, body.teams);
+    }
+
     const fields: string[] = [];
     const values: unknown[] = [];
-    for (const [k, v] of Object.entries(body)) {
+    for (const key of PROJECT_COLUMN_KEYS) {
+      const v = (body as Record<string, unknown>)[key];
       if (v === undefined) continue;
       values.push(v);
-      fields.push(`"${k}" = $${values.length}`);
+      fields.push(`"${key}" = $${values.length}`);
     }
-    if (!fields.length) return existing;
-    values.push(req.params.id);
-    const { rows } = await client.query<ProjectRow>(
-      `UPDATE projects SET ${fields.join(", ")}, updated_at = NOW()
-         WHERE id = $${values.length} AND deleted_at IS NULL RETURNING *`,
-      values,
+    if (fields.length) {
+      values.push(projectId);
+      await client.query(
+        `UPDATE projects SET ${fields.join(", ")}, updated_at = NOW()
+           WHERE id = $${values.length} AND deleted_at IS NULL`,
+        values,
+      );
+    }
+
+    const { rows: finalRows } = await client.query<ProjectRow>(
+      `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
+      [projectId],
     );
-    return rows[0]!;
+    return finalRows[0]!;
   });
   res.json(result);
 });
@@ -197,7 +254,7 @@ projectsRouter.post("/:id/move", requireWrite, async (req, res) => {
   const body = moveSchema.parse(req.body);
   const result = await withTransaction(async (client) => {
     const { rows: existingRows } = await client.query<ProjectRow>(
-      `SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1 AND p.deleted_at IS NULL FOR UPDATE`,
       [req.params.id],
     );
     const existing = existingRows[0];
@@ -289,7 +346,7 @@ projectsRouter.post("/:id/move", requireWrite, async (req, res) => {
     }
 
     const { rows: updated } = await client.query<ProjectRow>(
-      `SELECT * FROM projects WHERE id = $1`,
+      `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
       [existing.id],
     );
     return updated[0];
@@ -299,8 +356,11 @@ projectsRouter.post("/:id/move", requireWrite, async (req, res) => {
 
 projectsRouter.delete("/:id", requireWrite, async (req, res) => {
   const { rows } = await query<ProjectRow>(
-    `UPDATE projects SET deleted_at = NOW(), updated_at = NOW()
-       WHERE id = $1 AND deleted_at IS NULL RETURNING *`,
+    `WITH updated AS (
+       UPDATE projects SET deleted_at = NOW(), updated_at = NOW()
+         WHERE id = $1 AND deleted_at IS NULL RETURNING id
+     )
+     SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id IN (SELECT id FROM updated)`,
     [req.params.id],
   );
   if (!rows[0]) throw new HttpError(404, "project not found or already deleted");
@@ -309,7 +369,10 @@ projectsRouter.delete("/:id", requireWrite, async (req, res) => {
 
 projectsRouter.post("/:id/restore", requireWrite, async (req, res) => {
   const { rows } = await query<ProjectRow>(
-    `UPDATE projects SET deleted_at = NULL, updated_at = NOW() WHERE id = $1 RETURNING *`,
+    `WITH updated AS (
+       UPDATE projects SET deleted_at = NULL, updated_at = NOW() WHERE id = $1 RETURNING id
+     )
+     SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id IN (SELECT id FROM updated)`,
     [req.params.id],
   );
   if (!rows[0]) throw new HttpError(404, "project not found");

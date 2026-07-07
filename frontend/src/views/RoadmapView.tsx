@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useProductAreas, useProjects, useSwimLanes, useUsers } from "../lib/queries";
+import { useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { applyFilters } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
@@ -13,7 +13,7 @@ import { ColorLegend } from "../components/ColorLegend";
 export function RoadmapView() {
   const projects = useProjects();
   const lanes = useSwimLanes();
-  const areas = useProductAreas();
+  const teams = useTeams();
   const users = useUsers();
   const filters = useViewStore((s) => s.roadmap.filters);
   const colorBy = useViewStore((s) => s.roadmap.colorBy);
@@ -54,7 +54,7 @@ export function RoadmapView() {
           <ColorLegend
             colorBy={colorBy}
             lanes={lanes.data ?? []}
-            areas={areas.data ?? []}
+            teams={teams.data ?? []}
             users={users.data ?? []}
             scopedProjects={scheduled}
           />
@@ -66,7 +66,7 @@ export function RoadmapView() {
           <GanttTimeline
             projects={scheduled}
             lanes={lanes.data ?? []}
-            areas={areas.data ?? []}
+            teams={teams.data ?? []}
             users={users.data ?? []}
             colorBy={colorBy}
             groupBy={groupBy}
@@ -84,7 +84,7 @@ export function RoadmapView() {
             projects={unscheduled}
             lanes={lanes.data ?? []}
             users={users.data ?? []}
-            areas={areas.data ?? []}
+            teams={teams.data ?? []}
             onOpen={setSelectedId}
           />
         ) : null}

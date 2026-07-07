@@ -3,22 +3,23 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../lib/api";
-import { useMe, useProductAreas, useSwimLanes, useUsers } from "../lib/queries";
+import { useMe, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import type { Project } from "../lib/types";
 import { MutationErrorBanner } from "./MutationErrorBanner";
+import { TeamMultiSelect } from "./TeamMultiSelect";
 
 export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: string | null; onClose: () => void }) {
   const me = useMe();
   const lanes = useSwimLanes();
   const users = useUsers();
-  const areas = useProductAreas();
+  const teams = useTeams();
   const qc = useQueryClient();
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [laneId, setLaneId] = useState<string | null>(defaultLaneId);
   const [ownerId, setOwnerId] = useState<string | null>(me.data?.id ?? null);
-  const [areaId, setAreaId] = useState<string | null>(null);
+  const [teamIds, setTeamIds] = useState<string[]>([]);
 
   const create = useMutation({
     mutationFn: () => api<Project>("/projects", {
@@ -28,7 +29,7 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
         description: description.trim() || undefined,
         swim_lane_id: laneId,
         owner_id: ownerId,
-        product_area_id: areaId,
+        teams: teamIds,
       }),
     }),
     onSuccess: () => {
@@ -72,11 +73,15 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
                   {users.data?.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                 </select>
               </label>
-              <label className="block text-xs font-medium text-wp-slate">Product Area
-                <select className="input mt-1" value={areaId ?? ""} onChange={(e) => setAreaId(e.target.value || null)}>
-                  <option value="">— Unassigned —</option>
-                  {areas.data?.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </select>
+              <label className="col-span-2 block text-xs font-medium text-wp-slate">
+                Teams <span className="text-wp-slate/70">(one or more — a project can belong to multiple)</span>
+                <div className="mt-1">
+                  <TeamMultiSelect
+                    teams={teams.data ?? []}
+                    value={teamIds}
+                    onChange={setTeamIds}
+                  />
+                </div>
               </label>
             </div>
           </div>

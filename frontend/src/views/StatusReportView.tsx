@@ -88,7 +88,7 @@ export function StatusReportView() {
               <th className="w-24 px-3 py-2 text-left">Health</th>
               <th className="px-3 py-2 text-left">Project</th>
               <th className="w-40 px-3 py-2 text-left">Owner</th>
-              <th className="w-36 px-3 py-2 text-left">Product Area</th>
+              <th className="w-40 px-3 py-2 text-left">Teams</th>
               <th className="w-32 px-3 py-2 text-left">Lane</th>
               <th className="px-3 py-2 text-left">Executive summary</th>
               <th className="w-40 px-3 py-2 text-left">Submitted</th>
@@ -159,7 +159,7 @@ export function StatusReportView() {
                         </button>
                       </td>
                       <td className="px-3 py-2 text-wp-slate">{r.owner_name ?? "—"}</td>
-                      <td className="px-3 py-2 text-wp-slate">{r.product_area_name ?? "—"}</td>
+                      <td className="px-3 py-2 text-wp-slate">{r.team_names?.length ? r.team_names.join(", ") : "—"}</td>
                       <td className="px-3 py-2 text-wp-slate">{r.swim_lane_name ?? "—"}</td>
                       <td className="px-3 py-2 text-wp-slate">{r.executive_summary || <span className="italic text-wp-slate/60">no update</span>}</td>
                       <td className="px-3 py-2 text-xs text-wp-slate">

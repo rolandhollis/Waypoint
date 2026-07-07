@@ -88,7 +88,7 @@ statusUpdatesRouter.get("/report", async (req, res) => {
     WeeklyStatusUpdateRow & {
       project_title: string;
       owner_name: string | null;
-      product_area_name: string | null;
+      team_names: string[];
       swim_lane_id: string | null;
       swim_lane_name: string | null;
       swim_lane_order: number | null;
@@ -100,7 +100,13 @@ statusUpdatesRouter.get("/report", async (req, res) => {
            p.title    AS project_title,
            p.position AS project_position,
            u.name     AS owner_name,
-           pa.name    AS product_area_name,
+           COALESCE(
+             (SELECT array_agg(t.name ORDER BY t."order", t.name)
+                FROM project_teams pt
+                JOIN teams t ON t.id = pt.team_id
+               WHERE pt.project_id = p.id),
+             ARRAY[]::TEXT[]
+           ) AS team_names,
            sl.id      AS swim_lane_id,
            sl.name    AS swim_lane_name,
            sl."order" AS swim_lane_order
@@ -108,7 +114,6 @@ statusUpdatesRouter.get("/report", async (req, res) => {
       LEFT JOIN weekly_status_updates wsu
         ON wsu.project_id = p.id AND wsu.week_of = $1::date
       LEFT JOIN users u ON u.id = p.owner_id
-      LEFT JOIN product_areas pa ON pa.id = p.product_area_id
       LEFT JOIN swim_lanes sl ON sl.id = p.swim_lane_id
      WHERE p.id = ANY($2::uuid[])
     `,

@@ -25,7 +25,7 @@ export type SwimLaneRow = {
   updated_at: Date;
 };
 
-export type ProductAreaRow = {
+export type TeamRow = {
   id: string;
   name: string;
   color: string;
@@ -35,6 +35,11 @@ export type ProductAreaRow = {
   updated_at: Date;
 };
 
+/**
+ * A project row as returned by API queries. `teams` is always populated
+ * from the `project_teams` join table via a subquery in the SELECT; it
+ * is not a column on the underlying `projects` table.
+ */
 export type ProjectRow = {
   id: string;
   title: string;
@@ -42,7 +47,7 @@ export type ProjectRow = {
   swim_lane_id: string | null;
   position: number;
   owner_id: string | null;
-  product_area_id: string | null;
+  teams: string[];
   tags: string[];
   start_date: string | null;
   target_date: string | null;

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { X } from "lucide-react";
-import { useProductAreas, useProjects, useSwimLanes, useUsers } from "../lib/queries";
+import { useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { countActiveFilters } from "../lib/filtering";
 import { emptyFilters, useViewStore, type ColorBy, type GroupBy, type ViewKey } from "../lib/viewState";
 import { cn } from "../lib/cn";
@@ -15,7 +15,7 @@ export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showG
   const clear = useViewStore((s) => s.clear);
 
   const users = useUsers();
-  const areas = useProductAreas();
+  const teams = useTeams();
   const lanes = useSwimLanes();
   const projects = useProjects();
 
@@ -44,10 +44,10 @@ export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showG
           onChange={(v) => setFilters(view, { ...filters, ownerIds: v })}
         />
         <MultiSelect
-          label="Product Area"
-          options={(areas.data ?? []).map((a) => ({ id: a.id, label: a.name }))}
-          value={filters.productAreaIds}
-          onChange={(v) => setFilters(view, { ...filters, productAreaIds: v })}
+          label="Team"
+          options={(teams.data ?? []).map((t) => ({ id: t.id, label: t.name }))}
+          value={filters.teamIds}
+          onChange={(v) => setFilters(view, { ...filters, teamIds: v })}
         />
         <MultiSelect
           label="Swim Lane"
@@ -69,7 +69,7 @@ export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showG
             onChange={(e) => setColorBy(view, e.target.value as ColorBy)}
           >
             <option value="swim_lane">Swim Lane</option>
-            <option value="product_area">Product Area</option>
+            <option value="team">Team</option>
             <option value="owner">Owner</option>
           </select>
           {showGrouping ? (
@@ -83,7 +83,7 @@ export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showG
                 <option value="none">None</option>
                 <option value="owner">Owner</option>
                 <option value="swim_lane">Swim Lane</option>
-                <option value="product_area">Product Area</option>
+                <option value="team">Team</option>
                 <option value="tag">Tag</option>
               </select>
             </>
@@ -92,7 +92,7 @@ export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showG
       </div>
       {activeCount > 0 ? (
         <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2">
-          {renderChips(filters, users.data ?? [], areas.data ?? [], lanes.data ?? [], (patch) => setFilters(view, { ...filters, ...patch }))}
+          {renderChips(filters, users.data ?? [], teams.data ?? [], lanes.data ?? [], (patch) => setFilters(view, { ...filters, ...patch }))}
           <button
             className="btn-ghost !py-0.5 text-xs"
             onClick={() => setFilters(view, emptyFilters)}
@@ -142,7 +142,7 @@ function MultiSelect({ label, options, value, onChange }: { label: string; optio
 function renderChips(
   filters: ReturnType<typeof useViewStore.getState>["board"]["filters"],
   users: { id: string; name: string }[],
-  areas: { id: string; name: string }[],
+  teams: { id: string; name: string }[],
   lanes: { id: string; name: string }[],
   patch: (p: Partial<typeof filters>) => void,
 ) {
@@ -160,14 +160,14 @@ function renderChips(
     const u = users.find((x) => x.id === id);
     chips.push(chip(`o-${id}`, `Owner: ${u?.name ?? id}`, () => patch({ ownerIds: filters.ownerIds.filter((x) => x !== id) })));
   }
-  for (const id of filters.productAreaIds) {
-    const a = areas.find((x) => x.id === id);
-    chips.push(chip(`a-${id}`, `Area: ${a?.name ?? id}`, () => patch({ productAreaIds: filters.productAreaIds.filter((x) => x !== id) })));
+  for (const id of filters.teamIds) {
+    const t = teams.find((x) => x.id === id);
+    chips.push(chip(`t-${id}`, `Team: ${t?.name ?? id}`, () => patch({ teamIds: filters.teamIds.filter((x) => x !== id) })));
   }
   for (const id of filters.swimLaneIds) {
     const l = lanes.find((x) => x.id === id);
     chips.push(chip(`l-${id}`, `Lane: ${l?.name ?? id}`, () => patch({ swimLaneIds: filters.swimLaneIds.filter((x) => x !== id) })));
   }
-  for (const t of filters.tags) chips.push(chip(`t-${t}`, `#${t}`, () => patch({ tags: filters.tags.filter((x) => x !== t) })));
+  for (const t of filters.tags) chips.push(chip(`tg-${t}`, `#${t}`, () => patch({ tags: filters.tags.filter((x) => x !== t) })));
   return chips;
 }
