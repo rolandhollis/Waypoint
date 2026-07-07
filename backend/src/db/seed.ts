@@ -58,6 +58,7 @@ const DEFAULT_LANES = [
     name: "Dev Ready",
     color: "#f59e0b",
     requires_weekly_status: true,
+    phase_date_key: "target_date" as const,
     description:
       "Fully scoped and waiting for a dev to pick it up. Weekly status is required so we can see anything stalled here longer than expected.",
   },
@@ -65,6 +66,7 @@ const DEFAULT_LANES = [
     name: "In Dev",
     color: "#22c55e",
     requires_weekly_status: true,
+    phase_date_key: "dev_start_date" as const,
     description:
       "Active engineering work: coding, review, QA. Weekly status keeps leadership visibility on ship-date confidence and blockers.",
   },
@@ -72,6 +74,7 @@ const DEFAULT_LANES = [
     name: "Complete",
     color: "#0f766e",
     is_terminal: true,
+    phase_date_key: "optimization_end_date" as const,
     description:
       "Shipped to production and post-launch monitoring is underway. Moving a card here auto-stamps its actual completion date and stops weekly status prompts.",
   },
@@ -108,7 +111,7 @@ const USERS = [
 async function main() {
   await withTransaction(async (client) => {
     console.log("Clearing existing data...");
-    await client.query("TRUNCATE weekly_status_updates, status_history, project_teams, projects, teams, swim_lanes, users RESTART IDENTITY CASCADE");
+    await client.query("TRUNCATE weekly_status_updates, status_history, project_audit_events, project_comments, project_teams, projects, teams, swim_lanes, users RESTART IDENTITY CASCADE");
 
     console.log("Seeding users...");
     const userIds: Record<string, string> = {};
@@ -127,12 +130,19 @@ async function main() {
     const laneIds: Record<string, string> = {};
     for (let i = 0; i < DEFAULT_LANES.length; i++) {
       const l = DEFAULT_LANES[i]!;
+      // Mark "Backlog" as the initial "new item" landing lane; new
+      // installs get a sensible target for the board's Add-new CTA
+      // without an admin having to visit settings. Admins can move it.
+      const isDefaultNew = l.name === "Backlog";
       const { rows } = await client.query<{ id: string }>(
-        `INSERT INTO swim_lanes (name, description, "order", color, is_terminal, requires_weekly_status, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        `INSERT INTO swim_lanes
+           (name, description, "order", color, is_terminal, requires_weekly_status,
+            is_default_new, phase_date_key, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
         [
           l.name, l.description ?? "", i, l.color,
-          l.is_terminal ?? false, l.requires_weekly_status ?? false, adminId,
+          l.is_terminal ?? false, l.requires_weekly_status ?? false,
+          isDefaultNew, (l as { phase_date_key?: string }).phase_date_key ?? null, adminId,
         ],
       );
       laneIds[l.name] = rows[0]!.id;

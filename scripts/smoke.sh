@@ -96,6 +96,15 @@ else
   ok "every lane has a description"
 fi
 
+# Migration 007 invariant: at most one lane can be the "add new item" default.
+default_count=$(echo "$lanes" | jq_field "print(sum(1 for l in d if l.get('is_default_new')))")
+if [ "$default_count" -gt 1 ]; then
+  fail "$default_count lanes marked is_default_new — partial unique index invariant broken"
+else
+  default_name=$(echo "$lanes" | jq_field "print(next((l['name'] for l in d if l.get('is_default_new')), '(none)'))")
+  ok "default-new lane: $default_name"
+fi
+
 teams=$(call GET /teams)
 TEAM1_ID=$(echo "$teams" | jq_field "print(d[0]['id'])")
 ok "$(echo "$teams" | jq_field "print(len(d))") teams"

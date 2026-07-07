@@ -10,6 +10,7 @@ import { usersRouter } from "./routes/users.js";
 import { swimLanesRouter } from "./routes/swimLanes.js";
 import { teamsRouter } from "./routes/teams.js";
 import { projectsRouter } from "./routes/projects.js";
+import { projectCommentsRouter } from "./routes/comments.js";
 import { projectStatusUpdatesRouter, statusUpdatesRouter } from "./routes/statusUpdates.js";
 import { startCron } from "./jobs/weeklyStatus.js";
 
@@ -31,6 +32,7 @@ app.use("/api/users", (req, res, next) => {
 app.use("/api/swim-lanes", authenticate, swimLanesRouter);
 app.use("/api/teams", authenticate, teamsRouter);
 app.use("/api/projects", authenticate, projectsRouter);
+app.use("/api/projects/:id/comments", authenticate, projectCommentsRouter);
 app.use("/api/projects/:id/status-updates", authenticate, projectStatusUpdatesRouter);
 app.use("/api/status-updates", authenticate, statusUpdatesRouter);
 

@@ -4,11 +4,24 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../lib/api";
 import { useMe, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import {
+  effectiveDates,
+  emptyPhaseDates,
+  fillMissingPhaseDates,
+  type PhaseDateFields,
+} from "../lib/phaseDates";
 import type { Project } from "../lib/types";
 import { MutationErrorBanner } from "./MutationErrorBanner";
+import { PairedDates } from "./PairedDates";
 import { TeamMultiSelect } from "./TeamMultiSelect";
 
-export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: string | null; onClose: () => void }) {
+/**
+ * `defaultLaneId` is retained on the public API for now to keep the
+ * board's "Add new item" wiring stable, but the dialog no longer
+ * lets the user *pick* a lane — every new project lands in the
+ * admin-designated default lane, with a small hint of where that is.
+ */
+export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { defaultLaneId: string | null; onClose: () => void }) {
   const me = useMe();
   const lanes = useSwimLanes();
   const users = useUsers();
@@ -17,21 +30,47 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [laneId, setLaneId] = useState<string | null>(defaultLaneId);
   const [ownerId, setOwnerId] = useState<string | null>(me.data?.id ?? null);
   const [teamIds, setTeamIds] = useState<string[]>([]);
 
+  // Resolve the landing lane the same way the backend does, so the
+  // "New items land in X" hint matches reality.
+  const laneList = lanes.data ?? [];
+  const resolvedLane =
+    laneList.find((l) => l.is_default_new) ??
+    laneList.filter((l) => !l.is_terminal).sort((a, b) => a.order - b.order)[0] ??
+    laneList[0] ??
+    null;
+  // Phase dates are optional; users can skip entirely and add them
+  // later from the detail panel. Draft only carries fields the user
+  // explicitly touched — `fillMissingPhaseDates` at submit time
+  // promotes visible-but-implicit defaults into the payload so the
+  // backend's ordering validator is happy.
+  const [dateDraft, setDateDraft] = useState<Partial<PhaseDateFields>>({});
+
+  const merged: PhaseDateFields = { ...emptyPhaseDates, ...dateDraft };
+  const eff = effectiveDates(merged);
+
+  function setDate(key: keyof PhaseDateFields, value: string | null) {
+    setDateDraft((d) => ({ ...d, [key]: value }));
+  }
+
   const create = useMutation({
-    mutationFn: () => api<Project>("/projects", {
-      method: "POST",
-      body: JSON.stringify({
-        title,
-        description: description.trim() || undefined,
-        swim_lane_id: laneId,
-        owner_id: ownerId,
-        teams: teamIds,
-      }),
-    }),
+    mutationFn: () => {
+      const dates = fillMissingPhaseDates(dateDraft, emptyPhaseDates);
+      // Omit swim_lane_id entirely — the backend will pick the
+      // default lane and 400 if the workspace has none configured.
+      return api<Project>("/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          description: description.trim() || undefined,
+          owner_id: ownerId,
+          teams: teamIds,
+          ...dates,
+        }),
+      });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
       onClose();
@@ -42,12 +81,13 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg bg-white p-5 shadow-xl">
-          <div className="mb-3 flex items-center justify-between">
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 flex max-h-[90vh] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-wp-stone px-5 py-3">
             <Dialog.Title className="text-base font-semibold">New project</Dialog.Title>
             <button aria-label="Close" className="btn-ghost !p-1" onClick={onClose}><X size={18} /></button>
           </div>
-          <div className="space-y-3">
+
+          <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
             <label className="block text-xs font-medium text-wp-slate">Title
               <input className="input mt-1" autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
             </label>
@@ -61,15 +101,9 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
               />
             </label>
             <div className="grid grid-cols-2 gap-3">
-              <label className="block text-xs font-medium text-wp-slate">Swim lane
-                <select className="input mt-1" value={laneId ?? ""} onChange={(e) => setLaneId(e.target.value || null)}>
-                  <option value="">— Unassigned —</option>
-                  {lanes.data?.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-                </select>
-              </label>
-              <label className="block text-xs font-medium text-wp-slate">Owner
+              <label className="col-span-2 block text-xs font-medium text-wp-slate">Owner
                 <select className="input mt-1" value={ownerId ?? ""} onChange={(e) => setOwnerId(e.target.value || null)}>
-                  <option value="">— Unassigned —</option>
+                  <option value="">— None —</option>
                   {users.data?.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                 </select>
               </label>
@@ -84,20 +118,107 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
                 </div>
               </label>
             </div>
+
+            {resolvedLane ? (
+              <p className="text-xs text-wp-slate">
+                New items land in <span className="font-medium text-wp-ink">{resolvedLane.name}</span>. Admins can change this in Settings.
+              </p>
+            ) : (
+              <p className="text-xs text-wp-red">
+                No swim lanes exist yet. Ask an admin to create one before adding items.
+              </p>
+            )}
+
+            <div className="border-t border-wp-stone/60 pt-3">
+              <p className="text-xs text-wp-slate">
+                Dates <span className="text-wp-slate/70">(optional — you can add them later)</span>
+              </p>
+
+              <div className="mt-2 space-y-3">
+                <PhaseField label="Discovery and Definition">
+                  <PairedDates
+                    startLabel="Start"
+                    startValue={merged.start_date}
+                    onStartChange={(v) => setDate("start_date", v)}
+                    endLabel="Ready for dev"
+                    endValue={merged.target_date}
+                    endMin={merged.start_date}
+                    onEndChange={(v) => setDate("target_date", v)}
+                  />
+                </PhaseField>
+
+                <PhaseField
+                  label="Development"
+                  hint={!eff.target ? "Set Discovery ‘Ready for dev’ first — Development picks up from there." : undefined}
+                >
+                  <PairedDates
+                    startLabel="Start"
+                    startValue={eff.devStart}
+                    startMin={eff.target}
+                    onStartChange={(v) => setDate("dev_start_date", v)}
+                    endLabel="End"
+                    endValue={eff.devEnd}
+                    endMin={eff.devStart}
+                    onEndChange={(v) => setDate("dev_end_date", v)}
+                    disabled={!eff.target}
+                  />
+                </PhaseField>
+
+                <PhaseField
+                  label="Post-Dev Optimization"
+                  hint={!eff.target ? "Set Discovery ‘Ready for dev’ first — Post-Dev cascades from there." : undefined}
+                >
+                  <PairedDates
+                    startLabel="Start"
+                    startValue={eff.optStart}
+                    startMin={eff.devEnd}
+                    onStartChange={(v) => setDate("optimization_start_date", v)}
+                    endLabel="End"
+                    endValue={eff.optEnd}
+                    endMin={eff.optStart}
+                    onEndChange={(v) => setDate("optimization_end_date", v)}
+                    disabled={!eff.target}
+                  />
+                </PhaseField>
+              </div>
+            </div>
           </div>
-          <MutationErrorBanner mutation={create} className="mt-4" />
-          <div className="mt-5 flex justify-end gap-2">
-            <button className="btn-secondary" onClick={onClose}>Cancel</button>
-            <button
-              className="btn-primary"
-              disabled={!title.trim() || create.isPending}
-              onClick={() => create.mutate()}
-            >
-              {create.isPending ? "Creating…" : "Create"}
-            </button>
+
+          <div className="border-t border-wp-stone bg-white px-5 py-3">
+            <MutationErrorBanner mutation={create} className="mb-2" />
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={onClose}>Cancel</button>
+              <button
+                className="btn-primary"
+                disabled={!title.trim() || !resolvedLane || create.isPending}
+                onClick={() => create.mutate()}
+              >
+                {create.isPending ? "Creating…" : "Create"}
+              </button>
+            </div>
           </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+function PhaseField({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="text-xs font-medium text-wp-slate">{label}</span>
+        {hint ? <span className="text-[11px] text-wp-slate/80">{hint}</span> : null}
+      </div>
+      {children}
+    </div>
   );
 }

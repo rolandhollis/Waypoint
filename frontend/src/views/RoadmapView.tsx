@@ -30,7 +30,7 @@ export function RoadmapView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <FilterBar view="roadmap" showGrouping />
+      <FilterBar view="roadmap" showGrouping showColorBy />
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-wp-stone bg-white/60 px-4 py-2">
         <div className="flex items-center gap-2 text-xs">
           <span className="text-wp-slate">Timeframe</span>

@@ -36,3 +36,7 @@ coverage/
 
 # Docker
 postgres-data/
+
+# Local convenience script + its logs (per-machine, not shared)
+dev.sh
+.dev-logs/

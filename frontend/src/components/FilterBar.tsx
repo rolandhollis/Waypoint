@@ -1,11 +1,33 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { X } from "lucide-react";
 import { useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { countActiveFilters } from "../lib/filtering";
 import { emptyFilters, useViewStore, type ColorBy, type GroupBy, type ViewKey } from "../lib/viewState";
 import { cn } from "../lib/cn";
 
-export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showGrouping?: boolean }) {
+export function FilterBar({
+  view,
+  showGrouping = false,
+  showColorBy = false,
+  showSwimLaneFilter = true,
+}: {
+  view: ViewKey;
+  showGrouping?: boolean;
+  /**
+   * Color-by only makes sense on views that actually paint bars/legends
+   * from it (currently just the Roadmap). Hidden by default so the
+   * Board and Status Report don't show a control that has no visible
+   * effect there.
+   */
+  showColorBy?: boolean;
+  /**
+   * Filter-by-swim-lane is redundant on views that already lay items
+   * out by lane (e.g. the Board's columns *are* the lanes). Hidden on
+   * those; any previously-persisted lane filter for that view is also
+   * cleared so it can't apply invisibly.
+   */
+  showSwimLaneFilter?: boolean;
+}) {
   const filters = useViewStore((s) => s[view].filters);
   const colorBy = useViewStore((s) => s[view].colorBy);
   const groupBy = useViewStore((s) => s[view].groupBy);
@@ -13,6 +35,16 @@ export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showG
   const setColorBy = useViewStore((s) => s.setColorBy);
   const setGroupBy = useViewStore((s) => s.setGroupBy);
   const clear = useViewStore((s) => s.clear);
+
+  // If the swim-lane filter is hidden for this view but a previous
+  // session persisted lane ids into zustand, they'd silently filter
+  // items with no visible control to undo it. Clear once on mount.
+  useEffect(() => {
+    if (!showSwimLaneFilter && filters.swimLaneIds.length) {
+      setFilters(view, { ...filters, swimLaneIds: [] });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSwimLaneFilter, view]);
 
   const users = useUsers();
   const teams = useTeams();
@@ -49,12 +81,14 @@ export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showG
           value={filters.teamIds}
           onChange={(v) => setFilters(view, { ...filters, teamIds: v })}
         />
-        <MultiSelect
-          label="Swim Lane"
-          options={(lanes.data ?? []).map((l) => ({ id: l.id, label: l.name }))}
-          value={filters.swimLaneIds}
-          onChange={(v) => setFilters(view, { ...filters, swimLaneIds: v })}
-        />
+        {showSwimLaneFilter ? (
+          <MultiSelect
+            label="Swim Lane"
+            options={(lanes.data ?? []).map((l) => ({ id: l.id, label: l.name }))}
+            value={filters.swimLaneIds}
+            onChange={(v) => setFilters(view, { ...filters, swimLaneIds: v })}
+          />
+        ) : null}
         <MultiSelect
           label="Tag"
           options={allTags.map((t) => ({ id: t, label: `#${t}` }))}
@@ -62,16 +96,20 @@ export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showG
           onChange={(v) => setFilters(view, { ...filters, tags: v })}
         />
         <div className="ml-auto flex items-center gap-2">
-          <label className="text-xs text-wp-slate">Color by</label>
-          <select
-            className="input w-40"
-            value={colorBy}
-            onChange={(e) => setColorBy(view, e.target.value as ColorBy)}
-          >
-            <option value="swim_lane">Swim Lane</option>
-            <option value="team">Team</option>
-            <option value="owner">Owner</option>
-          </select>
+          {showColorBy ? (
+            <>
+              <label className="text-xs text-wp-slate">Color by</label>
+              <select
+                className="input w-40"
+                value={colorBy}
+                onChange={(e) => setColorBy(view, e.target.value as ColorBy)}
+              >
+                <option value="swim_lane">Swim Lane</option>
+                <option value="team">Team</option>
+                <option value="owner">Owner</option>
+              </select>
+            </>
+          ) : null}
           {showGrouping ? (
             <>
               <label className="text-xs text-wp-slate">Group by</label>
@@ -111,8 +149,33 @@ export function FilterBar({ view, showGrouping = false }: { view: ViewKey; showG
 type MultiOption = { id: string; label: string };
 function MultiSelect({ label, options, value, onChange }: { label: string; options: MultiOption[]; value: string[]; onChange: (v: string[]) => void }) {
   const selected = new Set(value);
+  const ref = useRef<HTMLDetailsElement>(null);
+
+  // <details>/<summary> is a native disclosure — clicks *anywhere*
+  // else on the page normally leave it open, which feels broken next
+  // to peer dropdowns that use popover semantics. Close on outside
+  // pointerdown and on Escape, matching the rest of the app.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    function onPointerDown(e: MouseEvent) {
+      if (!el!.open) return;
+      if (el!.contains(e.target as Node)) return;
+      el!.open = false;
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && el!.open) el!.open = false;
+    }
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
   return (
-    <details className="relative">
+    <details ref={ref} className="relative">
       <summary className={cn("cursor-pointer select-none list-none rounded-md border border-wp-stone bg-white px-2.5 py-1.5 text-xs text-wp-slate", value.length ? "text-wp-ink" : "")}>
         {label}{value.length ? ` · ${value.length}` : ""}
       </summary>

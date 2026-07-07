@@ -9,7 +9,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
-import type { Project, SwimLane, Team, User } from "../lib/types";
+import type { PhaseDateKey, Project, SwimLane, Team, User } from "../lib/types";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
 
 export function AdminSettingsView() {
@@ -114,7 +114,11 @@ function SwimLanesAdmin() {
       if (!dest) { alert("Invalid selection."); return; }
       del.mutate({ id: lane.id, reassign_to: dest.id });
     } else {
-      if (!confirm(`Delete "${lane.name}"? ${cardCount > 0 && others.length === 0 ? "Its cards will move to the Unassigned area." : ""}`)) return;
+      if (cardCount > 0 && others.length === 0) {
+        alert(`"${lane.name}" is the only remaining swim lane and still holds ${cardCount} card(s). Create another lane and reassign these cards before deleting.`);
+        return;
+      }
+      if (!confirm(`Delete "${lane.name}"?`)) return;
       del.mutate({ id: lane.id, reassign_to: null });
     }
   }
@@ -138,6 +142,8 @@ function SwimLanesAdmin() {
                 lane={lane}
                 onToggleTerminal={(v) => patch.mutate({ id: lane.id, body: { is_terminal: v } })}
                 onToggleStatus={(v) => patch.mutate({ id: lane.id, body: { requires_weekly_status: v } })}
+                onSetDefault={() => patch.mutate({ id: lane.id, body: { is_default_new: true } })}
+                onSetPhaseDateKey={(v) => patch.mutate({ id: lane.id, body: { phase_date_key: v } })}
                 onRename={(v) => patch.mutate({ id: lane.id, body: { name: v } })}
                 onRecolor={(v) => patch.mutate({ id: lane.id, body: { color: v } })}
                 onDescribe={(v) => patch.mutate({ id: lane.id, body: { description: v } })}
@@ -167,12 +173,14 @@ function SortableLaneRow(props: {
   lane: SwimLane;
   onToggleTerminal: (v: boolean) => void;
   onToggleStatus: (v: boolean) => void;
+  onSetDefault: () => void;
+  onSetPhaseDateKey: (v: PhaseDateKey | null) => void;
   onRename: (v: string) => void;
   onRecolor: (v: string) => void;
   onDescribe: (v: string) => void;
   onDelete: () => void;
 }) {
-  const { lane, onToggleTerminal, onToggleStatus, onRename, onRecolor, onDescribe, onDelete } = props;
+  const { lane, onToggleTerminal, onToggleStatus, onSetDefault, onSetPhaseDateKey, onRename, onRecolor, onDescribe, onDelete } = props;
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: lane.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   return (
@@ -190,6 +198,21 @@ function SortableLaneRow(props: {
           defaultValue={lane.name}
           onBlur={(e) => { if (e.target.value !== lane.name) onRename(e.target.value); }}
         />
+        <label
+          className="flex items-center gap-1 text-xs text-wp-slate"
+          title="New items created from the board land here."
+        >
+          {/* Radio semantics: promoting one lane demotes the previous default
+              server-side (see swim-lanes PATCH). Clicking the currently-set
+              lane is a no-op; unset by promoting a different lane instead. */}
+          <input
+            type="radio"
+            name="swim-lane-default-new"
+            checked={lane.is_default_new}
+            onChange={() => { if (!lane.is_default_new) onSetDefault(); }}
+          />
+          default for new
+        </label>
         <label className="flex items-center gap-1 text-xs text-wp-slate">
           <input type="checkbox" checked={lane.requires_weekly_status} onChange={(e) => onToggleStatus(e.target.checked)} />
           weekly status
@@ -200,17 +223,39 @@ function SortableLaneRow(props: {
         </label>
         <button className="btn-ghost !p-1 text-red-600" aria-label="Delete lane" onClick={onDelete}><Trash2 size={14} /></button>
       </div>
-      <div className="mt-2 pl-14">
-        <label className="text-[10px] font-semibold uppercase tracking-wide text-wp-slate/70">
-          Description
-        </label>
-        <textarea
-          key={`desc-${lane.id}-${lane.updated_at}`}
-          className="input mt-1 h-20 w-full resize-y text-sm"
-          placeholder="What belongs in this lane? When does a card leave it?"
-          defaultValue={lane.description}
-          onBlur={(e) => { if (e.target.value !== lane.description) onDescribe(e.target.value); }}
-        />
+      <div className="mt-2 grid grid-cols-1 gap-3 pl-14 md:grid-cols-[2fr,1fr]">
+        <div>
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-wp-slate/70">
+            Description
+          </label>
+          <textarea
+            key={`desc-${lane.id}-${lane.updated_at}`}
+            className="input mt-1 h-20 w-full resize-y text-sm"
+            placeholder="What belongs in this lane? When does a card leave it?"
+            defaultValue={lane.description}
+            onBlur={(e) => { if (e.target.value !== lane.description) onDescribe(e.target.value); }}
+          />
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-wp-slate/70">
+            Prompt to update
+          </label>
+          <select
+            className="input mt-1 w-full text-sm"
+            value={lane.phase_date_key ?? ""}
+            onChange={(e) => onSetPhaseDateKey((e.target.value || null) as PhaseDateKey | null)}
+          >
+            <option value="">— No prompt —</option>
+            <option value="target_date">Ready-for-dev date</option>
+            <option value="dev_start_date">Development start</option>
+            <option value="dev_end_date">Development end</option>
+            <option value="optimization_start_date">Post-dev start</option>
+            <option value="optimization_end_date">Post-dev end</option>
+          </select>
+          <p className="mt-1 text-[11px] text-wp-slate/70">
+            When set, dragging a card here asks the PM to stamp this date.
+          </p>
+        </div>
       </div>
     </li>
   );

@@ -1,9 +1,11 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
+import { useState } from "react";
 import { ApiError, api } from "../lib/api";
 import type { Project, SwimLane } from "../lib/types";
-import { useMe } from "../lib/queries";
+import { useMe, useProjects } from "../lib/queries";
+import { PhaseDatePromptModal } from "./PhaseDatePromptModal";
 
 // Dropdowns close immediately on click so we can't render an inline
 // error banner; surface failures via a native alert instead.
@@ -27,16 +29,24 @@ export function LaneMoveMenu({
 }) {
   const me = useMe();
   const qc = useQueryClient();
+  const projects = useProjects();
   const canWrite = me.data?.role !== "viewer";
+  // When the move lands in a phase-bound lane, open the same
+  // update-date modal the board drag-drop flow uses.
+  const [phasePromptLaneId, setPhasePromptLaneId] = useState<string | null>(null);
 
   const moveMutation = useMutation({
-    mutationFn: (v: { swim_lane_id: string | null }) => api(`/projects/${projectId}/move`, {
+    mutationFn: (v: { swim_lane_id: string }) => api(`/projects/${projectId}/move`, {
       method: "POST",
       body: JSON.stringify({ swim_lane_id: v.swim_lane_id }),
     }),
-    onSuccess: () => {
+    onSuccess: (_data, v) => {
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["pendingStatus"] });
+      const destLane = lanes.find((l) => l.id === v.swim_lane_id);
+      if (destLane?.phase_date_key) {
+        setPhasePromptLaneId(v.swim_lane_id);
+      }
     },
     onError: alertMutationError,
   });
@@ -48,7 +58,18 @@ export function LaneMoveMenu({
 
   if (!canWrite) return null;
 
+  const promptProject = phasePromptLaneId ? projects.data?.find((p) => p.id === projectId) : undefined;
+  const promptLane = phasePromptLaneId ? lanes.find((l) => l.id === phasePromptLaneId) : undefined;
+
   return (
+    <>
+    {promptProject && promptLane ? (
+      <PhaseDatePromptModal
+        project={promptProject}
+        lane={promptLane}
+        onDismiss={() => setPhasePromptLaneId(null)}
+      />
+    ) : null}
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button
@@ -89,5 +110,6 @@ export function LaneMoveMenu({
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+    </>
   );
 }

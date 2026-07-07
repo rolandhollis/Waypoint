@@ -3,7 +3,8 @@ import { api } from "./api";
 import type {
   PendingStatusResponse,
   Project,
-  StatusHistoryEntry,
+  ProjectComment,
+  ProjectTimelineEntry,
   StatusReportResponse,
   SwimLane,
   Team,
@@ -76,7 +77,7 @@ export function useProjects() {
 export function useProjectHistory(id: string) {
   return useQuery({
     queryKey: ["projectHistory", id],
-    queryFn: () => api<StatusHistoryEntry[]>(`/projects/${id}/history`),
+    queryFn: () => api<ProjectTimelineEntry[]>(`/projects/${id}/history`),
     enabled: !!id,
   });
 }
@@ -86,6 +87,15 @@ export function useProjectStatusUpdates(id: string) {
     queryKey: ["projectStatusUpdates", id],
     queryFn: () => api<WeeklyStatusUpdate[]>(`/projects/${id}/status-updates`),
     enabled: !!id,
+  });
+}
+
+export function useProjectComments(id: string) {
+  return useQuery({
+    queryKey: ["projectComments", id],
+    queryFn: () => api<ProjectComment[]>(`/projects/${id}/comments`),
+    enabled: !!id,
+    refetchInterval: POLL_MS,
   });
 }
 

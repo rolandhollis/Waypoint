@@ -20,10 +20,29 @@ export type SwimLaneRow = {
   color: string | null;
   is_terminal: boolean;
   requires_weekly_status: boolean;
+  /**
+   * Exactly one lane at a time may carry this flag (partial unique
+   * index in migration 007). It is where the board's "Add new item"
+   * CTA drops freshly-created cards.
+   */
+  is_default_new: boolean;
+  /**
+   * Optional: which phase-date field this lane represents. When set,
+   * dragging a card into this lane prompts the PM to stamp the
+   * corresponding date. See migration 011 for the allowed values.
+   */
+  phase_date_key: PhaseDateKey | null;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;
 };
+
+export type PhaseDateKey =
+  | "target_date"
+  | "dev_start_date"
+  | "dev_end_date"
+  | "optimization_start_date"
+  | "optimization_end_date";
 
 export type TeamRow = {
   id: string;
@@ -69,6 +88,48 @@ export type StatusHistoryRow = {
   to_swim_lane_id: string | null;
   moved_by_user_id: string | null;
   timestamp: Date;
+};
+
+export type ProjectCommentRow = {
+  id: string;
+  project_id: string;
+  author_user_id: string | null;
+  body: string;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type ProjectAuditAction = "create" | "edit" | "move" | "archive" | "restore";
+
+export type ProjectAuditRow = {
+  id: string;
+  project_id: string;
+  user_id: string | null;
+  action: ProjectAuditAction;
+  field: string | null;
+  from_value: unknown;
+  to_value: unknown;
+  timestamp: Date;
+};
+
+/**
+ * Normalized "one thing happened to this project" record returned by
+ * `/projects/:id/history`. Discriminated by `kind` because it merges
+ * two underlying tables — `status_history` (lane movements, kind =
+ * "move") and `project_audit_events` (everything else). Frontend
+ * renders both under a single audit-trail list.
+ */
+export type TimelineEntryRow = {
+  id: string;
+  project_id: string;
+  user_id: string | null;
+  timestamp: Date;
+  kind: "move" | ProjectAuditAction;
+  from_swim_lane_id: string | null;
+  to_swim_lane_id: string | null;
+  field: string | null;
+  from_value: unknown;
+  to_value: unknown;
 };
 
 export type HealthFlag = "white" | "green" | "yellow" | "red";

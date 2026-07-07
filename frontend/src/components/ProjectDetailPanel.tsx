@@ -1,15 +1,19 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../lib/api";
-import type { Project, StatusHistoryEntry, WeeklyStatusUpdate } from "../lib/types";
-import { useMe, useProjectHistory, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import type { Project, ProjectTimelineEntry, Team, WeeklyStatusUpdate } from "../lib/types";
+import { useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { computePhases } from "../lib/phaseCompute";
+import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
 import { MutationErrorBanner } from "./MutationErrorBanner";
+import { PairedDates } from "./PairedDates";
+import { ProjectComments } from "./ProjectComments";
 import { StatusPill } from "./StatusPill";
 import { StatusUpdateForm } from "./StatusUpdateForm";
+import { TagPicker } from "./TagPicker";
 import { TeamMultiSelect } from "./TeamMultiSelect";
 
 type Draft = Partial<Project>;
@@ -20,7 +24,17 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
   const lanes = useSwimLanes();
   const users = useUsers();
   const teams = useTeams();
+  const allProjects = useProjects();
   const qc = useQueryClient();
+
+  // Union of every tag currently used across the workspace — powers the
+  // TagPicker's suggestion list so PMs pick from existing labels rather
+  // than accidentally creating "ui", "UI", and "u.i" variants.
+  const knownTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of allProjects.data ?? []) for (const t of p.tags) set.add(t);
+    return Array.from(set);
+  }, [allProjects.data]);
 
   const projectQuery = useQuery({
     queryKey: ["project", id],
@@ -40,7 +54,9 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
       qc.setQueryData(["project", id], updated);
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["projectStatusUpdates", id] });
+      qc.invalidateQueries({ queryKey: ["projectHistory", id] });
       setDraft({});
+      onClose();
     },
   });
 
@@ -49,6 +65,7 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
 
   const merged: Project = { ...project, ...draft };
   const phases = computePhases(merged);
+  const eff = effectiveDates(merged);
   const owner = users.data?.find((u) => u.id === merged.owner_id);
   const projectTeams = (teams.data ?? []).filter((t) => merged.teams.includes(t.id));
   const lane = lanes.data?.find((l) => l.id === merged.swim_lane_id);
@@ -70,7 +87,7 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
                 />
               </Dialog.Title>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-wp-slate">
-                {lane ? <span>Lane: <span className="text-wp-ink">{lane.name}</span></span> : <span>Unassigned lane</span>}
+                {lane ? <span>Lane: <span className="text-wp-ink">{lane.name}</span></span> : null}
                 {owner ? <span>Owner: <span className="text-wp-ink">{owner.name}</span></span> : null}
                 {projectTeams.length ? (
                   <span>
@@ -101,18 +118,13 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
                   disabled={!canWrite}
                 />
               </Field>
-              <Field label="Tags (comma-separated)">
-                <input
-                  className="input"
+              <Field label="Tags">
+                <TagPicker
+                  value={merged.tags}
+                  onChange={(next) => setDraft((d) => ({ ...d, tags: next }))}
+                  suggestions={knownTags}
                   disabled={!canWrite}
-                  value={merged.tags.join(", ")}
-                  onChange={(e) => setDraft((d) => ({ ...d, tags: e.target.value.split(",").map((t) => t.trim()).filter(Boolean) }))}
                 />
-              </Field>
-              <Field label="Actual completion date">
-                <div className="input !bg-wp-stone/30 !text-wp-slate">
-                  {merged.actual_completion_date ?? <span className="italic">auto-set when moved to a terminal lane</span>}
-                </div>
               </Field>
               <Field label="Discovery and Definition" className="col-span-2">
                 <PairedDates
@@ -126,33 +138,30 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
                   disabled={!canWrite}
                 />
               </Field>
-              <Field label="Development" className="col-span-2" hint={!merged.target_date ? "Set Discovery ‘Ready for dev’ first — Development picks up from there." : undefined}>
+              <Field label="Development" className="col-span-2" hint={!eff.target ? "Set Discovery ‘Ready for dev’ first — Development picks up from there." : undefined}>
                 <PairedDates
                   startLabel="Start"
-                  startValue={merged.dev_start_date ?? merged.target_date}
-                  startMin={merged.target_date}
+                  startValue={eff.devStart}
+                  startMin={eff.target}
                   onStartChange={(v) => setDraft((d) => cascadeClear({ ...d, dev_start_date: v }, project))}
                   endLabel="End"
-                  endValue={merged.dev_end_date ?? addIsoDays(merged.dev_start_date ?? merged.target_date, 7)}
-                  endMin={merged.dev_start_date ?? merged.target_date}
+                  endValue={eff.devEnd}
+                  endMin={eff.devStart}
                   onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, dev_end_date: v }, project))}
-                  disabled={!canWrite || !merged.target_date}
+                  disabled={!canWrite || !eff.target}
                 />
               </Field>
-              <Field label="Post-Dev Optimization" className="col-span-2" hint={!merged.dev_end_date && !merged.target_date ? "Set Discovery and Development dates first." : (!merged.dev_end_date ? "Set a Development end date first." : undefined)}>
+              <Field label="Post-Dev Optimization" className="col-span-2" hint={!eff.target ? "Set Discovery ‘Ready for dev’ first — Post-Dev cascades from there." : undefined}>
                 <PairedDates
                   startLabel="Start"
-                  startValue={merged.optimization_start_date ?? merged.dev_end_date}
-                  startMin={merged.dev_end_date}
+                  startValue={eff.optStart}
+                  startMin={eff.devEnd}
                   onStartChange={(v) => setDraft((d) => cascadeClear({ ...d, optimization_start_date: v }, project))}
                   endLabel="End"
-                  endValue={
-                    merged.optimization_end_date ??
-                    addIsoDays(merged.optimization_start_date ?? merged.dev_end_date, 7)
-                  }
-                  endMin={merged.optimization_start_date ?? merged.dev_end_date}
+                  endValue={eff.optEnd}
+                  endMin={eff.optStart}
                   onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, optimization_end_date: v }, project))}
-                  disabled={!canWrite || !merged.dev_end_date}
+                  disabled={!canWrite || !eff.target}
                 />
               </Field>
             </div>
@@ -206,13 +215,17 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
             </section>
 
             <section className="mt-6">
+              <ProjectComments projectId={id} />
+            </section>
+
+            <section className="mt-6">
               <h3 className="text-sm font-semibold text-wp-ink">Audit trail</h3>
               {history.data && history.data.length ? (
                 <ol className="mt-2 space-y-1 text-xs text-wp-slate">
                   {history.data.map((h) => <HistoryRow key={h.id} h={h} />)}
                 </ol>
               ) : (
-                <p className="mt-1.5 text-xs text-wp-slate">No lane transitions yet.</p>
+                <p className="mt-1.5 text-xs text-wp-slate">No activity yet.</p>
               )}
             </section>
           </div>
@@ -225,7 +238,7 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
                 <button
                   className="btn-primary"
                   disabled={Object.keys(draft).length === 0 || patch.isPending}
-                  onClick={() => patch.mutate(draft)}
+                  onClick={() => patch.mutate(fillMissingPhaseDates(draft, project))}
                 >
                   {patch.isPending ? "Saving…" : "Save changes"}
                 </button>
@@ -252,64 +265,6 @@ function Field({ label, className, hint, children }: { label: string; className?
       {children}
     </label>
   );
-}
-
-/**
- * Symmetric [Start → End] date-pair control used for each phase row so
- * Discovery, Development, and Optimization all look and behave the same.
- * Empty strings coming out of the date input are normalized to null so
- * the draft carries a clear "reset to default" signal to the backend.
- */
-function PairedDates({
-  startLabel, startValue, startMin, onStartChange,
-  endLabel,   endValue,   endMin,   onEndChange,
-  disabled,
-}: {
-  startLabel: string;
-  startValue: string | null;
-  startMin?: string | null;
-  onStartChange: (v: string | null) => void;
-  endLabel: string;
-  endValue: string | null;
-  endMin?: string | null;
-  onEndChange: (v: string | null) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="flex flex-wrap items-end gap-2">
-      <label className="min-w-[10rem] flex-1">
-        <span className="mb-1 block text-[10px] uppercase tracking-wide text-wp-slate/70">{startLabel}</span>
-        <input
-          type="date"
-          className="input"
-          disabled={disabled}
-          min={startMin ?? undefined}
-          value={startValue ?? ""}
-          onChange={(e) => onStartChange(e.target.value || null)}
-        />
-      </label>
-      <span className="pb-2 text-wp-slate/60" aria-hidden>→</span>
-      <label className="min-w-[10rem] flex-1">
-        <span className="mb-1 block text-[10px] uppercase tracking-wide text-wp-slate/70">{endLabel}</span>
-        <input
-          type="date"
-          className="input"
-          disabled={disabled}
-          min={endMin ?? undefined}
-          value={endValue ?? ""}
-          onChange={(e) => onEndChange(e.target.value || null)}
-        />
-      </label>
-    </div>
-  );
-}
-
-/** Return an ISO YYYY-MM-DD string `days` days after `iso`, or null. */
-function addIsoDays(iso: string | null, days: number): string | null {
-  if (!iso) return null;
-  const d = new Date(`${iso}T00:00:00`);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
 }
 
 /**
@@ -357,15 +312,134 @@ function StatusHistoryRow({ u }: { u: WeeklyStatusUpdate }) {
   );
 }
 
-function HistoryRow({ h }: { h: StatusHistoryEntry }) {
+function HistoryRow({ h }: { h: ProjectTimelineEntry }) {
   const users = useUsers();
   const lanes = useSwimLanes();
-  const who = users.data?.find((u) => u.id === h.moved_by_user_id)?.name ?? "system";
-  const from = lanes.data?.find((l) => l.id === h.from_swim_lane_id)?.name ?? "—";
-  const to = lanes.data?.find((l) => l.id === h.to_swim_lane_id)?.name ?? "—";
+  const teams = useTeams();
+  const who = users.data?.find((u) => u.id === h.user_id)?.name ?? "system";
   return (
-    <li>
-      {format(new Date(h.timestamp), "yyyy-MM-dd HH:mm")} · {who} moved from <b className="text-wp-ink">{from}</b> → <b className="text-wp-ink">{to}</b>
+    <li className="leading-relaxed">
+      <span className="text-wp-slate/80">{format(new Date(h.timestamp), "yyyy-MM-dd HH:mm")}</span>
+      {" · "}
+      <span>{who}</span>{" "}
+      <HistoryRowBody
+        entry={h}
+        lanes={lanes.data ?? []}
+        teams={teams.data ?? []}
+        users={users.data ?? []}
+      />
     </li>
   );
+}
+
+function HistoryRowBody({
+  entry,
+  lanes,
+  teams,
+  users,
+}: {
+  entry: ProjectTimelineEntry;
+  lanes: { id: string; name: string }[];
+  teams: Team[];
+  users: { id: string; name: string }[];
+}) {
+  const strong = (s: string) => <b className="text-wp-ink">{s}</b>;
+
+  if (entry.kind === "create") return <>created this item.</>;
+  if (entry.kind === "archive") return <>archived this item.</>;
+  if (entry.kind === "restore") return <>restored this item.</>;
+
+  if (entry.kind === "move") {
+    const from = lanes.find((l) => l.id === entry.from_swim_lane_id)?.name ?? "—";
+    const to = lanes.find((l) => l.id === entry.to_swim_lane_id)?.name ?? "—";
+    return <>moved from {strong(from)} → {strong(to)}</>;
+  }
+
+  // edit
+  const field = entry.field ?? "";
+  const label = FIELD_LABELS[field] ?? field;
+  const from = entry.from_value;
+  const to = entry.to_value;
+
+  // Nice-to-read array diffs for teams and tags: show what was added
+  // and removed rather than dumping both full arrays.
+  if (field === "teams" || field === "tags") {
+    const before = toStrArray(from);
+    const after = toStrArray(to);
+    const added = after.filter((x) => !before.includes(x));
+    const removed = before.filter((x) => !after.includes(x));
+    const format = (id: string) =>
+      field === "teams" ? teams.find((t) => t.id === id)?.name ?? id : `#${id}`;
+    const parts: React.ReactNode[] = [];
+    if (added.length) {
+      parts.push(
+        <span key="add">
+          added {strong(added.map(format).join(", "))}
+        </span>,
+      );
+    }
+    if (removed.length) {
+      parts.push(
+        <span key="rm">
+          removed {strong(removed.map(format).join(", "))}
+        </span>,
+      );
+    }
+    if (!parts.length) return <>touched {label}.</>;
+    return (
+      <>
+        {label}: {parts.map((p, i) => (
+          <span key={i}>
+            {i > 0 ? "; " : ""}
+            {p}
+          </span>
+        ))}
+      </>
+    );
+  }
+
+  // Description edits: verbose to render inline, so just note the change.
+  if (field === "description") {
+    if (isBlank(to)) return <>cleared {label}.</>;
+    if (isBlank(from)) return <>set {label}.</>;
+    return <>edited {label}.</>;
+  }
+
+  // Owner: render display names instead of UUIDs.
+  if (field === "owner_id") {
+    const fromName = isBlank(from) ? null : users.find((u) => u.id === from)?.name ?? String(from);
+    const toName = isBlank(to) ? null : users.find((u) => u.id === to)?.name ?? String(to);
+    if (fromName == null && toName != null) return <>set {label} to {strong(toName)}.</>;
+    if (fromName != null && toName == null) return <>cleared {label}.</>;
+    return <>changed {label} from {strong(fromName ?? "—")} to {strong(toName ?? "—")}.</>;
+  }
+
+  // Generic scalar (dates, title, etc.).
+  if (isBlank(to)) return <>cleared {label}.</>;
+  if (isBlank(from)) return <>set {label} to {strong(String(to))}.</>;
+  return <>changed {label} from {strong(String(from))} to {strong(String(to))}.</>;
+}
+
+const FIELD_LABELS: Record<string, string> = {
+  title: "title",
+  description: "description",
+  owner_id: "owner",
+  teams: "teams",
+  tags: "tags",
+  start_date: "discovery start",
+  target_date: "discovery target",
+  dev_start_date: "development start",
+  dev_end_date: "development end",
+  optimization_start_date: "post-dev start",
+  optimization_end_date: "post-dev end",
+  swim_lane_id: "swim lane",
+};
+
+function isBlank(v: unknown): boolean {
+  return v == null || v === "" || (Array.isArray(v) && v.length === 0);
+}
+
+function toStrArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.map(String);
 }

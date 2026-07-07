@@ -14,27 +14,44 @@ swimLanesRouter.get("/", async (_req, res) => {
   res.json(rows);
 });
 
+const PHASE_DATE_KEYS = [
+  "target_date",
+  "dev_start_date",
+  "dev_end_date",
+  "optimization_start_date",
+  "optimization_end_date",
+] as const;
+
 const createSchema = z.object({
   name: z.string().min(1).max(64),
   description: z.string().max(4000).optional(),
   color: z.string().max(32).nullable().optional(),
   is_terminal: z.boolean().optional(),
   requires_weekly_status: z.boolean().optional(),
+  is_default_new: z.boolean().optional(),
+  phase_date_key: z.enum(PHASE_DATE_KEYS).nullable().optional(),
 });
 
 swimLanesRouter.post("/", requireAdmin, async (req, res) => {
   const body = createSchema.parse(req.body);
   const result = await withTransaction(async (client) => {
+    if (body.is_default_new) {
+      await client.query(`UPDATE swim_lanes SET is_default_new = FALSE WHERE is_default_new = TRUE`);
+    }
     const { rows: maxRows } = await client.query<{ next: number }>(
       `SELECT COALESCE(MAX("order"), -1) + 1 AS next FROM swim_lanes`,
     );
     const nextOrder = maxRows[0]?.next ?? 0;
     const { rows } = await client.query<SwimLaneRow>(
-      `INSERT INTO swim_lanes (name, description, "order", color, is_terminal, requires_weekly_status, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      `INSERT INTO swim_lanes
+         (name, description, "order", color, is_terminal, requires_weekly_status,
+          is_default_new, phase_date_key, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [
         body.name, body.description ?? "", nextOrder, body.color ?? null,
         body.is_terminal ?? false, body.requires_weekly_status ?? false,
+        body.is_default_new ?? false,
+        body.phase_date_key ?? null,
         req.user!.id,
       ],
     );
@@ -49,30 +66,52 @@ const patchSchema = z.object({
   color: z.string().max(32).nullable().optional(),
   is_terminal: z.boolean().optional(),
   requires_weekly_status: z.boolean().optional(),
+  is_default_new: z.boolean().optional(),
+  phase_date_key: z.enum(PHASE_DATE_KEYS).nullable().optional(),
 });
+
+// Columns the patch is allowed to write, guarding the dynamic SET.
+const PATCHABLE_COLUMNS = new Set(Object.keys(patchSchema.shape));
 
 swimLanesRouter.patch("/:id", requireAdmin, async (req, res) => {
   const body = patchSchema.parse(req.body);
-  const fields: string[] = [];
-  const values: unknown[] = [];
-  for (const [k, v] of Object.entries(body)) {
-    if (v === undefined) continue;
-    values.push(v);
-    fields.push(`"${k}" = $${values.length}`);
-  }
-  if (!fields.length) {
-    const { rows } = await query<SwimLaneRow>(`SELECT * FROM swim_lanes WHERE id = $1`, [req.params.id]);
+  const laneId = String(req.params.id);
+  const result = await withTransaction(async (client) => {
+    // Promoting this lane to be the new-item default must first clear
+    // whichever lane currently holds the flag, otherwise the partial
+    // unique index would reject the update.
+    if (body.is_default_new === true) {
+      await client.query(
+        `UPDATE swim_lanes SET is_default_new = FALSE WHERE is_default_new = TRUE AND id <> $1`,
+        [laneId],
+      );
+    }
+
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    for (const [k, v] of Object.entries(body)) {
+      if (v === undefined) continue;
+      if (!PATCHABLE_COLUMNS.has(k)) continue;
+      values.push(v);
+      fields.push(`"${k}" = $${values.length}`);
+    }
+    if (!fields.length) {
+      const { rows } = await client.query<SwimLaneRow>(
+        `SELECT * FROM swim_lanes WHERE id = $1`,
+        [laneId],
+      );
+      if (!rows[0]) throw new HttpError(404, "swim lane not found");
+      return rows[0];
+    }
+    values.push(laneId);
+    const { rows } = await client.query<SwimLaneRow>(
+      `UPDATE swim_lanes SET ${fields.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+      values,
+    );
     if (!rows[0]) throw new HttpError(404, "swim lane not found");
-    res.json(rows[0]);
-    return;
-  }
-  values.push(req.params.id);
-  const { rows } = await query<SwimLaneRow>(
-    `UPDATE swim_lanes SET ${fields.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
-    values,
-  );
-  if (!rows[0]) throw new HttpError(404, "swim lane not found");
-  res.json(rows[0]);
+    return rows[0];
+  });
+  res.json(result);
 });
 
 const reorderSchema = z.object({
@@ -100,9 +139,10 @@ const deleteSchema = z.object({
 
 /**
  * Delete a swim lane.
- * Per PRD §5.2:
  *   - If lane has cards and at least one other lane exists, admin must pass reassign_to.
- *   - If it is the last lane, cards' swim_lane_id becomes null (Unassigned).
+ *   - If lane has cards and it is the only remaining lane, refuse the delete
+ *     (projects.swim_lane_id is NOT NULL — see migration 010).
+ *   - Empty lanes always delete freely.
  */
 swimLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
   const body = deleteSchema.parse(req.body ?? {});
@@ -139,12 +179,10 @@ swimLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
         [body.reassign_to, lane.id],
       );
     } else if (hasCards) {
-      // Last remaining lane — set cards to null (Unassigned).
-      await client.query(
-        `UPDATE projects SET swim_lane_id = NULL, updated_at = NOW()
-           WHERE swim_lane_id = $1 AND deleted_at IS NULL`,
-        [lane.id],
-      );
+      // Last remaining lane still holds cards — every project must
+      // live in a lane, so the admin needs to create a new lane and
+      // reassign these first.
+      throw new HttpError(400, "cannot delete the only remaining swim lane while it still holds cards");
     }
 
     await client.query(`DELETE FROM swim_lanes WHERE id = $1`, [lane.id]);

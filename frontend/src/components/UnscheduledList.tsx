@@ -70,7 +70,7 @@ export function UnscheduledList(props: {
                 </h3>
                 <span className="text-xs text-wp-slate/70">{g.projects.length}</span>
               </div>
-              <ul className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+              <ul className="flex flex-col gap-2">
                 {g.projects.map((p) => {
                   const owner = users.find((u) => u.id === p.owner_id);
                   const projectTeams = teams.filter((t) => p.teams.includes(t.id));
