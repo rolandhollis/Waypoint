@@ -36,12 +36,12 @@ brew install flyctl
 fly auth signup   # or `fly auth login` if you already have an account
 
 # 2. Launch the app from the existing fly.toml (no deploy yet)
-fly launch --no-deploy --copy-config --name waypoint
+fly launch --no-deploy --copy-config --name waypoint-qmh6xa
 
 # 3. Provision a managed Postgres + attach it to the app.
 #    `attach` writes DATABASE_URL into the app's secrets automatically.
 fly postgres create --name waypoint-db --region iad --initial-cluster-size 1 --vm-size shared-cpu-1x --volume-size 3
-fly postgres attach waypoint-db --app waypoint
+fly postgres attach waypoint-db --app waypoint-qmh6xa
 
 # 4. Deploy for the first time
 fly deploy
@@ -49,7 +49,7 @@ fly deploy
 # 5. Verify
 fly status
 fly logs
-open https://waypoint.fly.dev
+open https://waypoint-qmh6xa.fly.dev
 ```
 
 If `waypoint` is taken as a Fly app name, pick something else (e.g. `waypoint-rh`) — update `app = "..."` in `fly.toml` to match, and use that name for the attach + subsequent deploys.
@@ -60,7 +60,7 @@ The `deploy.yml` workflow runs `flyctl deploy` on every push to `main`. It needs
 
 ```bash
 # Generate a scoped deploy token
-fly tokens create deploy --app waypoint --name gha-deploy
+fly tokens create deploy --app waypoint-qmh6xa --name gha-deploy
 
 # Store it as a repo secret
 gh secret set FLY_API_TOKEN -R rolandhollis/Waypoint  # paste the token when prompted
@@ -88,7 +88,7 @@ Everything the app needs at runtime is env-driven. Reference: `backend/.env.exam
 To rotate or add a secret:
 
 ```bash
-fly secrets set CF_ACCESS_AUD=abc123... --app waypoint
+fly secrets set CF_ACCESS_AUD=abc123... --app waypoint-qmh6xa
 # Fly automatically restarts machines when secrets change.
 ```
 
@@ -100,7 +100,7 @@ Two production-ready paths:
 
 ### Option A — Cloudflare Access (recommended, free tier fits)
 
-1. Sign into Cloudflare, add whatever domain you're pointing at Fly (or use Cloudflare Tunnel to reach `waypoint.fly.dev`).
+1. Sign into Cloudflare, add whatever domain you're pointing at Fly (or use Cloudflare Tunnel to reach `waypoint-qmh6xa.fly.dev`).
 2. Zero Trust → Access → Applications → **Add an application** → Self-hosted.
 3. Application domain: `waypoint.<yourdomain>`. Session duration: 24h.
 4. Add an IdP (Google Workspace / GitHub / Okta — Cloudflare handles the OIDC dance).
@@ -113,7 +113,7 @@ Two production-ready paths:
       AUTH_MODE=cloudflare-access \
       CF_ACCESS_TEAM_DOMAIN=<your-team>.cloudflareaccess.com \
       CF_ACCESS_AUD=<aud-from-step-6> \
-      --app waypoint
+      --app waypoint-qmh6xa
     ```
 
 8. Update `fly.toml`'s `[env]` block: change `AUTH_MODE = "mock"` → `AUTH_MODE = "cloudflare-access"` so redeploys keep it. (Secrets override `[env]`, but changing both keeps `fly.toml` accurate.)
@@ -130,7 +130,7 @@ fly secrets set \
   OKTA_ISSUER=https://<your-org>.okta.com \
   OKTA_AUDIENCE=<audience> \
   OKTA_CLIENT_ID=<client-id> \
-  --app waypoint
+  --app waypoint-qmh6xa
 ```
 
 The SPA is currently mock-only for the login flow — wiring the browser-side Okta redirect is left as an exercise. The backend JWT verification is done.
@@ -167,12 +167,12 @@ cat > /tmp/users.json <<'JSON'
 JSON
 
 # Ship the file into the container and run the importer
-fly ssh sftp shell --app waypoint <<'SFTP'
+fly ssh sftp shell --app waypoint-qmh6xa <<'SFTP'
 put /tmp/users.json /tmp/users.json
 SFTP
 
-fly ssh console --app waypoint --command "node backend/dist/db/importUsers.js /tmp/users.json --dry-run"
-fly ssh console --app waypoint --command "node backend/dist/db/importUsers.js /tmp/users.json"
+fly ssh console --app waypoint-qmh6xa --command "node backend/dist/db/importUsers.js /tmp/users.json --dry-run"
+fly ssh console --app waypoint-qmh6xa --command "node backend/dist/db/importUsers.js /tmp/users.json"
 ```
 
 Or run it from your laptop against the Fly Postgres directly:
@@ -191,7 +191,7 @@ Roles:
 
 ## 8. Rollbacks + migrations
 
-- **App rollback**: `fly releases --app waypoint` shows the release history. `fly releases rollback <version>` reverts to that image.
+- **App rollback**: `fly releases --app waypoint-qmh6xa` shows the release history. `fly releases rollback <version>` reverts to that image.
 - **Schema changes**: migrations live in `backend/src/db/migrations/NNN_*.sql` and are applied in filename order at container startup. Idempotent via a `_migrations` ledger table.
 - **Never edit an applied migration file** — write a new one that walks the schema forward. Prefer additive migrations (nullable columns, new tables) so the previous image keeps working during a rolling deploy.
 
@@ -209,7 +209,7 @@ Nothing about this app is Fly-specific except `fly.toml`. The same Dockerfile ru
 - `scripts/smoke.sh` exercises the full request lifecycle (create / patch / move / delete a project) against any URL:
 
   ```bash
-  API_URL=https://waypoint.fly.dev ./scripts/smoke.sh
+  API_URL=https://waypoint-qmh6xa.fly.dev ./scripts/smoke.sh
   ```
 
   In `mock` mode it uses the mock roster automatically. Behind CF Access you'll need to fork the script to attach a service-token header (or run it from inside a CF Access session).

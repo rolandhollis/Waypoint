@@ -5,12 +5,15 @@
 # outside this app — attach a Fly Postgres cluster with:
 #
 #     fly postgres create --name waypoint-db --region iad
-#     fly postgres attach waypoint-db --app waypoint
+#     fly postgres attach waypoint-db --app waypoint-qmh6xa
 #
 # The attach step writes DATABASE_URL into this app's secrets, so nothing
 # to configure by hand.
+#
+# App name has a random suffix because `waypoint` was already taken on
+# Fly. Public URL is https://waypoint-qmh6xa.fly.dev.
 
-app = "waypoint"
+app = "waypoint-qmh6xa"
 primary_region = "iad"
 
 [build]
