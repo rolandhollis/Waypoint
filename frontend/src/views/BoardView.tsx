@@ -27,6 +27,7 @@ export function BoardView() {
   const users = useUsers();
   const teams = useTeams();
   const filters = useViewStore((s) => s.board.filters);
+  const setFilters = useViewStore((s) => s.setFilters);
   const colorBy = useViewStore((s) => s.board.colorBy);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -49,6 +50,59 @@ export function BoardView() {
       setSearchParams(next, { replace: true });
     }
   }, [searchParams, setSearchParams]);
+
+  // URL <-> store sync so /board is bookmarkable and shareable.
+  //
+  // Hydration (once, on first mount): if the URL carries any board
+  // filter params, they win over the persisted Zustand state. Someone
+  // pasting a shared link should see exactly what the sender saw.
+  //
+  // Mirror (every filter change): rewrite the URL to match the store.
+  // Users can copy the address bar and expect the same view to open
+  // for the next person. `replace: true` on the sync keeps browser
+  // history clean while typing in the search box.
+  const didHydrateFromUrlRef = useRef(false);
+  useEffect(() => {
+    if (didHydrateFromUrlRef.current) return;
+    didHydrateFromUrlRef.current = true;
+    const q = searchParams.get("q");
+    const ownerIds = searchParams.getAll("owner");
+    const teamIds = searchParams.getAll("team");
+    const tags = searchParams.getAll("tag");
+    const urlHasAny = q !== null || ownerIds.length > 0 || teamIds.length > 0 || tags.length > 0;
+    if (!urlHasAny) return;
+    setFilters("board", {
+      ...filters,
+      search: q ?? filters.search,
+      ownerIds: ownerIds.length ? ownerIds : filters.ownerIds,
+      teamIds: teamIds.length ? teamIds : filters.teamIds,
+      tags: tags.length ? tags : filters.tags,
+    });
+    // Deliberately empty deps — hydrate once at mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    const setSingle = (key: string, value: string) => {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    };
+    const setMulti = (key: string, values: string[]) => {
+      next.delete(key);
+      for (const v of values) next.append(key, v);
+    };
+    setSingle("q", filters.search);
+    setMulti("owner", filters.ownerIds);
+    setMulti("team", filters.teamIds);
+    setMulti("tag", filters.tags);
+    // Only push when the serialized form actually changed — otherwise
+    // typing in the search box would create a render loop through
+    // React Router's internal state.
+    if (next.toString() !== searchParams.toString()) {
+      setSearchParams(next, { replace: true });
+    }
+  }, [filters, searchParams, setSearchParams]);
 
   const qc = useQueryClient();
   const canWrite = me.data?.role !== "viewer";
