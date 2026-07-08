@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   DndContext, PointerSensor, closestCenter, useSensor, useSensors,
   type DragEndEvent,
@@ -12,18 +13,76 @@ import { useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/que
 import type { PhaseDateKey, Project, SwimLane, Team, User } from "../lib/types";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
 
+type TabKey = "lanes" | "teams" | "users" | "archived";
+
+const TABS: { key: TabKey; label: string; render: () => JSX.Element }[] = [
+  { key: "lanes",    label: "Swim lanes",     render: () => <SwimLanesAdmin /> },
+  { key: "teams",    label: "Teams",          render: () => <TeamsAdmin /> },
+  { key: "users",    label: "Users",          render: () => <UsersAdmin /> },
+  { key: "archived", label: "Archived cards", render: () => <ArchivedProjectsAdmin /> },
+];
+
 export function AdminSettingsView() {
   const me = useMe();
+  const [params, setParams] = useSearchParams();
+  // ?tab= persists the active section across reloads and is deep-linkable
+  // (e.g. Slack messages like "check /admin?tab=users"). Falls back to
+  // the first tab whenever the URL contains an unknown value.
+  const rawTab = params.get("tab") ?? "";
+  const active: TabKey = (TABS.find((t) => t.key === rawTab)?.key ?? TABS[0]!.key);
+
   if (me.data?.role !== "admin") {
     return <div className="p-6 text-sm text-wp-slate">Admin access required.</div>;
   }
+
+  function setActive(key: TabKey) {
+    const next = new URLSearchParams(params);
+    next.set("tab", key);
+    setParams(next, { replace: true });
+  }
+
   return (
-    <div className="mx-auto max-w-4xl space-y-8 p-6">
+    <div className="mx-auto max-w-5xl p-6">
       <h1 className="text-xl font-semibold text-wp-ink">Admin Settings</h1>
-      <SwimLanesAdmin />
-      <TeamsAdmin />
-      <UsersAdmin />
-      <ArchivedProjectsAdmin />
+
+      <div
+        role="tablist"
+        aria-label="Admin sections"
+        className="mt-4 flex gap-1 border-b border-wp-stone"
+      >
+        {TABS.map((t) => {
+          const isActive = t.key === active;
+          return (
+            <button
+              key={t.key}
+              role="tab"
+              type="button"
+              aria-selected={isActive}
+              aria-controls={`admin-panel-${t.key}`}
+              id={`admin-tab-${t.key}`}
+              tabIndex={isActive ? 0 : -1}
+              onClick={() => setActive(t.key)}
+              className={
+                "-mb-px cursor-pointer border-b-2 px-3 py-2 text-sm font-medium transition " +
+                (isActive
+                  ? "border-wp-red text-wp-ink"
+                  : "border-transparent text-wp-slate hover:text-wp-ink")
+              }
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div
+        role="tabpanel"
+        id={`admin-panel-${active}`}
+        aria-labelledby={`admin-tab-${active}`}
+        className="mt-6"
+      >
+        {TABS.find((t) => t.key === active)!.render()}
+      </div>
     </div>
   );
 }
