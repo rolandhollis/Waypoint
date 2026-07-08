@@ -26,6 +26,10 @@ const DAY_PX: Record<Zoom, number> = { "6mo": 8, "1yr": 3.5 };
 const ROW_HEIGHT = 34;
 const HEADER_HEIGHT = 48;
 const GROUP_HEADER_HEIGHT = 28;
+// Blank strip between groups so each swim of bars reads as its own
+// unit. Rendered as un-shaded space; the header of the *next* group
+// sits below it, aligned between the label column and the SVG.
+const GROUP_GAP = 12;
 const LEFT_LABEL_WIDTH = 220;
 const BAR_PADDING = 6;
 const CLICK_THRESHOLD_PX = 3;
@@ -172,8 +176,12 @@ export function GanttTimeline(props: Props) {
         <div className="flex">
           <div className="shrink-0" style={{ width: LEFT_LABEL_WIDTH }}>
             <div className="border-b border-wp-stone bg-wp-stone/40" style={{ height: HEADER_HEIGHT }} />
-            {groups.map((g) => (
+            {groups.map((g, gi) => (
               <div key={`labels-${g.key}`}>
+                {/* Blank strip separating this group from the previous one.
+                    Matches the same-height gap in the SVG column so the
+                    labels and bars stay aligned row-for-row. */}
+                {gi > 0 && g.label ? <div style={{ height: GROUP_GAP }} /> : null}
                 {g.label ? (
                   <div
                     className="flex items-center justify-between border-b border-wp-stone bg-wp-stone/30 px-3 text-xs font-semibold uppercase tracking-wide text-wp-slate"
@@ -199,7 +207,12 @@ export function GanttTimeline(props: Props) {
           <div className="relative flex-1 overflow-x-auto">
             <svg
               width={chartWidth}
-              height={HEADER_HEIGHT + groups.reduce((s, g) => s + (g.label ? GROUP_HEADER_HEIGHT : 0) + g.projects.length * ROW_HEIGHT, 0)}
+              height={HEADER_HEIGHT + groups.reduce((s, g, gi) => (
+                s
+                + (gi > 0 && g.label ? GROUP_GAP : 0)
+                + (g.label ? GROUP_HEADER_HEIGHT : 0)
+                + g.projects.length * ROW_HEIGHT
+              ), 0)}
               onPointerMove={onPointerMove}
               onPointerUp={endDrag}
               onPointerCancel={endDrag}
@@ -238,7 +251,11 @@ export function GanttTimeline(props: Props) {
 
               {(() => {
                 let cursorY = HEADER_HEIGHT;
-                return groups.map((g) => {
+                return groups.map((g, gi) => {
+                  // Insert the between-group blank strip before the
+                  // header of every group except the first. Skipped
+                  // for label-less renders (groupBy === "none").
+                  if (gi > 0 && g.label) cursorY += GROUP_GAP;
                   const groupStartY = cursorY;
                   if (g.label) cursorY += GROUP_HEADER_HEIGHT;
                   const rows = g.projects.map((p, idx) => {
@@ -502,9 +519,19 @@ function groupProjects(projects: Project[], groupBy: GroupBy, users: User[], lan
 
   const bucket = new Map<string, Project[]>();
   const labels = new Map<string, string>();
+  // Optional explicit sort weight per bucket key. When present, we
+  // honor it before falling back to alphabetical, so admin-defined
+  // orders for teams / swim lanes carry through to the Roadmap.
+  const sortKeys = new Map<string, number>();
+  // The unassigned catch-all always sits at the bottom regardless of
+  // what everything else uses for ordering. Big number keeps it there
+  // for the numeric comparator without needing a special branch.
+  const UNASSIGNED_KEY = "__unassigned";
+  const UNASSIGNED_SORT = Number.MAX_SAFE_INTEGER;
 
-  const put = (key: string, label: string, project: Project) => {
+  const put = (key: string, label: string, sortKey: number | undefined, project: Project) => {
     labels.set(key, label);
+    if (sortKey !== undefined) sortKeys.set(key, sortKey);
     const arr = bucket.get(key) ?? [];
     arr.push(project);
     bucket.set(key, arr);
@@ -513,31 +540,38 @@ function groupProjects(projects: Project[], groupBy: GroupBy, users: User[], lan
   for (const p of projects) {
     if (groupBy === "owner") {
       const u = users.find((x) => x.id === p.owner_id);
-      put(u?.id ?? "__unassigned", u?.name ?? "Unassigned", p);
+      put(u?.id ?? UNASSIGNED_KEY, u?.name ?? "Unassigned", undefined, p);
     } else if (groupBy === "swim_lane") {
       const l = lanes.find((x) => x.id === p.swim_lane_id);
-      put(l?.id ?? "__unassigned", l?.name ?? "Unassigned", p);
+      put(l?.id ?? UNASSIGNED_KEY, l?.name ?? "Unassigned", l?.order, p);
     } else if (groupBy === "team") {
       // Projects can have multiple teams; render the bar under each so
       // every team sees its own row of work.
       if (p.teams.length === 0) {
-        put("__unassigned", "Unassigned", p);
+        put(UNASSIGNED_KEY, "Unassigned", undefined, p);
       } else {
         for (const teamId of p.teams) {
           const t = teams.find((x) => x.id === teamId);
           if (!t) continue;
-          put(t.id, t.name, p);
+          put(t.id, t.name, t.order, p);
         }
       }
     } else if (groupBy === "tag") {
       const primary = p.tags[0] ?? null;
-      put(primary ?? "__unassigned", primary ? `#${primary}` : "No tag", p);
+      put(primary ?? UNASSIGNED_KEY, primary ? `#${primary}` : "No tag", undefined, p);
     }
   }
 
   return Array.from(bucket.entries())
     .map(([k, ps]) => ({ key: k, label: labels.get(k) ?? k, projects: ps.slice().sort(byStart) }))
-    .sort((a, b) => (a.label ?? "").localeCompare(b.label ?? ""));
+    .sort((a, b) => {
+      const aw = a.key === UNASSIGNED_KEY ? UNASSIGNED_SORT : sortKeys.get(a.key);
+      const bw = b.key === UNASSIGNED_KEY ? UNASSIGNED_SORT : sortKeys.get(b.key);
+      if (aw !== undefined && bw !== undefined) return aw - bw;
+      if (aw !== undefined) return -1;
+      if (bw !== undefined) return 1;
+      return (a.label ?? "").localeCompare(b.label ?? "");
+    });
 }
 
 function byStart(a: Project, b: Project) {

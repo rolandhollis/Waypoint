@@ -326,6 +326,7 @@ function TeamsAdmin() {
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [color, setColor] = useState("#3b82f6");
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const create = useMutation({
     mutationFn: () => api<Team>("/teams", { method: "POST", body: JSON.stringify({ name, color }) }),
@@ -335,10 +336,42 @@ function TeamsAdmin() {
     mutationFn: (v: { id: string; body: Partial<Team> }) => api<Team>(`/teams/${v.id}`, { method: "PATCH", body: JSON.stringify(v.body) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["teams"] }),
   });
+  // Same optimistic pattern as the swim lanes drag: write the new
+  // order into the cache before the network round-trip so the row
+  // animates to its final spot without a "snap back" while the
+  // POST is in flight. Roll back on error.
+  const reorder = useMutation({
+    mutationFn: (ids: string[]) => api<Team[]>("/teams/reorder", { method: "POST", body: JSON.stringify({ order: ids }) }),
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: ["teams"] });
+      const prev = qc.getQueryData<Team[]>(["teams"]);
+      if (prev) {
+        const byId = new Map(prev.map((t) => [t.id, t]));
+        const next = ids.map((id, i) => ({ ...(byId.get(id) as Team), order: i })).filter(Boolean);
+        qc.setQueryData<Team[]>(["teams"], next);
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["teams"], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["teams"] }),
+  });
   const del = useMutation({
     mutationFn: (v: { id: string; reassign_to: string | null }) => api(`/teams/${v.id}`, { method: "DELETE", body: JSON.stringify({ reassign_to: v.reassign_to }) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["teams"] }); qc.invalidateQueries({ queryKey: ["projects"] }); },
   });
+
+  function handleDragEnd(e: DragEndEvent) {
+    if (!teams.data) return;
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const oldIdx = teams.data.findIndex((t) => t.id === active.id);
+    const newIdx = teams.data.findIndex((t) => t.id === over.id);
+    if (oldIdx < 0 || newIdx < 0) return;
+    const reorderedIds = arrayMove(teams.data, oldIdx, newIdx).map((t) => t.id);
+    reorder.mutate(reorderedIds);
+  }
 
   async function handleDelete(team: Team) {
     const count = (projects.data ?? []).filter((p) => p.teams.includes(team.id) && !p.deleted_at).length;
@@ -364,28 +397,26 @@ function TeamsAdmin() {
   return (
     <section className="card-surface p-4">
       <h2 className="text-base font-semibold">Teams</h2>
-      <p className="mt-1 text-xs text-wp-slate">Cross-functional pods that own or contribute to a project. Projects can belong to more than one.</p>
+      <p className="mt-1 text-xs text-wp-slate">Cross-functional pods that own or contribute to a project. Drag to reorder — this order controls how groups appear on the Roadmap.</p>
       <MutationErrorBanner mutation={create} className="mt-3" />
       <MutationErrorBanner mutation={patch} className="mt-3" />
+      <MutationErrorBanner mutation={reorder} className="mt-3" />
       <MutationErrorBanner mutation={del} className="mt-3" />
-      <ul className="mt-3 divide-y divide-wp-stone">
-        {teams.data?.map((t) => (
-          <li key={t.id} className="flex items-center gap-3 py-2">
-            <input
-              type="color"
-              className="h-7 w-10 cursor-pointer rounded border border-wp-stone"
-              value={t.color}
-              onChange={(e) => patch.mutate({ id: t.id, body: { color: e.target.value } })}
-            />
-            <input
-              className="input flex-1"
-              defaultValue={t.name}
-              onBlur={(e) => { if (e.target.value !== t.name) patch.mutate({ id: t.id, body: { name: e.target.value } }); }}
-            />
-            <button className="btn-ghost !p-1 text-red-600" aria-label="Delete team" onClick={() => handleDelete(t)}><Trash2 size={14} /></button>
-          </li>
-        ))}
-      </ul>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={(teams.data ?? []).map((t) => t.id)} strategy={verticalListSortingStrategy}>
+          <ul className="mt-3 divide-y divide-wp-stone">
+            {teams.data?.map((t) => (
+              <SortableTeamRow
+                key={t.id}
+                team={t}
+                onRecolor={(v) => patch.mutate({ id: t.id, body: { color: v } })}
+                onRename={(v) => patch.mutate({ id: t.id, body: { name: v } })}
+                onDelete={() => handleDelete(t)}
+              />
+            ))}
+          </ul>
+        </SortableContext>
+      </DndContext>
       <div className="mt-4 flex items-end gap-2">
         <label className="flex-1 text-xs font-medium text-wp-slate">
           New team name
@@ -398,6 +429,35 @@ function TeamsAdmin() {
         <button className="btn-primary" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>Add team</button>
       </div>
     </section>
+  );
+}
+
+function SortableTeamRow(props: {
+  team: Team;
+  onRecolor: (v: string) => void;
+  onRename: (v: string) => void;
+  onDelete: () => void;
+}) {
+  const { team, onRecolor, onRename, onDelete } = props;
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: team.id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+  return (
+    <li ref={setNodeRef} style={style} className="flex items-center gap-3 py-2">
+      <button {...attributes} {...listeners} className="btn-ghost !p-1" aria-label="Drag to reorder"><GripVertical size={14} /></button>
+      <input
+        type="color"
+        className="h-7 w-10 cursor-pointer rounded border border-wp-stone"
+        value={team.color}
+        onChange={(e) => onRecolor(e.target.value)}
+      />
+      <input
+        key={`name-${team.id}-${team.updated_at}`}
+        className="input flex-1"
+        defaultValue={team.name}
+        onBlur={(e) => { if (e.target.value !== team.name) onRename(e.target.value); }}
+      />
+      <button className="btn-ghost !p-1 text-red-600" aria-label="Delete team" onClick={onDelete}><Trash2 size={14} /></button>
+    </li>
   );
 }
 

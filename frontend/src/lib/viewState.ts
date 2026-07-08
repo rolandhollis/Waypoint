@@ -35,19 +35,44 @@ type Store = {
   clear: (view: ViewKey) => void;
 };
 
-const defaultPerView: PerView = { filters: emptyFilters, colorBy: "swim_lane", groupBy: "none" };
+// Defaults are per-view so the two surfaces can diverge without one
+// forcing preferences on the other. Board doesn't render group
+// headers, so its groupBy stays "none"; Roadmap defaults to "team"
+// because that's the layout most PMs open it in.
+const defaultBoardPerView: PerView   = { filters: emptyFilters, colorBy: "swim_lane", groupBy: "none" };
+const defaultRoadmapPerView: PerView = { filters: emptyFilters, colorBy: "swim_lane", groupBy: "team" };
 
 export const useViewStore = create<Store>()(
   persist(
     (set) => ({
-      board: defaultPerView,
-      roadmap: defaultPerView,
+      board: defaultBoardPerView,
+      roadmap: defaultRoadmapPerView,
       setFilters: (view, filters) => set((s) => ({ ...s, [view]: { ...s[view], filters } })),
       setColorBy: (view, colorBy) => set((s) => ({ ...s, [view]: { ...s[view], colorBy } })),
       setGroupBy: (view, groupBy) => set((s) => ({ ...s, [view]: { ...s[view], groupBy } })),
-      clear: (view) => set((s) => ({ ...s, [view]: defaultPerView })),
+      clear: (view) => set((s) => ({
+        ...s,
+        [view]: view === "board" ? defaultBoardPerView : defaultRoadmapPerView,
+      })),
     }),
-    // Bump the key when the shape changes (v2 = product_area→team rename).
-    { name: "waypoint.viewState.v2" },
+    {
+      // Storage key intentionally kept from the previous shape
+      // (product_area→team rename). Preference migrations flow
+      // through `version` + `migrate` so users don't lose their
+      // filter picks when a default changes.
+      name: "waypoint.viewState.v2",
+      version: 2,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      migrate: (persisted: any, version: number): any => {
+        if (!persisted || typeof persisted !== "object") return persisted;
+        // < v2: Roadmap's default groupBy moved from "none" to
+        // "team". Only bump users who never actively changed it;
+        // any custom pick stays intact.
+        if (version < 2 && persisted.roadmap?.groupBy === "none") {
+          persisted.roadmap = { ...persisted.roadmap, groupBy: "team" };
+        }
+        return persisted;
+      },
+    },
   ),
 );
