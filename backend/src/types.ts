@@ -32,6 +32,19 @@ export type SwimLaneRow = {
    * corresponding date. See migration 011 for the allowed values.
    */
   phase_date_key: PhaseDateKey | null;
+  /**
+   * Hides the lane (and any project living in it) from non-admin API
+   * responses. Any lane can be marked; typical use is the Archive
+   * lane, but experimental/scratch lanes work too. See migration 012.
+   */
+  is_admin_only: boolean;
+  /**
+   * Exactly one lane at a time may carry this flag (partial unique
+   * index). It is the destination of the "Move to archive" button on
+   * the project detail panel; the backend resolves it server-side so
+   * non-admins can archive without ever holding the lane's id.
+   */
+  is_archive: boolean;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;

@@ -15,11 +15,15 @@ import { MutationErrorBanner } from "../components/MutationErrorBanner";
 
 type TabKey = "lanes" | "teams" | "users" | "archived";
 
+// Note: the tab key stays "archived" for URL back-compat with older
+// bookmarks, but the label reads "Deleted cards" now that we have a
+// distinct Archive swim-lane concept — this tab is only about the
+// hard-delete (soft-delete via deleted_at) flow.
 const TABS: { key: TabKey; label: string; render: () => JSX.Element }[] = [
-  { key: "lanes",    label: "Swim lanes",     render: () => <SwimLanesAdmin /> },
-  { key: "teams",    label: "Teams",          render: () => <TeamsAdmin /> },
-  { key: "users",    label: "Users",          render: () => <UsersAdmin /> },
-  { key: "archived", label: "Archived cards", render: () => <ArchivedProjectsAdmin /> },
+  { key: "lanes",    label: "Swim lanes",    render: () => <SwimLanesAdmin /> },
+  { key: "teams",    label: "Teams",         render: () => <TeamsAdmin /> },
+  { key: "users",    label: "Users",         render: () => <UsersAdmin /> },
+  { key: "archived", label: "Deleted cards", render: () => <ArchivedProjectsAdmin /> },
 ];
 
 export function AdminSettingsView() {
@@ -103,17 +107,22 @@ function ArchivedProjectsAdmin() {
   const archived = (all.data ?? []).filter((p) => p.deleted_at);
   return (
     <section className="card-surface p-4">
-      <h2 className="text-base font-semibold">Archived cards</h2>
+      <h2 className="text-base font-semibold">Deleted cards</h2>
+      <p className="mt-1 text-xs text-wp-slate">
+        Cards deleted via the board's Delete action land here. Restoring puts them back in their
+        original lane. For a soft-hide that keeps cards addressable by lane, use the Archive swim
+        lane instead (Admin → Swim lanes → mark a lane as <em>archive target</em>).
+      </p>
       <MutationErrorBanner mutation={restore} className="mt-3" />
       {archived.length === 0 ? (
-        <p className="mt-2 text-xs text-wp-slate">No archived cards.</p>
+        <p className="mt-2 text-xs text-wp-slate">No deleted cards.</p>
       ) : (
         <ul className="mt-3 divide-y divide-wp-stone">
           {archived.map((p) => (
             <li key={p.id} className="flex items-center gap-3 py-2">
               <div className="min-w-0 flex-1">
                 <div className="text-sm text-wp-ink">{p.title}</div>
-                <div className="text-xs text-wp-slate">archived {p.deleted_at?.slice(0, 10)}</div>
+                <div className="text-xs text-wp-slate">deleted {p.deleted_at?.slice(0, 10)}</div>
               </div>
               <button className="btn-secondary text-xs" onClick={() => restore.mutate(p.id)}>Restore</button>
             </li>
@@ -202,6 +211,8 @@ function SwimLanesAdmin() {
                 onToggleTerminal={(v) => patch.mutate({ id: lane.id, body: { is_terminal: v } })}
                 onToggleStatus={(v) => patch.mutate({ id: lane.id, body: { requires_weekly_status: v } })}
                 onSetDefault={() => patch.mutate({ id: lane.id, body: { is_default_new: true } })}
+                onToggleAdminOnly={(v) => patch.mutate({ id: lane.id, body: { is_admin_only: v } })}
+                onSetArchive={() => patch.mutate({ id: lane.id, body: { is_archive: true } })}
                 onSetPhaseDateKey={(v) => patch.mutate({ id: lane.id, body: { phase_date_key: v } })}
                 onRename={(v) => patch.mutate({ id: lane.id, body: { name: v } })}
                 onRecolor={(v) => patch.mutate({ id: lane.id, body: { color: v } })}
@@ -233,18 +244,23 @@ function SortableLaneRow(props: {
   onToggleTerminal: (v: boolean) => void;
   onToggleStatus: (v: boolean) => void;
   onSetDefault: () => void;
+  onToggleAdminOnly: (v: boolean) => void;
+  onSetArchive: () => void;
   onSetPhaseDateKey: (v: PhaseDateKey | null) => void;
   onRename: (v: string) => void;
   onRecolor: (v: string) => void;
   onDescribe: (v: string) => void;
   onDelete: () => void;
 }) {
-  const { lane, onToggleTerminal, onToggleStatus, onSetDefault, onSetPhaseDateKey, onRename, onRecolor, onDescribe, onDelete } = props;
+  const {
+    lane, onToggleTerminal, onToggleStatus, onSetDefault, onToggleAdminOnly,
+    onSetArchive, onSetPhaseDateKey, onRename, onRecolor, onDescribe, onDelete,
+  } = props;
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: lane.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   return (
     <li ref={setNodeRef} style={style} className="py-3">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <button {...attributes} {...listeners} className="btn-ghost !p-1" aria-label="Drag to reorder"><GripVertical size={14} /></button>
         <input
           type="color"
@@ -253,7 +269,7 @@ function SortableLaneRow(props: {
           onChange={(e) => onRecolor(e.target.value)}
         />
         <input
-          className="input flex-1"
+          className="input min-w-[8rem] flex-1"
           defaultValue={lane.name}
           onBlur={(e) => { if (e.target.value !== lane.name) onRename(e.target.value); }}
         />
@@ -279,6 +295,31 @@ function SortableLaneRow(props: {
         <label className="flex items-center gap-1 text-xs text-wp-slate">
           <input type="checkbox" checked={lane.is_terminal} onChange={(e) => onToggleTerminal(e.target.checked)} />
           terminal
+        </label>
+        <label
+          className="flex items-center gap-1 text-xs text-wp-slate"
+          title="Hides this lane (and every card in it) from non-admin users."
+        >
+          <input
+            type="checkbox"
+            checked={lane.is_admin_only}
+            onChange={(e) => onToggleAdminOnly(e.target.checked)}
+          />
+          admin only
+        </label>
+        <label
+          className="flex items-center gap-1 text-xs text-wp-slate"
+          title="Destination for the detail panel's Move-to-archive button. Only one lane at a time."
+        >
+          {/* Radio semantics like `default for new`: promoting one lane
+              demotes the previous archive server-side. */}
+          <input
+            type="radio"
+            name="swim-lane-archive"
+            checked={lane.is_archive}
+            onChange={() => { if (!lane.is_archive) onSetArchive(); }}
+          />
+          archive target
         </label>
         <button className="btn-ghost !p-1 text-red-600" aria-label="Delete lane" onClick={onDelete}><Trash2 size={14} /></button>
       </div>

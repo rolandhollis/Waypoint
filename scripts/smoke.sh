@@ -82,9 +82,16 @@ lane_count=$(echo "$lanes" | jq_field "print(len(d))")
 [ "$lane_count" -gt 0 ] || fail "no swim lanes"
 LANE1_ID=$(echo "$lanes" | jq_field "print(d[0]['id'])")
 LANE1_NAME=$(echo "$lanes" | jq_field "print(d[0]['name'])")
-LANE_LAST_ID=$(echo "$lanes" | jq_field "print(d[-1]['id'])")
-LANE_LAST_NAME=$(echo "$lanes" | jq_field "print(d[-1]['name'])")
-ok "$lane_count swim lanes (first=$LANE1_NAME, last=$LANE_LAST_NAME)"
+# Pick the last non-admin-only lane for the move/terminal-lane exercise
+# — otherwise we'd land in Archive (admin-only) which is not terminal
+# and doesn't exercise the actual_completion_date side effect.
+LANE_LAST_ID=$(echo "$lanes" | jq_field "
+visible=[l for l in d if not l.get('is_admin_only')]
+print(visible[-1]['id'])")
+LANE_LAST_NAME=$(echo "$lanes" | jq_field "
+visible=[l for l in d if not l.get('is_admin_only')]
+print(visible[-1]['name'])")
+ok "$lane_count swim lanes (first=$LANE1_NAME, last-non-admin=$LANE_LAST_NAME)"
 
 # All lanes should have descriptions after migration 005
 missing_desc=$(echo "$lanes" | jq_field "
@@ -103,6 +110,16 @@ if [ "$default_count" -gt 1 ]; then
 else
   default_name=$(echo "$lanes" | jq_field "print(next((l['name'] for l in d if l.get('is_default_new')), '(none)'))")
   ok "default-new lane: $default_name"
+fi
+
+# Migration 012 invariant: at most one lane may be flagged is_archive
+# (partial unique index) — same shape as is_default_new.
+archive_count=$(echo "$lanes" | jq_field "print(sum(1 for l in d if l.get('is_archive')))")
+if [ "$archive_count" -gt 1 ]; then
+  fail "$archive_count lanes marked is_archive — partial unique index invariant broken"
+else
+  archive_name=$(echo "$lanes" | jq_field "print(next((l['name'] for l in d if l.get('is_archive')), '(none)'))")
+  ok "archive lane: $archive_name"
 fi
 
 teams=$(call GET /teams)
@@ -199,6 +216,40 @@ back=$(call GET "/projects/$PROJ_ID")
 got_ac=$(echo "$back" | jq_field "print(d.get('actual_completion_date') or '')")
 [ -z "$got_ac" ] || fail "actual_completion_date should have cleared on exit from terminal lane"
 ok "actual_completion_date cleared on exit from terminal lane"
+
+# ---------- archive flow ----------
+step "Archive round-trip via /projects/:id/archive"
+call POST "/projects/$PROJ_ID/archive" >/dev/null
+archived=$(call GET "/projects/$PROJ_ID")
+archived_lane=$(echo "$archived" | jq_field "print(d['swim_lane_id'])")
+expected_archive=$(echo "$lanes" | jq_field "
+matches=[l['id'] for l in d if l.get('is_archive')]
+print(matches[0] if matches else '')")
+[ -n "$expected_archive" ] || fail "no archive lane exists to test against"
+[ "$archived_lane" = "$expected_archive" ] || fail "expected lane $expected_archive, got $archived_lane"
+ok "archive endpoint moved project into the archive lane"
+
+# Non-admin visibility: the same project should now be filtered out of
+# the owner's /projects list AND return 404 on a direct-by-id probe.
+OWNER_ID=$(echo "$roster" | jq_field "
+owners=[u for u in d if u['role']=='owner']
+if not owners: raise SystemExit('no owner in roster')
+print(owners[0]['id'])")
+owner_hides=$(curl -sS -H "x-mock-user-id: $OWNER_ID" "$API_URL/api/projects" | \
+  python3 -c "import sys,json; ps=json.load(sys.stdin); print('yes' if not any(p['id']=='$PROJ_ID' for p in ps) else 'no')")
+[ "$owner_hides" = "yes" ] || fail "owner still sees archived project in list"
+owner_probe=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "x-mock-user-id: $OWNER_ID" \
+  "$API_URL/api/projects/$PROJ_ID")
+[ "$owner_probe" = "404" ] || fail "expected 404 on owner probe of archived project, got $owner_probe"
+ok "archived project hidden from non-admin list + by-id probe"
+
+# Restore the project to a visible lane so cleanup (DELETE) works via
+# the same admin call as before regardless of where it ended up.
+call POST "/projects/$PROJ_ID/move" \
+  "$(python3 -c "import json;print(json.dumps({'swim_lane_id':'$LANE1_ID'}))")" \
+  >/dev/null
+ok "moved back out of archive for cleanup"
 
 # ---------- phases page data ----------
 step "Phases endpoint (/api/swim-lanes) returns admin descriptions"

@@ -173,20 +173,40 @@ const listSchema = z.object({
   include_deleted: z.enum(["true", "false"]).optional(),
 });
 
+/**
+ * SQL fragment that hides projects in admin-only lanes from non-admin
+ * requesters. Composed into the WHERE clause of both list and detail
+ * reads so a non-admin can neither enumerate nor probe archived cards.
+ */
+const HIDDEN_LANE_CLAUSE = `
+  NOT EXISTS (
+    SELECT 1 FROM swim_lanes sl
+    WHERE sl.id = p.swim_lane_id AND sl.is_admin_only = TRUE
+  )
+`;
+
 projectsRouter.get("/", async (req, res) => {
   const q = listSchema.parse(req.query);
   const includeDeleted = q.include_deleted === "true";
+  const isAdmin = req.user?.role === "admin";
+  const clauses: string[] = [];
+  if (!includeDeleted) clauses.push("p.deleted_at IS NULL");
+  if (!isAdmin) clauses.push(HIDDEN_LANE_CLAUSE);
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const { rows } = await query<ProjectRow>(
     `SELECT ${PROJECT_COLUMNS} FROM projects p
-       ${includeDeleted ? "" : "WHERE p.deleted_at IS NULL"}
+       ${where}
        ORDER BY p.position ASC, p.created_at ASC`,
   );
   res.json(rows);
 });
 
 projectsRouter.get("/:id", async (req, res) => {
+  const isAdmin = req.user?.role === "admin";
+  const clauses = ["p.id = $1"];
+  if (!isAdmin) clauses.push(HIDDEN_LANE_CLAUSE);
   const { rows } = await query<ProjectRow>(
-    `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
+    `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE ${clauses.join(" AND ")}`,
     [req.params.id],
   );
   if (!rows[0]) throw new HttpError(404, "project not found");
@@ -358,114 +378,157 @@ const moveSchema = z.object({
   position: z.number().int().min(0).optional(),
 });
 
-projectsRouter.post("/:id/move", requireWrite, async (req, res) => {
-  const body = moveSchema.parse(req.body);
-  const result = await withTransaction(async (client) => {
-    const { rows: existingRows } = await client.query<ProjectRow>(
-      `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1 AND p.deleted_at IS NULL FOR UPDATE`,
-      [req.params.id],
-    );
-    const existing = existingRows[0];
-    if (!existing) throw new HttpError(404, "project not found");
+/**
+ * Move a project into a new lane at an optional position. Extracted so
+ * both `POST /:id/move` and `POST /:id/archive` share the same
+ * side-effects (terminal-lane completion stamping, position compaction,
+ * status_history entry, audit event) without duplicating the SQL.
+ */
+async function moveProjectImpl(
+  client: PoolClient,
+  args: {
+    projectId: string;
+    toLaneId: string;
+    position?: number;
+    userId: string;
+  },
+): Promise<ProjectRow> {
+  const { rows: existingRows } = await client.query<ProjectRow>(
+    `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1 AND p.deleted_at IS NULL FOR UPDATE`,
+    [args.projectId],
+  );
+  const existing = existingRows[0];
+  if (!existing) throw new HttpError(404, "project not found");
 
-    const from = existing.swim_lane_id;
-    const to = body.swim_lane_id;
+  const from = existing.swim_lane_id;
+  const to = args.toLaneId;
 
-    // Terminal-lane side effect on `actual_completion_date`: auto-stamp on
-    // entry into a terminal lane, auto-clear on exit. Only when the lane
-    // actually changes so within-lane reorders never touch the field.
-    let extraSet = "";
-    if (from !== to) {
-      if (to && !existing.actual_completion_date) {
-        const { rows: laneRows } = await client.query<SwimLaneRow>(
-          `SELECT * FROM swim_lanes WHERE id = $1`,
-          [to],
-        );
-        if (laneRows[0]?.is_terminal) {
-          extraSet = ", actual_completion_date = CURRENT_DATE";
-        }
-      } else if (existing.actual_completion_date) {
-        const { rows: laneRows } = await client.query<SwimLaneRow>(
-          `SELECT * FROM swim_lanes WHERE id = $1`,
-          [to ?? "00000000-0000-0000-0000-000000000000"],
-        );
-        if (!laneRows[0]?.is_terminal) {
-          extraSet = ", actual_completion_date = NULL";
-        }
+  // Terminal-lane side effect on `actual_completion_date`: auto-stamp on
+  // entry into a terminal lane, auto-clear on exit. Only when the lane
+  // actually changes so within-lane reorders never touch the field.
+  let extraSet = "";
+  if (from !== to) {
+    if (to && !existing.actual_completion_date) {
+      const { rows: laneRows } = await client.query<SwimLaneRow>(
+        `SELECT * FROM swim_lanes WHERE id = $1`,
+        [to],
+      );
+      if (laneRows[0]?.is_terminal) {
+        extraSet = ", actual_completion_date = CURRENT_DATE";
+      }
+    } else if (existing.actual_completion_date) {
+      const { rows: laneRows } = await client.query<SwimLaneRow>(
+        `SELECT * FROM swim_lanes WHERE id = $1`,
+        [to ?? "00000000-0000-0000-0000-000000000000"],
+      );
+      if (!laneRows[0]?.is_terminal) {
+        extraSet = ", actual_completion_date = NULL";
       }
     }
+  }
 
-    // Build the destination lane's new order by fetching its current members
-    // (minus the moved row) and splicing the moved id in at the requested
-    // slot, defaulting to the end when no position is provided.
-    const { rows: destRows } = await client.query<{ id: string }>(
+  // Build the destination lane's new order by fetching its current members
+  // (minus the moved row) and splicing the moved id in at the requested
+  // slot, defaulting to the end when no position is provided.
+  const { rows: destRows } = await client.query<{ id: string }>(
+    `SELECT id FROM projects
+      WHERE swim_lane_id IS NOT DISTINCT FROM $1
+        AND deleted_at IS NULL
+        AND id <> $2
+      ORDER BY position ASC, created_at ASC`,
+    [to, existing.id],
+  );
+  const destIds = destRows.map((r) => r.id);
+  const insertAt = args.position === undefined
+    ? destIds.length
+    : Math.max(0, Math.min(destIds.length, args.position));
+  destIds.splice(insertAt, 0, existing.id);
+
+  await client.query(
+    `UPDATE projects
+       SET swim_lane_id = $1, position = $2${extraSet}, updated_at = NOW()
+      WHERE id = $3`,
+    [to, insertAt, existing.id],
+  );
+  for (let i = 0; i < destIds.length; i++) {
+    if (destIds[i] === existing.id) continue;
+    await client.query(
+      `UPDATE projects SET position = $1 WHERE id = $2 AND position <> $1`,
+      [i, destIds[i]],
+    );
+  }
+
+  if (from !== to) {
+    // Compact positions in the source lane so removing a card doesn't
+    // leave a gap in its former lane's ordering.
+    const { rows: srcRows } = await client.query<{ id: string }>(
       `SELECT id FROM projects
         WHERE swim_lane_id IS NOT DISTINCT FROM $1
           AND deleted_at IS NULL
-          AND id <> $2
         ORDER BY position ASC, created_at ASC`,
-      [to, existing.id],
+      [from],
     );
-    const destIds = destRows.map((r) => r.id);
-    const insertAt = body.position === undefined
-      ? destIds.length
-      : Math.max(0, Math.min(destIds.length, body.position));
-    destIds.splice(insertAt, 0, existing.id);
-
-    // Rewrite the moved row (lane + position + any terminal-lane side effect)
-    // and then compact positions in the destination lane so they stay 0..N-1
-    // with no gaps and no ties.
-    await client.query(
-      `UPDATE projects
-         SET swim_lane_id = $1, position = $2${extraSet}, updated_at = NOW()
-        WHERE id = $3`,
-      [to, insertAt, existing.id],
-    );
-    for (let i = 0; i < destIds.length; i++) {
-      if (destIds[i] === existing.id) continue;
+    for (let i = 0; i < srcRows.length; i++) {
       await client.query(
         `UPDATE projects SET position = $1 WHERE id = $2 AND position <> $1`,
-        [i, destIds[i]],
+        [i, srcRows[i]!.id],
       );
     }
 
-    // On a cross-lane move, compact the source lane too so removing a card
-    // doesn't leave a gap in its former lane's ordering.
-    if (from !== to) {
-      const { rows: srcRows } = await client.query<{ id: string }>(
-        `SELECT id FROM projects
-          WHERE swim_lane_id IS NOT DISTINCT FROM $1
-            AND deleted_at IS NULL
-          ORDER BY position ASC, created_at ASC`,
-        [from],
-      );
-      for (let i = 0; i < srcRows.length; i++) {
-        await client.query(
-          `UPDATE projects SET position = $1 WHERE id = $2 AND position <> $1`,
-          [i, srcRows[i]!.id],
-        );
-      }
-
-      await client.query(
-        `INSERT INTO status_history (project_id, from_swim_lane_id, to_swim_lane_id, moved_by_user_id)
-         VALUES ($1, $2, $3, $4)`,
-        [existing.id, from, to, req.user!.id],
-      );
-      await recordAudit(client, {
-        projectId: existing.id,
-        userId: req.user!.id,
-        action: "move",
-        field: "swim_lane_id",
-        from,
-        to,
-      });
-    }
-
-    const { rows: updated } = await client.query<ProjectRow>(
-      `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
-      [existing.id],
+    await client.query(
+      `INSERT INTO status_history (project_id, from_swim_lane_id, to_swim_lane_id, moved_by_user_id)
+       VALUES ($1, $2, $3, $4)`,
+      [existing.id, from, to, args.userId],
     );
-    return updated[0];
+    await recordAudit(client, {
+      projectId: existing.id,
+      userId: args.userId,
+      action: "move",
+      field: "swim_lane_id",
+      from,
+      to,
+    });
+  }
+
+  const { rows: updated } = await client.query<ProjectRow>(
+    `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
+    [existing.id],
+  );
+  return updated[0]!;
+}
+
+projectsRouter.post("/:id/move", requireWrite, async (req, res) => {
+  const body = moveSchema.parse(req.body);
+  const result = await withTransaction((client) =>
+    moveProjectImpl(client, {
+      projectId: String(req.params.id),
+      toLaneId: body.swim_lane_id,
+      position: body.position,
+      userId: req.user!.id,
+    }),
+  );
+  res.json(result);
+});
+
+/**
+ * Move a project into the workspace's archive lane. The lane's id is
+ * resolved server-side so non-admins (who never see the lane in their
+ * swim-lanes response) can still archive their own work with one click.
+ */
+projectsRouter.post("/:id/archive", requireWrite, async (req, res) => {
+  const result = await withTransaction(async (client) => {
+    const { rows: laneRows } = await client.query<{ id: string }>(
+      `SELECT id FROM swim_lanes WHERE is_archive = TRUE LIMIT 1`,
+    );
+    const archiveLaneId = laneRows[0]?.id;
+    if (!archiveLaneId) {
+      throw new HttpError(400, "no archive lane is configured. Ask an admin to flag one in Admin → Swim lanes.");
+    }
+    return moveProjectImpl(client, {
+      projectId: String(req.params.id),
+      toLaneId: archiveLaneId,
+      userId: req.user!.id,
+    });
   });
   res.json(result);
 });

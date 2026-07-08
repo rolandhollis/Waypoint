@@ -99,13 +99,15 @@ export function LaneMoveMenu({
           <DropdownMenu.Separator className="my-1 h-px bg-wp-stone" />
           <DropdownMenu.Item
             onSelect={() => {
-              if (confirm("Archive this card? You can restore it from the admin view later.")) {
+              if (confirm(
+                "Delete this card?\n\nThis is a hard delete — the card disappears from the board and only an admin can restore it from Admin → Archived cards. To keep the card in history but out of everyone's way, use \"Move to archive\" from the card detail instead.",
+              )) {
                 deleteMutation.mutate();
               }
             }}
             className="cursor-pointer rounded px-2 py-1.5 text-red-600 outline-none hover:bg-red-50"
           >
-            Archive
+            Delete
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>

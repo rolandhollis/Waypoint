@@ -60,6 +60,16 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
     },
   });
 
+  const archive = useMutation({
+    mutationFn: () => api<Project>(`/projects/${id}/archive`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["projectHistory", id] });
+      qc.invalidateQueries({ queryKey: ["pendingStatus"] });
+      onClose();
+    },
+  });
+
   const project = projectQuery.data;
   if (!project) return null;
 
@@ -70,6 +80,13 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
   const projectTeams = (teams.data ?? []).filter((t) => merged.teams.includes(t.id));
   const lane = lanes.data?.find((l) => l.id === merged.swim_lane_id);
   const requiresStatus = !!lane?.requires_weekly_status;
+  // Show the archive button whenever the card isn't already in an
+  // archive lane. Non-admins never see admin-only lanes in
+  // `lanes.data`, so `lane.is_archive` is always false for them and
+  // the button appears; the backend resolves the destination lane's
+  // id from the archive flag on the server side.
+  const inArchive = !!lane?.is_archive;
+  const canArchive = canWrite && !inArchive;
 
   return (
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -233,8 +250,27 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
           {canWrite ? (
             <div className="border-t border-wp-stone bg-white px-5 py-3">
               <MutationErrorBanner mutation={patch} className="mb-2" />
-              <div className="flex items-center justify-between">
-                <button className="btn-ghost text-xs" onClick={onClose}>Cancel</button>
+              <MutationErrorBanner mutation={archive} className="mb-2" />
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <button className="btn-ghost text-xs" onClick={onClose}>Cancel</button>
+                  {canArchive ? (
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs text-wp-slate hover:text-red-600"
+                      disabled={archive.isPending}
+                      onClick={() => {
+                        if (confirm(
+                          "Move this item to Archive?\n\nIt will disappear from the board and be hidden from non-admin users. Admins can restore it by moving it back into any other lane.",
+                        )) {
+                          archive.mutate();
+                        }
+                      }}
+                    >
+                      {archive.isPending ? "Archiving…" : "Move to archive"}
+                    </button>
+                  ) : null}
+                </div>
                 <button
                   className="btn-primary"
                   disabled={Object.keys(draft).length === 0 || patch.isPending}

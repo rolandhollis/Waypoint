@@ -33,6 +33,20 @@ export type SwimLane = {
    * without opening the detail panel.
    */
   phase_date_key: PhaseDateKey | null;
+  /**
+   * Hidden from non-admin users. The backend filters these lanes (and
+   * any project living in them) out of every non-admin API response;
+   * clients will simply never see them for a viewer/owner. Admins get
+   * full visibility and can manage the flag from Admin → Swim lanes.
+   */
+  is_admin_only: boolean;
+  /**
+   * Exactly one lane at a time carries this flag. It is the target
+   * of the "Move to archive" button on the project detail panel; the
+   * backend resolves it server-side so non-admins can still archive
+   * even though they can't see the lane.
+   */
+  is_archive: boolean;
   created_at: string;
   updated_at: string;
 };

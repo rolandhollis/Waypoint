@@ -7,9 +7,15 @@ import type { SwimLaneRow } from "../types.js";
 
 export const swimLanesRouter = Router();
 
-swimLanesRouter.get("/", async (_req, res) => {
+swimLanesRouter.get("/", async (req, res) => {
+  // Admin-only lanes (Archive et al) are filtered server-side rather
+  // than by the client, so a non-admin can never obtain their ids
+  // — even via curl. Admins see the full list, including hidden lanes.
+  const isAdmin = req.user?.role === "admin";
   const { rows } = await query<SwimLaneRow>(
-    `SELECT * FROM swim_lanes ORDER BY "order" ASC`,
+    isAdmin
+      ? `SELECT * FROM swim_lanes ORDER BY "order" ASC`
+      : `SELECT * FROM swim_lanes WHERE is_admin_only = FALSE ORDER BY "order" ASC`,
   );
   res.json(rows);
 });
@@ -29,6 +35,8 @@ const createSchema = z.object({
   is_terminal: z.boolean().optional(),
   requires_weekly_status: z.boolean().optional(),
   is_default_new: z.boolean().optional(),
+  is_admin_only: z.boolean().optional(),
+  is_archive: z.boolean().optional(),
   phase_date_key: z.enum(PHASE_DATE_KEYS).nullable().optional(),
 });
 
@@ -38,6 +46,11 @@ swimLanesRouter.post("/", requireAdmin, async (req, res) => {
     if (body.is_default_new) {
       await client.query(`UPDATE swim_lanes SET is_default_new = FALSE WHERE is_default_new = TRUE`);
     }
+    // Same partial-unique-index dance as is_default_new: clear any prior
+    // archive lane before creating a new one flagged as the archive.
+    if (body.is_archive) {
+      await client.query(`UPDATE swim_lanes SET is_archive = FALSE WHERE is_archive = TRUE`);
+    }
     const { rows: maxRows } = await client.query<{ next: number }>(
       `SELECT COALESCE(MAX("order"), -1) + 1 AS next FROM swim_lanes`,
     );
@@ -45,12 +58,14 @@ swimLanesRouter.post("/", requireAdmin, async (req, res) => {
     const { rows } = await client.query<SwimLaneRow>(
       `INSERT INTO swim_lanes
          (name, description, "order", color, is_terminal, requires_weekly_status,
-          is_default_new, phase_date_key, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+          is_default_new, is_admin_only, is_archive, phase_date_key, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
       [
         body.name, body.description ?? "", nextOrder, body.color ?? null,
         body.is_terminal ?? false, body.requires_weekly_status ?? false,
         body.is_default_new ?? false,
+        body.is_admin_only ?? false,
+        body.is_archive ?? false,
         body.phase_date_key ?? null,
         req.user!.id,
       ],
@@ -67,6 +82,8 @@ const patchSchema = z.object({
   is_terminal: z.boolean().optional(),
   requires_weekly_status: z.boolean().optional(),
   is_default_new: z.boolean().optional(),
+  is_admin_only: z.boolean().optional(),
+  is_archive: z.boolean().optional(),
   phase_date_key: z.enum(PHASE_DATE_KEYS).nullable().optional(),
 });
 
@@ -83,6 +100,15 @@ swimLanesRouter.patch("/:id", requireAdmin, async (req, res) => {
     if (body.is_default_new === true) {
       await client.query(
         `UPDATE swim_lanes SET is_default_new = FALSE WHERE is_default_new = TRUE AND id <> $1`,
+        [laneId],
+      );
+    }
+    // Same treatment for the "archive" flag: it's guarded by the same
+    // sort of partial unique index (only one lane may be the archive
+    // at a time), so clear the previous holder in the same txn.
+    if (body.is_archive === true) {
+      await client.query(
+        `UPDATE swim_lanes SET is_archive = FALSE WHERE is_archive = TRUE AND id <> $1`,
         [laneId],
       );
     }

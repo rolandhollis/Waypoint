@@ -78,6 +78,14 @@ const DEFAULT_LANES = [
     description:
       "Shipped to production and post-launch monitoring is underway. Moving a card here auto-stamps its actual completion date and stops weekly status prompts.",
   },
+  {
+    name: "Archive",
+    color: "#475569",
+    is_admin_only: true,
+    is_archive: true,
+    description:
+      "Cards parked here are hidden from non-admin views. Move a card out of Archive (via the lane menu) to bring it back onto the board.",
+  },
 ];
 
 // Cross-functional pods that "own" a chunk of work. Projects can belong
@@ -137,12 +145,16 @@ async function main() {
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO swim_lanes
            (name, description, "order", color, is_terminal, requires_weekly_status,
-            is_default_new, phase_date_key, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+            is_default_new, is_admin_only, is_archive, phase_date_key, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
         [
           l.name, l.description ?? "", i, l.color,
           l.is_terminal ?? false, l.requires_weekly_status ?? false,
-          isDefaultNew, (l as { phase_date_key?: string }).phase_date_key ?? null, adminId,
+          isDefaultNew,
+          (l as { is_admin_only?: boolean }).is_admin_only ?? false,
+          (l as { is_archive?: boolean }).is_archive ?? false,
+          (l as { phase_date_key?: string }).phase_date_key ?? null,
+          adminId,
         ],
       );
       laneIds[l.name] = rows[0]!.id;
