@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!--
+    Waypoint favicon. Rounded-square in the brand red (wp-red = #E01F2D)
+    with a white pennant on a pole in the centre. The pennant shape reads
+    as a "waypoint marker" or "planted flag" at any size and stays
+    legible even at 16×16 because the silhouette is high-contrast and
+    single-colour.
+  -->
+  <rect width="32" height="32" rx="7" fill="#E01F2D"/>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Flagpole: a hair inside the tile so it doesn't touch the rounded corners. -->
+    <line x1="11.5" y1="6" x2="11.5" y2="26" stroke-width="2.4"/>
+    <!-- Ground tick under the pole. -->
+    <line x1="8" y1="26" x2="15" y2="26" stroke-width="2.4"/>
+  </g>
+  <!-- Pennant. Filled triangle stretching to the right of the pole. -->
+  <path d="M11.5 8 L23 12 L11.5 16 Z" fill="#fff"/>
+</svg>
