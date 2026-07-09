@@ -25,6 +25,8 @@ export function KpiReportView() {
   // Group scheduled projects by KPI id up-front so each section render is
   // an O(1) lookup + sort. `undefined-KPI` bucket isn't needed here — the
   // report is keyed off the KPI catalog, not the projects.
+  // p.kpis can be missing on cached rows from before the KPI deploy,
+  // so we defensively coerce to [] rather than throwing on iteration.
   const projectsByKpi = useMemo(() => {
     const map = new Map<string, Project[]>();
     for (const p of scheduled) {

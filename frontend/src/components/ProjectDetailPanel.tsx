@@ -200,12 +200,12 @@ export function ProjectDetailPanel({
               <Field
                 label="KPIs"
                 className="col-span-2"
-                hint={merged.kpis.length > 1
+                hint={(merged.kpis?.length ?? 0) > 1
                   ? "Drag chips to reorder — first chip is the primary KPI, then secondary, and so on."
                   : undefined}
               >
                 <KpiPicker
-                  value={merged.kpis}
+                  value={merged.kpis ?? []}
                   onChange={(next) => setDraft((d) => ({ ...d, kpis: next }))}
                   kpis={kpis.data ?? []}
                   disabled={!canWrite}

@@ -28,23 +28,28 @@ export function KpiPicker({
   className,
 }: {
   /** Ordered list of KPI ids currently assigned to the project. */
-  value: string[];
+  value: string[] | undefined | null;
   onChange: (next: string[]) => void;
   /** Full KPI catalog (from useKpis()). */
   kpis: Kpi[];
   disabled?: boolean;
   className?: string;
 }) {
+  // Tolerate undefined / null defensively: pre-KPI-deploy cached
+  // project rows won't have this field, and a downstream .map / .length
+  // on undefined would crash the whole detail panel with no error
+  // boundary above.
+  const ids = value ?? [];
   const byId = useMemo(() => new Map(kpis.map((k) => [k.id, k])), [kpis]);
   // Preserve the caller's order for the selected list; skip any ids
   // whose KPI has been deleted since the project last saved.
   const selected = useMemo(
-    () => value.map((id) => byId.get(id)).filter((k): k is Kpi => !!k),
-    [value, byId],
+    () => ids.map((id) => byId.get(id)).filter((k): k is Kpi => !!k),
+    [ids, byId],
   );
   const unselected = useMemo(
-    () => kpis.filter((k) => !value.includes(k.id)),
-    [kpis, value],
+    () => kpis.filter((k) => !ids.includes(k.id)),
+    [kpis, ids],
   );
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
@@ -52,25 +57,25 @@ export function KpiPicker({
   function handleDragEnd(e: DragEndEvent) {
     const { active, over } = e;
     if (!over || active.id === over.id) return;
-    const oldIdx = value.indexOf(String(active.id));
-    const newIdx = value.indexOf(String(over.id));
+    const oldIdx = ids.indexOf(String(active.id));
+    const newIdx = ids.indexOf(String(over.id));
     if (oldIdx < 0 || newIdx < 0) return;
-    onChange(arrayMove(value, oldIdx, newIdx));
+    onChange(arrayMove(ids, oldIdx, newIdx));
   }
 
   function add(id: string) {
-    if (value.includes(id)) return;
-    onChange([...value, id]);
+    if (ids.includes(id)) return;
+    onChange([...ids, id]);
   }
 
   function remove(id: string) {
-    onChange(value.filter((v) => v !== id));
+    onChange(ids.filter((v) => v !== id));
   }
 
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5", className)}>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext items={value} strategy={rectSortingStrategy}>
+        <SortableContext items={ids} strategy={rectSortingStrategy}>
           {selected.map((k, i) => (
             <SortableKpiChip
               key={k.id}
