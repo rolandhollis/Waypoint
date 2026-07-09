@@ -6,6 +6,7 @@ import { cn } from "./lib/cn";
 import { BoardView } from "./views/BoardView";
 import { RoadmapView } from "./views/RoadmapView";
 import { StatusReportView } from "./views/StatusReportView";
+import { KpiReportView } from "./views/KpiReportView";
 import { AdminSettingsView } from "./views/AdminSettingsView";
 import { PhasesView } from "./views/PhasesView";
 import { ReminderBanner } from "./components/ReminderBanner";
@@ -62,6 +63,7 @@ export function App() {
           <Route path="/board" element={<BoardView />} />
           <Route path="/roadmap" element={<RoadmapView />} />
           <Route path="/status-report" element={<StatusReportView />} />
+          <Route path="/kpis" element={<KpiReportView />} />
           <Route path="/phases" element={<PhasesView />} />
           <Route path="/admin" element={<AdminSettingsView />} />
           <Route path="*" element={<Navigate to="/board" replace />} />
@@ -144,6 +146,7 @@ function TopBar() {
           <NavItem to="/board" active={location.pathname.startsWith("/board")}>Board</NavItem>
           <NavItem to="/roadmap" active={location.pathname.startsWith("/roadmap")}>Roadmap</NavItem>
           <NavItem to="/status-report" active={location.pathname.startsWith("/status-report")}>Status Report</NavItem>
+          <NavItem to="/kpis" active={location.pathname.startsWith("/kpis")}>KPIs</NavItem>
           <NavItem to="/phases" active={location.pathname.startsWith("/phases")}>Phases</NavItem>
           {isAdmin ? (
             <NavItem to="/admin" active={location.pathname.startsWith("/admin")}>Admin</NavItem>

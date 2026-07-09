@@ -67,6 +67,16 @@ export type Team = {
   updated_at: string;
 };
 
+export type Kpi = {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  order: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ProjectType = "epic" | "subtask";
 
 export type Project = {
@@ -79,6 +89,13 @@ export type Project = {
   /** Team memberships (M:N via `project_teams`). Order is not meaningful. */
   teams: string[];
   tags: string[];
+  /**
+   * Ordered KPI assignments (M:N via `project_kpis`). Order IS
+   * meaningful — PMs rank KPIs by importance on their project. Backend
+   * preserves the order via a `position` column; frontend renders
+   * left-to-right and offers drag-reorder on the detail panel.
+   */
+  kpis: string[];
   /**
    * Every project is either an epic (top-level) or a subtask (nested
    * under a parent, potentially many layers deep). Backend enforces

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import type {
+  Kpi,
   PendingStatusResponse,
   Project,
   ProjectComment,
@@ -62,6 +63,14 @@ export function useTeams() {
   return useQuery({
     queryKey: ["teams"],
     queryFn: () => api<Team[]>("/teams"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+export function useKpis() {
+  return useQuery({
+    queryKey: ["kpis"],
+    queryFn: () => api<Kpi[]>("/kpis"),
     refetchInterval: POLL_MS,
   });
 }

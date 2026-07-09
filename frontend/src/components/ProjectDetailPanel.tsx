@@ -5,10 +5,11 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
-import { useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { computePhases } from "../lib/phaseCompute";
 import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
 import { ancestors, childrenByParent, descendants, indexById } from "../lib/hierarchy";
+import { KpiPicker } from "./KpiPicker";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 import { PairedDates } from "./PairedDates";
 import { ProjectComments } from "./ProjectComments";
@@ -39,6 +40,7 @@ export function ProjectDetailPanel({
   const lanes = useSwimLanes();
   const users = useUsers();
   const teams = useTeams();
+  const kpis = useKpis();
   const allProjects = useProjects();
   const qc = useQueryClient();
 
@@ -192,6 +194,20 @@ export function ProjectDetailPanel({
                   value={merged.tags}
                   onChange={(next) => setDraft((d) => ({ ...d, tags: next }))}
                   suggestions={knownTags}
+                  disabled={!canWrite}
+                />
+              </Field>
+              <Field
+                label="KPIs"
+                className="col-span-2"
+                hint={merged.kpis.length > 1
+                  ? "Drag chips to reorder — first chip is the primary KPI, then secondary, and so on."
+                  : undefined}
+              >
+                <KpiPicker
+                  value={merged.kpis}
+                  onChange={(next) => setDraft((d) => ({ ...d, kpis: next }))}
+                  kpis={kpis.data ?? []}
                   disabled={!canWrite}
                 />
               </Field>
@@ -479,6 +495,7 @@ function HistoryRow({ h, allProjectsById }: { h: ProjectTimelineEntry; allProjec
   const users = useUsers();
   const lanes = useSwimLanes();
   const teams = useTeams();
+  const kpis = useKpis();
   const who = users.data?.find((u) => u.id === h.user_id)?.name ?? "system";
   return (
     <li className="leading-relaxed">
@@ -490,6 +507,7 @@ function HistoryRow({ h, allProjectsById }: { h: ProjectTimelineEntry; allProjec
         lanes={lanes.data ?? []}
         teams={teams.data ?? []}
         users={users.data ?? []}
+        kpis={kpis.data ?? []}
         projectsById={allProjectsById}
       />
     </li>
@@ -501,12 +519,14 @@ function HistoryRowBody({
   lanes,
   teams,
   users,
+  kpis,
   projectsById,
 }: {
   entry: ProjectTimelineEntry;
   lanes: { id: string; name: string }[];
   teams: Team[];
   users: { id: string; name: string }[];
+  kpis: { id: string; name: string }[];
   projectsById?: Map<string, Project>;
 }) {
   const strong = (s: string) => <b className="text-wp-ink">{s}</b>;
@@ -526,6 +546,18 @@ function HistoryRowBody({
   const label = FIELD_LABELS[field] ?? field;
   const from = entry.from_value;
   const to = entry.to_value;
+
+  // KPIs are ordered: an ADD/REMOVE diff would lose the ranking
+  // change, so render the full before/after name list. Falls back to
+  // the raw id when a KPI was deleted since the event landed.
+  if (field === "kpis") {
+    const before = toStrArray(from).map((id) => kpis.find((k) => k.id === id)?.name ?? id);
+    const after = toStrArray(to).map((id) => kpis.find((k) => k.id === id)?.name ?? id);
+    if (before.length === 0 && after.length === 0) return <>touched {label}.</>;
+    if (before.length === 0) return <>set {label} to {strong(after.join(" › "))}.</>;
+    if (after.length === 0) return <>cleared {label} (was {strong(before.join(" › "))}).</>;
+    return <>changed {label} from {strong(before.join(" › "))} to {strong(after.join(" › "))}.</>;
+  }
 
   // Nice-to-read array diffs for teams and tags: show what was added
   // and removed rather than dumping both full arrays.
@@ -607,6 +639,7 @@ const FIELD_LABELS: Record<string, string> = {
   owner_id: "owner",
   teams: "teams",
   tags: "tags",
+  kpis: "KPIs",
   type: "type",
   parent_id: "parent",
   start_date: "discovery start",

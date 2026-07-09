@@ -39,6 +39,7 @@ const AUDITED_FIELDS = [
   "owner_id",
   "teams",
   "tags",
+  "kpis",
   "type",
   "parent_id",
   "start_date",
@@ -83,13 +84,18 @@ async function recordAudit(
 /**
  * Deep-ish equality check that treats arrays as unordered *sets* (used
  * for `teams` and `tags` — order isn't semantically meaningful there,
- * so `["a","b"] === ["b","a"]` and no audit event is written).
+ * so `["a","b"] === ["b","a"]` and no audit event is written). Pass
+ * `ordered = true` for fields where reorder itself is a meaningful
+ * change (e.g. `kpis`, where the PM ranks their outcome buckets).
  */
-function valuesEqual(a: unknown, b: unknown): boolean {
+function valuesEqual(a: unknown, b: unknown, ordered = false): boolean {
   if (a === b) return true;
   if (a == null || b == null) return a === b;
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
+    if (ordered) {
+      return a.every((v, i) => String(v) === String(b[i]));
+    }
     const sortedA = [...a].map(String).sort();
     const sortedB = [...b].map(String).sort();
     return sortedA.every((v, i) => v === sortedB[i]);
@@ -97,17 +103,27 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+/** Audited fields for which array *order* is meaningful. */
+const ORDERED_ARRAY_FIELDS = new Set<string>(["kpis"]);
+
 /**
- * SELECT fragment that hydrates a project row with its `teams` array
- * (multi-team membership lives in the `project_teams` join). The alias
- * `p` must be used for the FROM.
+ * SELECT fragment that hydrates a project row with its `teams` and
+ * `kpis` arrays. `teams` is unordered (order isn't meaningful there);
+ * `kpis` is ordered by the per-project `position` column because the
+ * PM ranks their KPI list left-to-right. The alias `p` must be used
+ * for the FROM.
  */
 const PROJECT_COLUMNS = `
   p.*,
   COALESCE(
     (SELECT array_agg(pt.team_id) FROM project_teams pt WHERE pt.project_id = p.id),
     ARRAY[]::UUID[]
-  ) AS teams
+  ) AS teams,
+  COALESCE(
+    (SELECT array_agg(pk.kpi_id ORDER BY pk.position ASC)
+       FROM project_kpis pk WHERE pk.project_id = p.id),
+    ARRAY[]::UUID[]
+  ) AS kpis
 `;
 
 /**
@@ -121,6 +137,23 @@ async function replaceProjectTeams(client: PoolClient, projectId: string, teamId
   await client.query(
     `INSERT INTO project_teams (project_id, team_id) VALUES ${values}`,
     [projectId, ...teamIds],
+  );
+}
+
+/**
+ * Replace the full ordered set of KPI assignments for a project. Order
+ * is derived from the array index — index 0 → position 0 — so the
+ * per-project unique-position index stays gap-free after every write.
+ * Full-replace strategy mirrors replaceProjectTeams; keeps the mutation
+ * surface predictable when the client sends the whole list.
+ */
+async function replaceProjectKpis(client: PoolClient, projectId: string, kpiIds: string[]) {
+  await client.query(`DELETE FROM project_kpis WHERE project_id = $1`, [projectId]);
+  if (kpiIds.length === 0) return;
+  const values = kpiIds.map((_, i) => `($1, $${i + 2}, ${i})`).join(", ");
+  await client.query(
+    `INSERT INTO project_kpis (project_id, kpi_id, position) VALUES ${values}`,
+    [projectId, ...kpiIds],
   );
 }
 
@@ -415,6 +448,13 @@ const projectBaseSchema = z.object({
   owner_id: z.string().uuid().nullable().optional(),
   teams: z.array(z.string().uuid()).max(10).optional(),
   tags: z.array(z.string().max(64)).max(20).optional(),
+  /**
+   * Ordered list of KPI ids this project contributes to. Order
+   * carries meaning (primary → tertiary), so we treat writes as
+   * full replacements — the client sends the whole array in the
+   * order it wants persisted. Empty array clears all assignments.
+   */
+  kpis: z.array(z.string().uuid()).max(20).optional(),
   type: z.enum(["epic", "subtask"]).optional(),
   parent_id: z.string().uuid().nullable().optional(),
   start_date: z.string().nullable().optional(),
@@ -543,6 +583,9 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
     if (body.teams?.length) {
       await replaceProjectTeams(client, projectId, body.teams);
     }
+    if (body.kpis?.length) {
+      await replaceProjectKpis(client, projectId, body.kpis);
+    }
     await client.query(
       `INSERT INTO status_history (project_id, from_swim_lane_id, to_swim_lane_id, moved_by_user_id)
        VALUES ($1, NULL, $2, $3)`,
@@ -651,10 +694,13 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
       await assertEndsCoverDescendants(client, projectId, proposedEnds);
     }
 
-    // `teams` is a join-table field, not a column on projects. Apply it
-    // separately as a full replacement (empty array = clear all teams).
+    // `teams` and `kpis` are join-table fields, not columns on projects.
+    // Apply each separately as a full replacement (empty array = clear all).
     if (body.teams !== undefined) {
       await replaceProjectTeams(client, projectId, body.teams);
+    }
+    if (body.kpis !== undefined) {
+      await replaceProjectKpis(client, projectId, body.kpis);
     }
 
     const fields: string[] = [];
@@ -706,7 +752,7 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
       }
       if (incoming === undefined) continue;
       const before = (existing as unknown as Record<string, unknown>)[field];
-      if (valuesEqual(before, incoming)) continue;
+      if (valuesEqual(before, incoming, ORDERED_ARRAY_FIELDS.has(field))) continue;
       await recordAudit(client, {
         projectId,
         userId: req.user!.id,

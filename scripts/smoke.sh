@@ -341,6 +341,70 @@ call DELETE "/projects/$SUB_ID" >/dev/null
 call DELETE "/projects/$EPIC_ID" >/dev/null
 ok "cleaned up hierarchy fixtures"
 
+# ---------- KPIs ----------
+step "KPI CRUD + ordered per-project assignment"
+
+# Non-admins can read the catalog but not mutate it.
+VIEWER_ID=$(call GET /users | jq_field "
+viewers=[u for u in d if u['role']=='viewer']
+print(viewers[0]['id'] if viewers else '')")
+if [ -n "$VIEWER_ID" ]; then
+  status=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -X POST -H "content-type: application/json" -H "x-mock-user-id: $VIEWER_ID" \
+    -d '{"name":"SMOKE viewer KPI"}' \
+    "$API_URL/api/kpis")
+  [ "$status" = "403" ] || fail "expected 403 for viewer POST /kpis, got $status"
+  ok "viewers blocked from creating KPIs (403)"
+fi
+
+# Admin can create two KPIs to verify the ordered-assignment behavior.
+kpi_a=$(call POST /kpis '{"name":"SMOKE KPI A","color":"#123456"}')
+kpi_b=$(call POST /kpis '{"name":"SMOKE KPI B","description":"a longer description","color":"#abcdef"}')
+KPI_A=$(echo "$kpi_a" | jq_field "print(d['id'])")
+KPI_B=$(echo "$kpi_b" | jq_field "print(d['id'])")
+ok "created KPIs $KPI_A and $KPI_B"
+
+# Rename via PATCH.
+patched=$(call PATCH "/kpis/$KPI_A" '{"name":"SMOKE KPI A (renamed)"}')
+new_name=$(echo "$patched" | jq_field "print(d['name'])")
+[ "$new_name" = "SMOKE KPI A (renamed)" ] || fail "PATCH /kpis returned name=$new_name"
+ok "renamed KPI via PATCH"
+
+# Assign both to the temp project in [A, B] order; expect API to
+# echo the array back in that exact order.
+call PATCH "/projects/$PROJ_ID" "$(python3 -c "
+import json
+print(json.dumps({'kpis':['$KPI_A','$KPI_B']}))")" >/dev/null
+got=$(call GET "/projects/$PROJ_ID" | jq_field "print(','.join(d['kpis']))")
+[ "$got" = "$KPI_A,$KPI_B" ] || fail "expected kpis=$KPI_A,$KPI_B got $got"
+ok "project kpis persisted in submitted order"
+
+# Reorder to [B, A] and re-verify.
+call PATCH "/projects/$PROJ_ID" "$(python3 -c "
+import json
+print(json.dumps({'kpis':['$KPI_B','$KPI_A']}))")" >/dev/null
+got=$(call GET "/projects/$PROJ_ID" | jq_field "print(','.join(d['kpis']))")
+[ "$got" = "$KPI_B,$KPI_A" ] || fail "expected reordered kpis=$KPI_B,$KPI_A got $got"
+ok "project kpis reordered — order change is persisted"
+
+# The reorder should have written an audit event (kpis is in AUDITED_FIELDS
+# and treated as order-sensitive).
+audit_count=$(call GET "/projects/$PROJ_ID/history" | jq_field "
+kpi_edits=[e for e in d if e.get('kind')=='edit' and e.get('field')=='kpis']
+print(len(kpi_edits))")
+[ "$audit_count" -ge 2 ] || fail "expected >=2 kpi audit events, got $audit_count"
+ok "kpi assignment + reorder produced audit events ($audit_count total)"
+
+# Deleting a KPI must cascade through project_kpis.
+call DELETE "/kpis/$KPI_A" >/dev/null
+got=$(call GET "/projects/$PROJ_ID" | jq_field "print(','.join(d['kpis']))")
+[ "$got" = "$KPI_B" ] || fail "expected cascade to leave only $KPI_B, got $got"
+ok "KPI delete cascaded through project_kpis"
+
+# Cleanup the second KPI (implicit clear on the temp project).
+call DELETE "/kpis/$KPI_B" >/dev/null
+ok "cleaned up KPI fixtures"
+
 # ---------- phases page data ----------
 step "Phases endpoint (/api/swim-lanes) returns admin descriptions"
 descs_ok=$(call GET /swim-lanes | jq_field "

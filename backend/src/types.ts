@@ -67,6 +67,18 @@ export type TeamRow = {
   updated_at: Date;
 };
 
+export type KpiRow = {
+  id: string;
+  name: string;
+  /** Free-form description surfaced in the KPI report view header. */
+  description: string;
+  color: string;
+  order: number;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
 export type ProjectType = "epic" | "subtask";
 
 /**
@@ -83,6 +95,12 @@ export type ProjectRow = {
   owner_id: string | null;
   teams: string[];
   tags: string[];
+  /**
+   * KPI assignments, ordered by per-project position. The order is
+   * user-controlled (drag-reorder on the detail panel), so the API
+   * always preserves it and the UI can rely on it left-to-right.
+   */
+  kpis: string[];
   /**
    * Every card is either a top-level epic or a subtask nested under
    * another card (which may itself be a subtask — the tree can be

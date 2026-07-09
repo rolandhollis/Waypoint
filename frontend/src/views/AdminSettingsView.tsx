@@ -9,11 +9,11 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
-import { useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
-import type { PhaseDateKey, Project, SwimLane, Team, User } from "../lib/types";
+import { useKpis, useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import type { Kpi, PhaseDateKey, Project, SwimLane, Team, User } from "../lib/types";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
 
-type TabKey = "lanes" | "teams" | "users" | "archived";
+type TabKey = "lanes" | "teams" | "kpis" | "users" | "archived";
 
 // Note: the tab key stays "archived" for URL back-compat with older
 // bookmarks, but the label reads "Deleted cards" now that we have a
@@ -22,6 +22,7 @@ type TabKey = "lanes" | "teams" | "users" | "archived";
 const TABS: { key: TabKey; label: string; render: () => JSX.Element }[] = [
   { key: "lanes",    label: "Swim lanes",    render: () => <SwimLanesAdmin /> },
   { key: "teams",    label: "Teams",         render: () => <TeamsAdmin /> },
+  { key: "kpis",     label: "KPIs",          render: () => <KpisAdmin /> },
   { key: "users",    label: "Users",         render: () => <UsersAdmin /> },
   { key: "archived", label: "Deleted cards", render: () => <ArchivedProjectsAdmin /> },
 ];
@@ -498,6 +499,179 @@ function SortableTeamRow(props: {
         onBlur={(e) => { if (e.target.value !== team.name) onRename(e.target.value); }}
       />
       <button className="btn-ghost !p-1 text-red-600" aria-label="Delete team" onClick={onDelete}><Trash2 size={14} /></button>
+    </li>
+  );
+}
+
+/**
+ * Admin catalog of KPIs. Same shape as TeamsAdmin (create form + list
+ * with drag-reorder + inline edit + delete) plus an inline description
+ * textarea, since KPI descriptions surface as report-column context on
+ * the KPIs tab.
+ */
+function KpisAdmin() {
+  const kpis = useKpis();
+  const projects = useProjects();
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [color, setColor] = useState("#0ea5e9");
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+
+  const create = useMutation({
+    mutationFn: () => api<Kpi>("/kpis", {
+      method: "POST",
+      body: JSON.stringify({ name, description: description.trim() || undefined, color }),
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+      setName("");
+      setDescription("");
+    },
+  });
+  const patch = useMutation({
+    mutationFn: (v: { id: string; body: Partial<Kpi> }) =>
+      api<Kpi>(`/kpis/${v.id}`, { method: "PATCH", body: JSON.stringify(v.body) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["kpis"] }),
+  });
+  const reorder = useMutation({
+    mutationFn: (ids: string[]) => api<Kpi[]>("/kpis/reorder", { method: "POST", body: JSON.stringify({ order: ids }) }),
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: ["kpis"] });
+      const prev = qc.getQueryData<Kpi[]>(["kpis"]);
+      if (prev) {
+        const byId = new Map(prev.map((k) => [k.id, k]));
+        const next = ids.map((id, i) => ({ ...(byId.get(id) as Kpi), order: i })).filter(Boolean);
+        qc.setQueryData<Kpi[]>(["kpis"], next);
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["kpis"], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["kpis"] }),
+  });
+  const del = useMutation({
+    mutationFn: (id: string) => api(`/kpis/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["kpis"] });
+      // Deleting a KPI cascades through project_kpis on the backend, so
+      // any project row cached with that KPI id needs to refresh too.
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+
+  function handleDragEnd(e: DragEndEvent) {
+    if (!kpis.data) return;
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const oldIdx = kpis.data.findIndex((k) => k.id === active.id);
+    const newIdx = kpis.data.findIndex((k) => k.id === over.id);
+    if (oldIdx < 0 || newIdx < 0) return;
+    const nextIds = arrayMove(kpis.data, oldIdx, newIdx).map((k) => k.id);
+    reorder.mutate(nextIds);
+  }
+
+  function handleDelete(k: Kpi) {
+    // Show usage before confirming — KPI deletes are cascade-hard on
+    // the backend (all project_kpis rows removed) so PMs deserve a
+    // heads-up if the KPI is actively used.
+    const count = (projects.data ?? []).filter((p) => p.kpis?.includes(k.id) && !p.deleted_at).length;
+    const msg = count > 0
+      ? `Delete "${k.name}"? ${count} active project${count === 1 ? "" : "s"} will lose this KPI assignment.`
+      : `Delete "${k.name}"?`;
+    if (!confirm(msg)) return;
+    del.mutate(k.id);
+  }
+
+  return (
+    <section className="card-surface p-4">
+      <h2 className="text-base font-semibold">KPIs</h2>
+      <p className="mt-1 text-xs text-wp-slate">
+        Outcome buckets projects can subscribe to. Drag to reorder — this order controls how
+        KPIs appear on the KPIs report tab.
+      </p>
+      <MutationErrorBanner mutation={create} className="mt-3" />
+      <MutationErrorBanner mutation={patch} className="mt-3" />
+      <MutationErrorBanner mutation={reorder} className="mt-3" />
+      <MutationErrorBanner mutation={del} className="mt-3" />
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={(kpis.data ?? []).map((k) => k.id)} strategy={verticalListSortingStrategy}>
+          <ul className="mt-3 divide-y divide-wp-stone">
+            {kpis.data?.map((k) => (
+              <SortableKpiRow
+                key={k.id}
+                kpi={k}
+                onRecolor={(v) => patch.mutate({ id: k.id, body: { color: v } })}
+                onRename={(v) => patch.mutate({ id: k.id, body: { name: v } })}
+                onRedescribe={(v) => patch.mutate({ id: k.id, body: { description: v } })}
+                onDelete={() => handleDelete(k)}
+              />
+            ))}
+          </ul>
+        </SortableContext>
+      </DndContext>
+      <div className="mt-4 grid grid-cols-[1fr_auto_auto] items-end gap-2">
+        <label className="text-xs font-medium text-wp-slate">
+          New KPI name
+          <input className="input mt-1" value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label className="text-xs font-medium text-wp-slate">
+          Color
+          <input type="color" className="mt-1 h-8 w-16 cursor-pointer rounded border border-wp-stone" value={color} onChange={(e) => setColor(e.target.value)} />
+        </label>
+        <button className="btn-primary" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>Add KPI</button>
+        <label className="col-span-3 text-xs font-medium text-wp-slate">
+          Description <span className="text-wp-slate/70">(optional — shown on the KPIs report)</span>
+          <textarea
+            className="input mt-1 min-h-[3rem]"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="What does this KPI measure? Any thresholds to know about?"
+          />
+        </label>
+      </div>
+    </section>
+  );
+}
+
+function SortableKpiRow(props: {
+  kpi: Kpi;
+  onRecolor: (v: string) => void;
+  onRename: (v: string) => void;
+  onRedescribe: (v: string) => void;
+  onDelete: () => void;
+}) {
+  const { kpi, onRecolor, onRename, onRedescribe, onDelete } = props;
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: kpi.id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+  return (
+    <li ref={setNodeRef} style={style} className="grid grid-cols-[auto_auto_1fr_auto] items-start gap-3 py-3">
+      <button {...attributes} {...listeners} className="btn-ghost !p-1" aria-label="Drag to reorder">
+        <GripVertical size={14} />
+      </button>
+      <input
+        type="color"
+        className="h-7 w-10 cursor-pointer rounded border border-wp-stone"
+        value={kpi.color}
+        onChange={(e) => onRecolor(e.target.value)}
+      />
+      <div className="flex flex-col gap-1.5">
+        <input
+          key={`name-${kpi.id}-${kpi.updated_at}`}
+          className="input"
+          defaultValue={kpi.name}
+          onBlur={(e) => { if (e.target.value !== kpi.name) onRename(e.target.value); }}
+        />
+        <textarea
+          key={`desc-${kpi.id}-${kpi.updated_at}`}
+          className="input min-h-[2.5rem] text-xs"
+          placeholder="What this KPI measures (optional)."
+          defaultValue={kpi.description}
+          onBlur={(e) => { if (e.target.value !== kpi.description) onRedescribe(e.target.value); }}
+        />
+      </div>
+      <button className="btn-ghost !p-1 text-red-600" aria-label="Delete KPI" onClick={onDelete}><Trash2 size={14} /></button>
     </li>
   );
 }

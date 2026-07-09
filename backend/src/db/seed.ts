@@ -99,6 +99,15 @@ const TEAMS = [
   { name: "Martech", color: "#8b5cf6" },
 ];
 
+// Outcome-level KPIs that projects contribute to. Kept short so the
+// KPI report tab has representative buckets out of the box.
+const KPIS = [
+  { name: "Revenue",             color: "#22c55e", description: "Direct topline lift from redemptions, subscriptions, and paid partnerships." },
+  { name: "SEO Traffic",         color: "#0ea5e9", description: "Organic sessions and impressions from search-driven surfaces." },
+  { name: "Customer Retention",  color: "#a855f7", description: "Repeat visits and long-term account engagement — including loyalty-tier progression." },
+  { name: "Mobile Engagement",   color: "#f97316", description: "iOS + Android DAU, session length, and push open rate." },
+];
+
 // Roland and Mag are admins; everyone else is an owner (can create/edit
 // projects and submit status updates for their own). Colors chosen to be
 // distinct across the roadmap when "color by owner" is active.
@@ -119,7 +128,7 @@ const USERS = [
 async function main() {
   await withTransaction(async (client) => {
     console.log("Clearing existing data...");
-    await client.query("TRUNCATE weekly_status_updates, status_history, project_audit_events, project_comments, project_teams, projects, teams, swim_lanes, users RESTART IDENTITY CASCADE");
+    await client.query("TRUNCATE weekly_status_updates, status_history, project_audit_events, project_comments, project_teams, project_kpis, projects, teams, kpis, swim_lanes, users RESTART IDENTITY CASCADE");
 
     console.log("Seeding users...");
     const userIds: Record<string, string> = {};
@@ -171,6 +180,18 @@ async function main() {
       teamIds[t.name] = rows[0]!.id;
     }
 
+    console.log("Seeding KPIs...");
+    const kpiIds: Record<string, string> = {};
+    for (let i = 0; i < KPIS.length; i++) {
+      const k = KPIS[i]!;
+      const { rows } = await client.query<{ id: string }>(
+        `INSERT INTO kpis (name, description, color, "order", created_by)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [k.name, k.description, k.color, i, adminId],
+      );
+      kpiIds[k.name] = rows[0]!.id;
+    }
+
     console.log("Seeding projects...");
     const today = new Date();
     type SeedProject = {
@@ -180,6 +201,8 @@ async function main() {
       owner: string;
       teams: string[];
       tags: string[];
+      /** Ordered list of KPI names this project contributes to. */
+      kpis?: string[];
       /** Which other seed project (by title) this one nests under. When
        * omitted or undefined the row is inserted as an epic. */
       parentTitle?: string;
@@ -198,6 +221,7 @@ async function main() {
         owner: owner1Id,
         teams: ["Coupons"],
         tags: ["revenue", "web"],
+        kpis: ["Revenue", "SEO Traffic"],
         start_date: addDays(today, -35),
         target_date: addDays(today, -7),
         dev_end_date: addDays(today, 7),
@@ -210,6 +234,7 @@ async function main() {
         owner: owner2Id,
         teams: ["SEO"],
         tags: ["experiment"],
+        kpis: ["SEO Traffic"],
         start_date: addDays(today, -21),
         target_date: addDays(today, 3),
         dev_end_date: addDays(today, 10),
@@ -222,6 +247,7 @@ async function main() {
         owner: owner1Id,
         teams: ["Loyalty", "Martech"],
         tags: ["email", "retention"],
+        kpis: ["Customer Retention", "Revenue"],
         start_date: addDays(today, -10),
         target_date: addDays(today, 20),
         dev_end_date: addDays(today, 41),
@@ -234,6 +260,7 @@ async function main() {
         owner: owner2Id,
         teams: ["Mobile App"],
         tags: ["performance"],
+        kpis: ["Mobile Engagement"],
       },
       {
         title: "Parking lot: creator marketplace",
@@ -347,6 +374,20 @@ async function main() {
           `INSERT INTO project_teams (project_id, team_id) VALUES ($1, $2)`,
           [pid, teamId],
         );
+      }
+
+      // KPI join rows carry a per-project position so the frontend
+      // renders (and lets the PM reorder) them left-to-right in the
+      // order declared here.
+      if (p.kpis?.length) {
+        for (let ki = 0; ki < p.kpis.length; ki++) {
+          const kpiId = kpiIds[p.kpis[ki]!];
+          if (!kpiId) continue;
+          await client.query(
+            `INSERT INTO project_kpis (project_id, kpi_id, position) VALUES ($1, $2, $3)`,
+            [pid, kpiId, ki],
+          );
+        }
       }
 
       await client.query(
