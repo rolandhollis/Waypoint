@@ -453,6 +453,7 @@ function TeamsAdmin() {
                 team={t}
                 onRecolor={(v) => patch.mutate({ id: t.id, body: { color: v } })}
                 onRename={(v) => patch.mutate({ id: t.id, body: { name: v } })}
+                onCapacityChange={(v) => patch.mutate({ id: t.id, body: { capacity: v } })}
                 onDelete={() => handleDelete(t)}
               />
             ))}
@@ -478,9 +479,10 @@ function SortableTeamRow(props: {
   team: Team;
   onRecolor: (v: string) => void;
   onRename: (v: string) => void;
+  onCapacityChange: (v: number | null) => void;
   onDelete: () => void;
 }) {
-  const { team, onRecolor, onRename, onDelete } = props;
+  const { team, onRecolor, onRename, onCapacityChange, onDelete } = props;
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: team.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   return (
@@ -498,6 +500,25 @@ function SortableTeamRow(props: {
         defaultValue={team.name}
         onBlur={(e) => { if (e.target.value !== team.name) onRename(e.target.value); }}
       />
+      <label className="flex items-center gap-1 text-xs text-wp-slate">
+        Cap
+        <input
+          type="number"
+          min={1}
+          max={999}
+          className="input w-16"
+          placeholder="—"
+          key={`cap-${team.id}-${team.updated_at}`}
+          defaultValue={team.capacity ?? ""}
+          onBlur={(e) => {
+            const raw = e.target.value.trim();
+            const next = raw === "" ? null : Math.max(1, Math.floor(Number(raw)));
+            if (next === team.capacity) return;
+            if (Number.isNaN(next as number) && next !== null) return;
+            onCapacityChange(next);
+          }}
+        />
+      </label>
       <button className="btn-ghost !p-1 text-red-600" aria-label="Delete team" onClick={onDelete}><Trash2 size={14} /></button>
     </li>
   );
@@ -679,14 +700,24 @@ function SortableKpiRow(props: {
 function UsersAdmin() {
   const users = useUsers();
   const qc = useQueryClient();
-  const patch = useMutation({
+  const patchRole = useMutation({
     mutationFn: (v: { id: string; role: User["role"] }) => api<User>(`/users/${v.id}/role`, { method: "PATCH", body: JSON.stringify({ role: v.role }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+  const patchCapacity = useMutation({
+    mutationFn: (v: { id: string; capacity: number | null }) =>
+      api<User>(`/users/${v.id}`, { method: "PATCH", body: JSON.stringify({ capacity: v.capacity }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   });
   return (
     <section className="card-surface p-4">
       <h2 className="text-base font-semibold">Users &amp; roles</h2>
-      <MutationErrorBanner mutation={patch} className="mt-3" />
+      <p className="mt-1 text-xs text-wp-slate">
+        Capacity is a soft cap on concurrent active (roadmap-scheduled) projects the user owns.
+        Leave blank for no cap.
+      </p>
+      <MutationErrorBanner mutation={patchRole} className="mt-3" />
+      <MutationErrorBanner mutation={patchCapacity} className="mt-3" />
       <ul className="mt-3 divide-y divide-wp-stone">
         {users.data?.map((u) => (
           <li key={u.id} className="flex items-center gap-3 py-2">
@@ -700,10 +731,29 @@ function UsersAdmin() {
               <div className="text-sm font-medium text-wp-ink">{u.name}</div>
               <div className="text-xs text-wp-slate">{u.email}</div>
             </div>
+            <label className="flex items-center gap-1 text-xs text-wp-slate">
+              Cap
+              <input
+                type="number"
+                min={1}
+                max={999}
+                className="input w-16"
+                placeholder="—"
+                key={`cap-${u.id}-${u.updated_at}`}
+                defaultValue={u.capacity ?? ""}
+                onBlur={(e) => {
+                  const raw = e.target.value.trim();
+                  const next = raw === "" ? null : Math.max(1, Math.floor(Number(raw)));
+                  if (next === u.capacity) return;
+                  if (Number.isNaN(next as number) && next !== null) return;
+                  patchCapacity.mutate({ id: u.id, capacity: next });
+                }}
+              />
+            </label>
             <select
               className="input w-32"
               value={u.role}
-              onChange={(e) => patch.mutate({ id: u.id, role: e.target.value as User["role"] })}
+              onChange={(e) => patchRole.mutate({ id: u.id, role: e.target.value as User["role"] })}
             >
               <option value="admin">admin</option>
               <option value="owner">owner</option>

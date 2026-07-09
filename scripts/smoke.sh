@@ -405,6 +405,42 @@ ok "KPI delete cascaded through project_kpis"
 call DELETE "/kpis/$KPI_B" >/dev/null
 ok "cleaned up KPI fixtures"
 
+# ---------- capacity (users + teams) ----------
+step "Capacity — user + team caps round-trip"
+# Users default to 3 after migration 015; assert one has a numeric cap.
+users_json=$(call GET /users)
+default_cap=$(echo "$users_json" | jq_field "
+caps=[u.get('capacity') for u in d]
+nums=[c for c in caps if isinstance(c,int)]
+print(nums[0] if nums else 'MISSING')")
+[ "$default_cap" != "MISSING" ] || fail "no user had a numeric capacity — migration 015 might not have run"
+ok "default user capacity present ($default_cap)"
+
+# Flip a user's cap to null (no cap), then back to 5.
+call PATCH "/users/$ADMIN_ID" '{"capacity":null}' >/dev/null
+got=$(call GET /users | jq_field "print([u['capacity'] for u in d if u['id']=='$ADMIN_ID'][0])")
+[ "$got" = "None" ] || fail "expected null capacity, got $got"
+ok "cleared admin capacity"
+call PATCH "/users/$ADMIN_ID" '{"capacity":5}' >/dev/null
+got=$(call GET /users | jq_field "print([u['capacity'] for u in d if u['id']=='$ADMIN_ID'][0])")
+[ "$got" = "5" ] || fail "expected capacity=5, got $got"
+ok "set admin capacity=5"
+
+# Teams: pick the first team and cycle its cap.
+teams_json=$(call GET /teams)
+TEAM_ID=$(echo "$teams_json" | jq_field "print(d[0]['id'])")
+call PATCH "/teams/$TEAM_ID" '{"capacity":2}' >/dev/null
+got=$(call GET /teams | jq_field "print([t['capacity'] for t in d if t['id']=='$TEAM_ID'][0])")
+[ "$got" = "2" ] || fail "expected team capacity=2, got $got"
+ok "team capacity round-tripped"
+
+# Reject non-positive integer via validation error.
+bad_status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X PATCH -H "content-type: application/json" -H "x-mock-user-id: $ADMIN_ID" \
+  -d '{"capacity":0}' "$API_URL/api/users/$ADMIN_ID")
+[ "$bad_status" = "400" ] || fail "expected 400 for capacity=0, got $bad_status"
+ok "capacity=0 rejected by validator"
+
 # ---------- phases page data ----------
 step "Phases endpoint (/api/swim-lanes) returns admin descriptions"
 descs_ok=$(call GET /swim-lanes | jq_field "

@@ -8,6 +8,12 @@ export type UserRow = {
   avatar_url: string | null;
   color: string;
   prefs: Record<string, unknown>;
+  /**
+   * Max concurrent active (roadmap-scheduled) projects this user may
+   * own before the frontend surfaces a capacity warning. Null = no
+   * cap. Default 3, backfilled by migration 015.
+   */
+  capacity: number | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -62,6 +68,8 @@ export type TeamRow = {
   name: string;
   color: string;
   order: number;
+  /** Max concurrent active projects for the team; see users.capacity. */
+  capacity: number | null;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;

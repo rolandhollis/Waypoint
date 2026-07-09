@@ -27,6 +27,7 @@ teamsRouter.get("/", async (_req, res) => {
 const createSchema = z.object({
   name: z.string().min(1).max(64),
   color: z.string().max(32).optional(),
+  capacity: z.number().int().min(1).max(1000).nullable().optional(),
 });
 
 teamsRouter.post("/", requireAdmin, async (req, res) => {
@@ -35,9 +36,12 @@ teamsRouter.post("/", requireAdmin, async (req, res) => {
     const { rows: countRows } = await client.query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM teams`);
     const n = countRows[0]?.n ?? 0;
     const color = body.color ?? DEFAULT_PALETTE[n % DEFAULT_PALETTE.length]!;
+    // Explicit null = "no cap"; undefined falls through to the column
+    // default (3) set in migration 015.
+    const capacity = body.capacity === undefined ? 3 : body.capacity;
     const { rows } = await client.query<TeamRow>(
-      `INSERT INTO teams (name, color, "order", created_by) VALUES ($1, $2, $3, $4) RETURNING *`,
-      [body.name, color, n, req.user!.id],
+      `INSERT INTO teams (name, color, capacity, "order", created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [body.name, color, capacity, n, req.user!.id],
     );
     return rows[0];
   });
@@ -47,6 +51,7 @@ teamsRouter.post("/", requireAdmin, async (req, res) => {
 const patchSchema = z.object({
   name: z.string().min(1).max(64).optional(),
   color: z.string().max(32).optional(),
+  capacity: z.number().int().min(1).max(1000).nullable().optional(),
 });
 
 teamsRouter.patch("/:id", requireAdmin, async (req, res) => {

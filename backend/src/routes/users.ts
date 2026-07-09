@@ -42,3 +42,38 @@ usersRouter.patch("/:id/role", requireAdmin, async (req, res) => {
   if (!rows[0]) throw new HttpError(404, "user not found");
   res.json(rows[0]);
 });
+
+/**
+ * General-purpose admin edit for a user: currently role + capacity.
+ * Kept separate from /me/prefs (which any user can call for their own
+ * settings). Capacity of `null` means "no cap"; a positive integer is
+ * the soft max-concurrent-projects for the client-side warning.
+ */
+const patchUserSchema = z.object({
+  role: z.enum(["admin", "owner", "viewer"]).optional(),
+  capacity: z.number().int().min(1).max(1000).nullable().optional(),
+});
+
+usersRouter.patch("/:id", requireAdmin, async (req, res) => {
+  const body = patchUserSchema.parse(req.body);
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  for (const [k, v] of Object.entries(body)) {
+    if (v === undefined) continue;
+    values.push(v);
+    sets.push(`${k} = $${values.length}`);
+  }
+  if (!sets.length) {
+    const { rows } = await query<UserRow>(`SELECT * FROM users WHERE id = $1`, [req.params.id]);
+    if (!rows[0]) throw new HttpError(404, "user not found");
+    res.json(rows[0]);
+    return;
+  }
+  values.push(req.params.id);
+  const { rows } = await query<UserRow>(
+    `UPDATE users SET ${sets.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+    values,
+  );
+  if (!rows[0]) throw new HttpError(404, "user not found");
+  res.json(rows[0]);
+});

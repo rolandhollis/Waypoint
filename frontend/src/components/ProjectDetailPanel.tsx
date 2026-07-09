@@ -9,6 +9,8 @@ import { useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates
 import { computePhases } from "../lib/phaseCompute";
 import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
 import { ancestors, childrenByParent, descendants, indexById } from "../lib/hierarchy";
+import { CapacityWarning } from "./CapacityWarning";
+import { computeOverloads, overloadsForProject } from "../lib/capacity";
 import { KpiPicker } from "./KpiPicker";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 import { PairedDates } from "./PairedDates";
@@ -116,6 +118,15 @@ export function ProjectDetailPanel({
     for (const d of descendants(maybeMerged.id, kids)) s.add(d.id);
     return s;
   }, [maybeMerged?.id, kids]);
+
+  // Capacity check runs on every draft edit — cheap enough (~sub-ms
+  // even with 100 projects) that we don't debounce. Feeds the inline
+  // CapacityWarning below the form.
+  const draftOverloads = useMemo(() => {
+    if (!maybeMerged) return [];
+    const all = computeOverloads(projectList, users.data ?? [], teams.data ?? [], maybeMerged);
+    return overloadsForProject(all, maybeMerged);
+  }, [maybeMerged, projectList, users.data, teams.data]);
 
   if (!maybeProject || !maybeMerged) return null;
   const project: Project = maybeProject;
@@ -409,6 +420,12 @@ export function ProjectDetailPanel({
 
           {canWrite ? (
             <div className="border-t border-wp-stone bg-white px-5 py-3">
+              <CapacityWarning
+                intervals={draftOverloads}
+                users={users.data ?? []}
+                teams={teams.data ?? []}
+                className="mb-2"
+              />
               <MutationErrorBanner mutation={patch} className="mb-2" />
               <MutationErrorBanner mutation={archive} className="mb-2" />
               <div className="flex items-center justify-between gap-2">

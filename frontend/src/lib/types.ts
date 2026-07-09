@@ -8,6 +8,12 @@ export type User = {
   avatar_url: string | null;
   color: string;
   prefs: Record<string, unknown>;
+  /**
+   * Soft cap on the number of concurrent active (roadmap-scheduled)
+   * projects this user can own. Null = no cap. Enforced only by
+   * client-side warnings — the backend never blocks a save on this.
+   */
+  capacity: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -63,6 +69,8 @@ export type Team = {
   name: string;
   color: string;
   order: number;
+  /** See User.capacity — same semantics, applied to team membership. */
+  capacity: number | null;
   created_at: string;
   updated_at: string;
 };

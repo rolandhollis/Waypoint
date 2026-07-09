@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../lib/api";
 import { useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
@@ -10,7 +10,9 @@ import {
   fillMissingPhaseDates,
   type PhaseDateFields,
 } from "../lib/phaseDates";
+import { computeOverloads, overloadsForProject } from "../lib/capacity";
 import type { Project, ProjectType } from "../lib/types";
+import { CapacityWarning } from "./CapacityWarning";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 import { PairedDates } from "./PairedDates";
 import { ProjectPicker } from "./ProjectPicker";
@@ -89,6 +91,40 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
   const canSubmit = !!title.trim() && !!resolvedLane
     && (type === "epic" || !!parentId)
     && !create.isPending;
+
+  // Preview the capacity impact of this pending create. Build a fake
+  // Project row that mirrors what the backend will insert (leaf-only
+  // counting excludes it if type='epic' but we still preview since
+  // the *dates* + entities are what matters). Uses effectiveDates so
+  // implicit-default dates are treated as if they were persisted.
+  const draftOverloads = useMemo(() => {
+    const preview: Project = {
+      id: "__draft__",
+      title: title || "(new project)",
+      description,
+      swim_lane_id: resolvedLane?.id ?? null,
+      position: 0,
+      owner_id: ownerId,
+      teams: teamIds,
+      tags: [],
+      kpis: [],
+      type,
+      parent_id: type === "subtask" ? parentId : null,
+      start_date: merged.start_date,
+      target_date: eff.target,
+      dev_start_date: eff.devStart,
+      dev_end_date: eff.devEnd,
+      optimization_start_date: eff.optStart,
+      optimization_end_date: eff.optEnd,
+      actual_completion_date: null,
+      deleted_at: null,
+      created_by: me.data?.id ?? null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const all = computeOverloads(projects.data ?? [], users.data ?? [], teams.data ?? [], preview);
+    return overloadsForProject(all, preview);
+  }, [title, description, resolvedLane?.id, ownerId, teamIds, type, parentId, eff, merged.start_date, me.data?.id, projects.data, users.data, teams.data]);
 
   return (
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -246,6 +282,12 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
           </div>
 
           <div className="border-t border-wp-stone bg-white px-5 py-3">
+            <CapacityWarning
+              intervals={draftOverloads}
+              users={users.data ?? []}
+              teams={teams.data ?? []}
+              className="mb-2"
+            />
             <MutationErrorBanner mutation={create} className="mb-2" />
             <div className="flex justify-end gap-2">
               <button className="btn-secondary" onClick={onClose}>Cancel</button>

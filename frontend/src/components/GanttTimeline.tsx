@@ -1,10 +1,14 @@
+import type React from "react";
+import type { ReactNode } from "react";
 import { useMemo, useRef, useState } from "react";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { addDays, addMonths, differenceInCalendarDays, endOfMonth, format, min, max, startOfMonth } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Layers } from "lucide-react";
 import { api } from "../lib/api";
+import { computeOverloads, overloadsForProject, projectSpan, type OverloadInterval } from "../lib/capacity";
 import { computePhases } from "../lib/phaseCompute";
-import { useMe } from "../lib/queries";
+import { useMe, useProjects } from "../lib/queries";
 import { childrenByParent, indexById, rootEpic } from "../lib/hierarchy";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore, type ColorBy, type GroupBy } from "../lib/viewState";
@@ -118,6 +122,26 @@ export function GanttTimeline(props: Props) {
     () => groupTreeRows(projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams),
     [projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams],
   );
+
+  // Capacity overloads are a workspace-level truth, not a filtered one:
+  // Alice is still overloaded on Aug 12 even if the current filter
+  // hides half her projects. Read the full project list from the
+  // query cache directly so filters on the Roadmap page don't distort
+  // the picture.
+  const allProjects = useProjects();
+  const overloads = useMemo(
+    () => computeOverloads(allProjects.data ?? [], users, teams),
+    [allProjects.data, users, teams],
+  );
+  // Group overloads by entity id so the group-render loop below can
+  // do an O(1) lookup instead of scanning the full list per group.
+  const overloadsByOwner = useMemo(() => bucketOverloads(overloads, "owner"), [overloads]);
+  const overloadsByTeam = useMemo(() => bucketOverloads(overloads, "team"), [overloads]);
+  const anyOverloadDays = useMemo(() => computeAnyOverloadDays(overloads), [overloads]);
+  // Cluster the flat day list back into contiguous [from, to] ranges,
+  // one per visible alert icon on the top axis. A single icon per
+  // range keeps the header uncluttered even if a range spans weeks.
+  const anyOverloadRanges = useMemo(() => contiguousRanges(anyOverloadDays), [anyOverloadDays]);
 
   // Enable / disable the "expand all" affordance based on how many
   // epics could actually reveal subtasks. Keeps the UI honest — no
@@ -349,11 +373,57 @@ export function GanttTimeline(props: Props) {
                   if (gi > 0 && g.label) cursorY += GROUP_GAP;
                   const groupStartY = cursorY;
                   if (g.label) cursorY += GROUP_HEADER_HEIGHT;
+                  const rowsTop = cursorY;
+                  const rowOverloadOverlays: React.ReactNode[] = [];
                   const rows = g.rows.map((row, idx) => {
                     const p = row.project;
                     const rowY = cursorY + idx * ROW_HEIGHT;
                     const activeDrag = drag?.projectId === p.id ? drag : null;
                     const previewProject = activeDrag ? applyDragToProject(p, activeDrag) : p;
+
+                    // Per-row hatches for the "other" dimension:
+                    // when grouped by team, per-group overlays only
+                    // show TEAM overloads — so the OWNER-overload
+                    // signal is lost unless we paint it on the row
+                    // itself. Same in reverse when grouped by owner.
+                    // In non-entity grouping (lane/tag/none) we paint
+                    // both dimensions on the row.
+                    const showOwnerOnRow = groupBy !== "owner";
+                    const showTeamOnRow = groupBy !== "team";
+                    const rowIvs = overloadsForProject(overloads, previewProject).filter((iv) =>
+                      (iv.kind === "owner" && showOwnerOnRow) || (iv.kind === "team" && showTeamOnRow)
+                    );
+                    for (const iv of rowIvs) {
+                      const span = projectSpan(previewProject);
+                      if (!span) continue;
+                      const from = iv.from > span.start ? iv.from : span.start;
+                      const to = iv.to < span.end ? iv.to : span.end;
+                      if (from > to) continue;
+                      const x1 = dayX(from, start, dayPx);
+                      const x2 = dayX(to, start, dayPx) + dayPx;
+                      const w = Math.max(0, x2 - x1);
+                      if (w <= 0) continue;
+                      rowOverloadOverlays.push(
+                        <OverloadTooltip
+                          key={`row-ov-${p.id}-${iv.kind}-${iv.entityId}-${iv.from}`}
+                          content={
+                            <OverloadTooltipContent
+                              title="Capacity overload on this project"
+                              range={{ from, to }}
+                              entries={[iv]}
+                              users={users}
+                              teams={teams}
+                            />
+                          }
+                        >
+                          <g className="cursor-help">
+                            <rect x={x1} y={rowY + 2} width={w} height={ROW_HEIGHT - 4} fill="#DC2626" fillOpacity={0.06} />
+                            <rect x={x1} y={rowY + ROW_HEIGHT - 3} width={w} height={2} fill="#DC2626" fillOpacity={0.7} />
+                          </g>
+                        </OverloadTooltip>
+                      );
+                    }
+
                     return (
                       <Bar
                         key={p.id}
@@ -373,16 +443,130 @@ export function GanttTimeline(props: Props) {
                     );
                   });
                   cursorY += g.rows.length * ROW_HEIGHT;
+                  // Overload overlay: only meaningful when the group
+                  // key IS an entity id (owner or team mode). We paint
+                  // a translucent red band across the group's Y
+                  // range for each overloaded date interval, so PMs
+                  // can see at a glance which weeks the owner/team is
+                  // over their cap.
+                  const groupOverloads: OverloadInterval[] =
+                    groupBy === "owner"
+                      ? overloadsByOwner.get(g.key) ?? []
+                      : groupBy === "team"
+                      ? overloadsByTeam.get(g.key) ?? []
+                      : [];
+                  const overloadOverlays = groupOverloads.map((iv, ii) => {
+                    const x1 = dayX(iv.from, start, dayPx);
+                    // Right edge = end-of-day, so a single-day overload
+                    // is at least `dayPx` wide.
+                    const x2 = dayX(iv.to, start, dayPx) + dayPx;
+                    const w = Math.max(0, x2 - x1);
+                    if (w <= 0) return null;
+                    const y = groupStartY;
+                    const h = cursorY - groupStartY;
+                    return (
+                      <OverloadTooltip
+                        key={`ov-${g.key}-${ii}`}
+                        content={
+                          <OverloadTooltipContent
+                            title="Capacity overload"
+                            range={{ from: iv.from, to: iv.to }}
+                            entries={[iv]}
+                            users={users}
+                            teams={teams}
+                          />
+                        }
+                      >
+                        <g className="cursor-help">
+                          <rect x={x1} y={y} width={w} height={h} fill="#DC2626" fillOpacity={0.08} />
+                          <rect x={x1} y={y} width={w} height={3} fill="#DC2626" fillOpacity={0.55} />
+                        </g>
+                      </OverloadTooltip>
+                    );
+                  });
+                  void rowsTop;
                   return (
                     <g key={`grp-${g.key}`}>
                       {g.label ? (
                         <rect x={0} y={groupStartY} width={chartWidth} height={GROUP_HEADER_HEIGHT} fill="#F2F4F7" />
                       ) : null}
+                      {overloadOverlays}
+                      {rowOverloadOverlays}
                       {rows}
                     </g>
                   );
                 });
               })()}
+
+              {/* Global overload indicator on the top axis:
+                  continuous red strip along the affected days for
+                  glanceability + one alert icon per contiguous range
+                  that reveals a rich tooltip on hover ("Roland
+                  assigned 4 tasks, over maximum of 3"). Renders in
+                  every grouping mode so PMs never lose sight of a
+                  breach the current grouping happens to hide. */}
+              {anyOverloadDays.length > 0 ? (
+                <g>
+                  <g pointerEvents="none">
+                    {anyOverloadDays.map((iso, i) => (
+                      <rect
+                        key={`ov-day-${i}`}
+                        x={dayX(iso, start, dayPx)}
+                        y={HEADER_HEIGHT - 6}
+                        width={Math.max(1, dayPx)}
+                        height={6}
+                        fill="#DC2626"
+                        fillOpacity={0.9}
+                      />
+                    ))}
+                  </g>
+                  {anyOverloadRanges.map((rng, i) => {
+                    // Icon sits above the strip, centered over the
+                    // range. Clamp the range in chart-space so a
+                    // range extending off-chart still shows an icon
+                    // near the edge instead of vanishing.
+                    const x1 = dayX(rng.from, start, dayPx);
+                    const x2 = dayX(rng.to, start, dayPx) + dayPx;
+                    const cx = Math.max(10, Math.min(chartWidth - 10, (x1 + x2) / 2));
+                    const cy = HEADER_HEIGHT - 14;
+                    const relevant = overloads.filter(
+                      (iv) => !(iv.to < rng.from || iv.from > rng.to),
+                    );
+                    return (
+                      <OverloadTooltip
+                        key={`ov-cluster-${i}`}
+                        content={
+                          <OverloadTooltipContent
+                            title="Capacity overload"
+                            range={rng}
+                            entries={relevant}
+                            users={users}
+                            teams={teams}
+                          />
+                        }
+                      >
+                        <g className="cursor-help">
+                          {/* Larger transparent hit target so hover
+                              feels forgiving even at r=6. */}
+                          <circle cx={cx} cy={cy} r={11} fill="transparent" />
+                          <circle cx={cx} cy={cy} r={7} fill="#DC2626" stroke="white" strokeWidth={1.5} />
+                          <text
+                            x={cx}
+                            y={cy + 4}
+                            fontSize={11}
+                            fill="white"
+                            textAnchor="middle"
+                            fontWeight={700}
+                            pointerEvents="none"
+                          >
+                            !
+                          </text>
+                        </g>
+                      </OverloadTooltip>
+                    );
+                  })}
+                </g>
+              ) : null}
 
               {showToday ? (
                 <g>
@@ -863,4 +1047,169 @@ function pluralDays(n: number): string {
 
 function pluralWeeks(n: number): string {
   return `${n} ${n === 1 ? "week" : "weeks"}`;
+}
+
+/**
+ * Convert an ISO date (YYYY-MM-DD) to a pixel X inside the chart.
+ * Chart's own coordinate system: x=0 corresponds to `chartStart` at
+ * 00:00 local time (which is what `startOfMonth` returns).
+ */
+function dayX(iso: string, chartStart: Date, dayPx: number): number {
+  const [y, m, d] = iso.split("-").map(Number) as [number, number, number];
+  const dt = new Date(y, m - 1, d);
+  const days = differenceInCalendarDays(dt, chartStart);
+  return days * dayPx;
+}
+
+/** Bucket overload intervals by entity id for O(1) group lookup. */
+function bucketOverloads(
+  intervals: OverloadInterval[],
+  kind: "owner" | "team",
+): Map<string, OverloadInterval[]> {
+  const out = new Map<string, OverloadInterval[]>();
+  for (const iv of intervals) {
+    if (iv.kind !== kind) continue;
+    const arr = out.get(iv.entityId) ?? [];
+    arr.push(iv);
+    out.set(iv.entityId, arr);
+  }
+  return out;
+}
+
+/**
+ * Radix-Tooltip wrapper for SVG overload markers. Kept tiny because
+ * the trigger is always an SVG element (`<g>` / `<rect>`); Radix
+ * handles refs transparently through `asChild`. Delay is short so
+ * hovering a red band feels responsive but not twitchy.
+ */
+function OverloadTooltip({ children, content }: { children: ReactNode; content: ReactNode }) {
+  return (
+    <Tooltip.Root delayDuration={100}>
+      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          side="top"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-50 max-w-sm rounded-md border border-wp-stone bg-white px-3 py-2 text-xs leading-relaxed text-wp-ink shadow-lg"
+        >
+          {content}
+          <Tooltip.Arrow className="fill-white" />
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
+
+/**
+ * Rich hover-card body for capacity overloads. Renders one line per
+ * overloaded entity in the range, phrased in plain product terms
+ * ("Roland assigned 4 tasks, over maximum of 3") so PMs don't have
+ * to interpret numeric peaks.
+ */
+function OverloadTooltipContent(props: {
+  title: string;
+  range: { from: string; to: string };
+  entries: OverloadInterval[];
+  users: User[];
+  teams: Team[];
+}) {
+  const { title, range, entries, users, teams } = props;
+  const userById = new Map(users.map((u) => [u.id, u]));
+  const teamById = new Map(teams.map((t) => [t.id, t]));
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 font-semibold text-red-700">
+        <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white">
+          !
+        </span>
+        {title}
+      </div>
+      <div className="mt-0.5 text-wp-slate">{formatIsoRange(range.from, range.to)}</div>
+      <ul className="mt-1.5 space-y-1">
+        {entries.map((iv, i) => {
+          const name = iv.kind === "owner"
+            ? userById.get(iv.entityId)?.name ?? "unknown user"
+            : teamById.get(iv.entityId)?.name ?? "unknown team";
+          const kindLabel = iv.kind === "owner" ? "owner" : "team";
+          return (
+            <li key={`${iv.kind}-${iv.entityId}-${iv.from}-${i}`}>
+              <span className="font-medium">{name}</span>
+              <span className="text-wp-slate"> ({kindLabel})</span>
+              {" — "}
+              assigned {iv.peak} {iv.peak === 1 ? "task" : "tasks"}, over maximum of {iv.cap}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function formatIsoRange(fromIso: string, toIso: string): string {
+  if (fromIso === toIso) return formatIso(fromIso);
+  return `${formatIso(fromIso)} → ${formatIso(toIso)}`;
+}
+
+function formatIso(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number) as [number, number, number];
+  return format(new Date(y, m - 1, d), "MMM d, yyyy");
+}
+
+/**
+ * Collapse a sorted list of ISO days into an array of contiguous
+ * [from, to] ranges. Used to paint one alert icon per overload
+ * range on the top axis rather than one per day.
+ */
+function contiguousRanges(days: string[]): { from: string; to: string }[] {
+  if (days.length === 0) return [];
+  const out: { from: string; to: string }[] = [];
+  let start = days[0]!;
+  let prev = days[0]!;
+  for (let i = 1; i < days.length; i++) {
+    const cur = days[i]!;
+    const nextAfterPrev = addDaysIso(prev, 1);
+    if (cur === nextAfterPrev) {
+      prev = cur;
+    } else {
+      out.push({ from: start, to: prev });
+      start = cur;
+      prev = cur;
+    }
+  }
+  out.push({ from: start, to: prev });
+  return out;
+}
+
+function addDaysIso(iso: string, days: number): string {
+  const [y, m, d] = iso.split("-").map(Number) as [number, number, number];
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+/**
+ * Flatten all overload intervals to the deduplicated set of ISO days
+ * for the top-of-chart "any capacity issue today" strip. Iterates by
+ * day so the caller doesn't have to walk each interval later.
+ */
+function computeAnyOverloadDays(intervals: OverloadInterval[]): string[] {
+  const days = new Set<string>();
+  for (const iv of intervals) {
+    let cur = iv.from;
+    while (cur <= iv.to) {
+      days.add(cur);
+      const [y, m, d] = cur.split("-").map(Number) as [number, number, number];
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      dt.setUTCDate(dt.getUTCDate() + 1);
+      const yy = dt.getUTCFullYear();
+      const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(dt.getUTCDate()).padStart(2, "0");
+      cur = `${yy}-${mm}-${dd}`;
+    }
+  }
+  return Array.from(days).sort();
 }
