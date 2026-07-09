@@ -87,30 +87,47 @@ export function ProjectDetailPanel({
     },
   });
 
-  const project = projectQuery.data;
-  if (!project) return null;
+  // IMPORTANT: every hook below runs on *every* render, even before
+  // the project fetch resolves, so the hook order stays stable across
+  // the loading → loaded transition. React error #310 fires the moment
+  // an early return skips downstream hooks; adding useKpis above
+  // shifted the count and started tripping it deterministically.
+  //
+  // Convention: `maybeProject` / `maybeMerged` are nullable and used
+  // only in the hooks below. After the null-check we shadow them with
+  // the plain `project` / `merged` names so all downstream JSX stays
+  // ergonomic (Project, not Project|null).
+  const maybeProject = projectQuery.data ?? null;
+  const maybeMerged: Project | null = maybeProject
+    ? ({ ...maybeProject, ...draft } as Project)
+    : null;
 
-  const merged: Project = { ...project, ...draft };
+  const projectList = allProjects.data ?? [];
+  const byId = useMemo(() => indexById(projectList), [projectList]);
+  const kids = useMemo(() => childrenByParent(projectList), [projectList]);
+  const parentChain = useMemo(
+    () => (maybeMerged ? ancestors(maybeMerged.id, byId).reverse() : []),
+    [maybeMerged?.id, byId],
+  );
+  const excludeParentIds = useMemo(() => {
+    const s = new Set<string>();
+    if (!maybeMerged) return s;
+    s.add(maybeMerged.id);
+    for (const d of descendants(maybeMerged.id, kids)) s.add(d.id);
+    return s;
+  }, [maybeMerged?.id, kids]);
+
+  if (!maybeProject || !maybeMerged) return null;
+  const project: Project = maybeProject;
+  const merged: Project = maybeMerged;
+
   const phases = computePhases(merged);
   const eff = effectiveDates(merged);
   const owner = users.data?.find((u) => u.id === merged.owner_id);
   const projectTeams = (teams.data ?? []).filter((t) => merged.teams.includes(t.id));
   const lane = lanes.data?.find((l) => l.id === merged.swim_lane_id);
   const requiresStatus = !!lane?.requires_weekly_status;
-  // Hierarchy context: indices built once from the flat list so the
-  // parent picker, breadcrumb, and children section all see the same
-  // topology. `excludeIds` prevents cycle attempts in the picker
-  // (self + everything currently rooted under this project).
-  const projectList = allProjects.data ?? [];
-  const byId = useMemo(() => indexById(projectList), [projectList]);
-  const kids = useMemo(() => childrenByParent(projectList), [projectList]);
-  const parentChain = useMemo(() => ancestors(merged.id, byId).reverse(), [merged.id, byId]);
   const myChildren = kids.get(merged.id) ?? [];
-  const excludeParentIds = useMemo(() => {
-    const s = new Set<string>([merged.id]);
-    for (const d of descendants(merged.id, kids)) s.add(d.id);
-    return s;
-  }, [merged.id, kids]);
   // Show the archive button whenever the card isn't already in an
   // archive lane. Non-admins never see admin-only lanes in
   // `lanes.data`, so `lane.is_archive` is always false for them and
