@@ -400,6 +400,7 @@ export function BoardView() {
                 users={users.data ?? []}
                 teams={teams.data ?? []}
                 lanes={laneList}
+                allProjects={projects.data ?? []}
               />
             ))}
           </div>
@@ -412,6 +413,7 @@ export function BoardView() {
               users={users.data ?? []}
               teams={teams.data ?? []}
               lanes={laneList}
+              allProjects={projects.data ?? []}
               isDragging
             />
           ) : null}
@@ -419,7 +421,7 @@ export function BoardView() {
       </DndContext>
 
       {selectedId ? (
-        <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} />
+        <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} onOpenProject={setSelectedId} />
       ) : null}
       {newInLane !== null ? (
         <NewProjectDialog defaultLaneId={newInLane || null} onClose={() => setNewInLane(null)} />
@@ -451,8 +453,9 @@ function LaneColumn(props: {
   users: User[];
   teams: Team[];
   lanes: SwimLane[];
+  allProjects: Project[];
 }) {
-  const { lane, projects, onOpen, colorBy, users, teams, lanes } = props;
+  const { lane, projects, onOpen, colorBy, users, teams, lanes, allProjects } = props;
   const droppableId = `lane:${lane.id}`;
 
   return (
@@ -498,6 +501,7 @@ function LaneColumn(props: {
                 users={users}
                 teams={teams}
                 lanes={lanes}
+                allProjects={allProjects}
               />
             ))}
             {projects.length === 0 ? (
@@ -531,8 +535,9 @@ function SortableCard(props: {
   users: User[];
   teams: Team[];
   lanes: SwimLane[];
+  allProjects: Project[];
 }) {
-  const { project, onOpen, colorBy, users, teams, lanes } = props;
+  const { project, onOpen, colorBy, users, teams, lanes, allProjects } = props;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: project.id });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
   return (
@@ -543,6 +548,7 @@ function SortableCard(props: {
         users={users}
         teams={teams}
         lanes={lanes}
+        allProjects={allProjects}
         onOpen={onOpen}
         dragHandleProps={{ ...attributes, ...listeners }}
       />

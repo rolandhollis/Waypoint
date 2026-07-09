@@ -180,6 +180,9 @@ async function main() {
       owner: string;
       teams: string[];
       tags: string[];
+      /** Which other seed project (by title) this one nests under. When
+       * omitted or undefined the row is inserted as an epic. */
+      parentTitle?: string;
       start_date?: Date;
       target_date?: Date;
       dev_start_date?: Date;
@@ -253,21 +256,78 @@ async function main() {
         dev_end_date: addDays(today, 60),
         optimization_end_date: addDays(today, 74),
       },
+      // Two subtasks under an existing epic so the roadmap tree has
+      // something interesting to expand out of the box, and one nested
+      // subtask so the "arbitrary depth" bit is exercised too.
+      {
+        title: "Coupon detail — merchant sidebar refactor",
+        description: "Subtask: extract the merchant summary into a reusable sidebar module.",
+        lane: "In Dev",
+        owner: owner2Id,
+        teams: ["Coupons"],
+        tags: ["web"],
+        parentTitle: "Coupon detail page redesign",
+        start_date: addDays(today, -30),
+        target_date: addDays(today, -10),
+        dev_end_date: addDays(today, 4),
+        optimization_end_date: addDays(today, 15),
+      },
+      {
+        title: "Coupon detail — CTA A/B rollout",
+        description: "Subtask: run the CTA copy experiment across three treatments.",
+        lane: "Dev Ready",
+        owner: owner1Id,
+        teams: ["Coupons"],
+        tags: ["experiment"],
+        parentTitle: "Coupon detail page redesign",
+        start_date: addDays(today, -15),
+        target_date: addDays(today, 2),
+        dev_end_date: addDays(today, 6),
+        optimization_end_date: addDays(today, 19),
+      },
+      {
+        title: "Coupon detail — treatment C copy tuning",
+        description: "Nested subtask under the CTA A/B rollout.",
+        lane: "Backlog",
+        owner: owner1Id,
+        teams: ["Coupons"],
+        tags: [],
+        parentTitle: "Coupon detail — CTA A/B rollout",
+        start_date: addDays(today, -5),
+        target_date: addDays(today, 4),
+        dev_end_date: addDays(today, 6),
+        optimization_end_date: addDays(today, 12),
+      },
     ];
 
-    const projectIds: string[] = [];
-    for (let i = 0; i < projects.length; i++) {
-      const p = projects[i]!;
+    // Insert in dependency order so subtasks always find their parent
+    // already in the map. Handles arbitrary-depth chains provided the
+    // seed array as a whole is DAG-consistent (each `parentTitle`
+    // exists elsewhere in the array).
+    const idByTitle: Record<string, string> = {};
+    const remaining = projects.map((p, originalIndex) => ({ p, originalIndex }));
+    while (remaining.length) {
+      const readyIdx = remaining.findIndex(
+        ({ p }) => !p.parentTitle || idByTitle[p.parentTitle] !== undefined,
+      );
+      if (readyIdx === -1) {
+        throw new Error("seed hierarchy has an unresolved parentTitle — check for typos or cycles");
+      }
+      const { p, originalIndex } = remaining.splice(readyIdx, 1)[0]!;
       const laneId = laneIds[p.lane]!;
+      const type = p.parentTitle ? "subtask" : "epic";
+      const parentId = p.parentTitle ? idByTitle[p.parentTitle]! : null;
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO projects
            (title, description, swim_lane_id, position, owner_id, tags,
+            type, parent_id,
             start_date, target_date, dev_start_date, dev_end_date,
             optimization_start_date, optimization_end_date, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          RETURNING id`,
         [
-          p.title, p.description, laneId, i, p.owner, p.tags,
+          p.title, p.description, laneId, originalIndex, p.owner, p.tags,
+          type, parentId,
           p.start_date ?? null,
           p.target_date ?? null,
           p.dev_start_date ?? null,
@@ -278,7 +338,7 @@ async function main() {
         ],
       );
       const pid = rows[0]!.id;
-      projectIds.push(pid);
+      idByTitle[p.title] = pid;
 
       for (const teamName of p.teams) {
         const teamId = teamIds[teamName];
@@ -299,11 +359,15 @@ async function main() {
     console.log("Seeding this week's status updates...");
     const weekOf = weekOfMonday(today);
     const dueAt = dueAtForWeek(weekOf);
+    // Iterate in declaration order (not insertion order) — the "first
+    // eligible" flag below relies on stable per-seed positioning.
+    // Look up id via the title map since subtasks may have been
+    // inserted before their earlier siblings due to dep ordering.
     for (let i = 0; i < projects.length; i++) {
       const p = projects[i]!;
       const lane = DEFAULT_LANES.find((l) => l.name === p.lane);
       if (!lane?.requires_weekly_status) continue;
-      const pid = projectIds[i]!;
+      const pid = idByTitle[p.title]!;
 
       const isFirstEligible = i === 0;
       await client.query(

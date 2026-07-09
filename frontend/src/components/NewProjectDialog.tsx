@@ -3,16 +3,17 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../lib/api";
-import { useMe, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import {
   effectiveDates,
   emptyPhaseDates,
   fillMissingPhaseDates,
   type PhaseDateFields,
 } from "../lib/phaseDates";
-import type { Project } from "../lib/types";
+import type { Project, ProjectType } from "../lib/types";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 import { PairedDates } from "./PairedDates";
+import { ProjectPicker } from "./ProjectPicker";
 import { TeamMultiSelect } from "./TeamMultiSelect";
 
 /**
@@ -26,12 +27,17 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
   const lanes = useSwimLanes();
   const users = useUsers();
   const teams = useTeams();
+  const projects = useProjects();
   const qc = useQueryClient();
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [ownerId, setOwnerId] = useState<string | null>(me.data?.id ?? null);
   const [teamIds, setTeamIds] = useState<string[]>([]);
+  // Default new items to "epic" — that's the common case (a top-level
+  // initiative). Flipping to "subtask" reveals the parent picker.
+  const [type, setType] = useState<ProjectType>("epic");
+  const [parentId, setParentId] = useState<string | null>(null);
 
   // Resolve the landing lane the same way the backend does, so the
   // "New items land in X" hint matches reality.
@@ -67,6 +73,8 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
           description: description.trim() || undefined,
           owner_id: ownerId,
           teams: teamIds,
+          type,
+          parent_id: type === "subtask" ? parentId : null,
           ...dates,
         }),
       });
@@ -76,6 +84,11 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
       onClose();
     },
   });
+
+  // Subtasks require a parent to submit. Epics don't.
+  const canSubmit = !!title.trim() && !!resolvedLane
+    && (type === "epic" || !!parentId)
+    && !create.isPending;
 
   return (
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -91,6 +104,54 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
             <label className="block text-xs font-medium text-wp-slate">Title
               <input className="input mt-1" autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />
             </label>
+            <fieldset className="block text-xs font-medium text-wp-slate">
+              <legend className="mb-1">Type</legend>
+              {/*
+                Radio pair — epic vs subtask — with the parent picker
+                revealed inline when subtask is chosen. Kept as native
+                radios so keyboard nav (arrow keys / tab) works without
+                extra JS.
+              */}
+              <div className="flex items-center gap-4">
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-wp-ink">
+                  <input
+                    type="radio"
+                    name="new-project-type"
+                    value="epic"
+                    checked={type === "epic"}
+                    onChange={() => { setType("epic"); setParentId(null); }}
+                  />
+                  Epic <span className="text-xs text-wp-slate">(top-level)</span>
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-wp-ink">
+                  <input
+                    type="radio"
+                    name="new-project-type"
+                    value="subtask"
+                    checked={type === "subtask"}
+                    onChange={() => setType("subtask")}
+                  />
+                  Subtask <span className="text-xs text-wp-slate">(nested under a parent)</span>
+                </label>
+              </div>
+              {type === "subtask" ? (
+                <div className="mt-2">
+                  <span className="mb-1 block text-xs font-medium text-wp-slate">
+                    Parent <span className="text-wp-red">*</span>
+                  </span>
+                  <ProjectPicker
+                    value={parentId}
+                    onChange={setParentId}
+                    projects={projects.data ?? []}
+                  />
+                  {!parentId ? (
+                    <p className="mt-1 text-[11px] text-wp-slate/80">
+                      Every subtask needs a parent — search by title above.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </fieldset>
             <label className="block text-xs font-medium text-wp-slate">
               Description <span className="text-wp-slate/70">(optional)</span>
               <textarea
@@ -190,7 +251,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
               <button className="btn-secondary" onClick={onClose}>Cancel</button>
               <button
                 className="btn-primary"
-                disabled={!title.trim() || !resolvedLane || create.isPending}
+                disabled={!canSubmit}
                 onClick={() => create.mutate()}
               >
                 {create.isPending ? "Creating…" : "Create"}

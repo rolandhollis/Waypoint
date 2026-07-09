@@ -67,6 +67,8 @@ export type Team = {
   updated_at: string;
 };
 
+export type ProjectType = "epic" | "subtask";
+
 export type Project = {
   id: string;
   title: string;
@@ -77,6 +79,13 @@ export type Project = {
   /** Team memberships (M:N via `project_teams`). Order is not meaningful. */
   teams: string[];
   tags: string[];
+  /**
+   * Every project is either an epic (top-level) or a subtask (nested
+   * under a parent, potentially many layers deep). Backend enforces
+   * that epic implies parent_id=null and subtask implies parent_id!=null.
+   */
+  type: ProjectType;
+  parent_id: string | null;
   start_date: string | null;
   target_date: string | null;
   dev_start_date: string | null;

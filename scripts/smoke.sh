@@ -251,6 +251,96 @@ call POST "/projects/$PROJ_ID/move" \
   >/dev/null
 ok "moved back out of archive for cleanup"
 
+# ---------- hierarchy (epic ↔ subtask) ----------
+step "Hierarchy: create epic + subtask, exercise cascade, guards, and cycle detection"
+
+# Fresh parent + child tree so we don't collide with the temp project
+# above. All fixtures are deleted at the end of this section.
+epic=$(call POST /projects "$(python3 -c "
+import json
+print(json.dumps({
+    'title':'SMOKE-TEST epic parent',
+    'swim_lane_id':'$LANE1_ID',
+    'type':'epic',
+    'start_date':'$today',
+    'target_date':'$in7',
+    'dev_end_date':'$in14',
+    'optimization_end_date':'$in21',
+}))")")
+EPIC_ID=$(echo "$epic" | jq_field "print(d['id'])")
+epic_type=$(echo "$epic" | jq_field "print(d['type'])")
+epic_parent=$(echo "$epic" | jq_field "print(d.get('parent_id') or '')")
+[ "$epic_type" = "epic" ] || fail "expected type=epic, got $epic_type"
+[ -z "$epic_parent" ] || fail "epic must have null parent_id, got $epic_parent"
+ok "created epic $EPIC_ID"
+
+sub=$(call POST /projects "$(python3 -c "
+import json
+print(json.dumps({
+    'title':'SMOKE-TEST subtask child',
+    'swim_lane_id':'$LANE1_ID',
+    'type':'subtask',
+    'parent_id':'$EPIC_ID',
+    'start_date':'$today',
+    'target_date':'$in7',
+    'dev_end_date':'$in14',
+    'optimization_end_date':'$in21',
+}))")")
+SUB_ID=$(echo "$sub" | jq_field "print(d['id'])")
+sub_type=$(echo "$sub" | jq_field "print(d['type'])")
+sub_parent=$(echo "$sub" | jq_field "print(d.get('parent_id') or '')")
+[ "$sub_type" = "subtask" ] || fail "expected type=subtask, got $sub_type"
+[ "$sub_parent" = "$EPIC_ID" ] || fail "expected parent_id=$EPIC_ID, got $sub_parent"
+ok "created subtask $SUB_ID under epic"
+
+# Create-time rejection: subtask without a parent should 400.
+status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X POST -H "content-type: application/json" -H "x-mock-user-id: $ADMIN_ID" \
+  -d "$(python3 -c "import json;print(json.dumps({'title':'SMOKE bad','type':'subtask','swim_lane_id':'$LANE1_ID'}))")" \
+  "$API_URL/api/projects")
+[ "$status" = "400" ] || fail "expected 400 for subtask-without-parent, got $status"
+ok "subtask-without-parent rejected with HTTP 400"
+
+# Cascade: extend the subtask's optimization_end_date; the parent should
+# auto-extend to at least match.
+far=$(python3 -c "import datetime;print((datetime.date.today()+datetime.timedelta(days=90)).isoformat())")
+call PATCH "/projects/$SUB_ID" \
+  "$(python3 -c "import json;print(json.dumps({'optimization_end_date':'$far'}))")" \
+  >/dev/null
+epic_after=$(call GET "/projects/$EPIC_ID")
+epic_opt_end=$(echo "$epic_after" | jq_field "print(d['optimization_end_date'])")
+[ "$epic_opt_end" = "$far" ] || fail "cascade upward failed: epic opt_end=$epic_opt_end, expected $far"
+ok "subtask push cascaded up to epic (opt_end=$far)"
+
+# Shrink guard: cannot pull the epic's opt_end below the subtask's.
+status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X PATCH -H "content-type: application/json" -H "x-mock-user-id: $ADMIN_ID" \
+  -d "$(python3 -c "import json;print(json.dumps({'optimization_end_date':'$in21'}))")" \
+  "$API_URL/api/projects/$EPIC_ID")
+[ "$status" = "400" ] || fail "expected 400 shrinking epic below subtask, got $status"
+ok "shrinking epic below subtask rejected with HTTP 400"
+
+# Delete guard: cannot hard-delete an epic with live subtasks.
+status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X DELETE -H "x-mock-user-id: $ADMIN_ID" \
+  "$API_URL/api/projects/$EPIC_ID")
+[ "$status" = "400" ] || fail "expected 400 deleting parent-with-subtasks, got $status"
+ok "delete-with-subtasks rejected with HTTP 400"
+
+# Cycle guard: try to move the epic under its own descendant.
+status=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X PATCH -H "content-type: application/json" -H "x-mock-user-id: $ADMIN_ID" \
+  -d "$(python3 -c "import json;print(json.dumps({'type':'subtask','parent_id':'$SUB_ID'}))")" \
+  "$API_URL/api/projects/$EPIC_ID")
+[ "$status" = "400" ] || fail "expected 400 for cycle (parent → own descendant), got $status"
+ok "cycle attempt (parent under own descendant) rejected with HTTP 400"
+
+# Cleanup: subtask first (parent still can't be deleted otherwise),
+# then epic. Uses DELETE both times to also stress the guard shape.
+call DELETE "/projects/$SUB_ID" >/dev/null
+call DELETE "/projects/$EPIC_ID" >/dev/null
+ok "cleaned up hierarchy fixtures"
+
 # ---------- phases page data ----------
 step "Phases endpoint (/api/swim-lanes) returns admin descriptions"
 descs_ok=$(call GET /swim-lanes | jq_field "

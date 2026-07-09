@@ -1,11 +1,13 @@
 import { useMemo, useRef, useState } from "react";
 import { addDays, addMonths, differenceInCalendarDays, endOfMonth, format, min, max, startOfMonth } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronDown, ChevronRight, Layers } from "lucide-react";
 import { api } from "../lib/api";
 import { computePhases } from "../lib/phaseCompute";
 import { useMe } from "../lib/queries";
+import { childrenByParent, indexById, rootEpic } from "../lib/hierarchy";
 import type { Project, SwimLane, Team, User } from "../lib/types";
-import type { ColorBy, GroupBy } from "../lib/viewState";
+import { useViewStore, type ColorBy, type GroupBy } from "../lib/viewState";
 
 type Zoom = "6mo" | "1yr";
 
@@ -30,10 +32,23 @@ const GROUP_HEADER_HEIGHT = 28;
 // unit. Rendered as un-shaded space; the header of the *next* group
 // sits below it, aligned between the label column and the SVG.
 const GROUP_GAP = 12;
-const LEFT_LABEL_WIDTH = 220;
+const LEFT_LABEL_WIDTH = 260;
 const BAR_PADDING = 6;
 const CLICK_THRESHOLD_PX = 3;
 const HANDLE_HITBOX_PX = 8;
+// Per-depth indentation for the tree label column. Epics sit at depth 0
+// against the left edge; each subtask level nudges inward so the tree
+// shape reads at a glance without a heavy nested container. Kept tight
+// so deep trees still fit in the label column.
+const DEPTH_INDENT_PX = 14;
+
+/** One rendered row in the tree — an epic or an expanded descendant. */
+type TreeRow = {
+  project: Project;
+  depth: number;
+  hasChildren: boolean;
+  isExpanded: boolean;
+};
 
 type DragMode = "move" | "target" | "devStart" | "devEnd" | "optStart" | "optEnd";
 
@@ -62,6 +77,11 @@ export function GanttTimeline(props: Props) {
   const { projects, lanes, teams, users, colorBy, groupBy, zoom, onOpen } = props;
   const me = useMe();
   const canEdit = me.data?.role !== "viewer";
+  const expandedEpicIds = useViewStore((s) => s.expandedEpicIds);
+  const toggleEpicExpanded = useViewStore((s) => s.toggleEpicExpanded);
+  const expandAllEpics = useViewStore((s) => s.expandAllEpics);
+  const collapseAllEpics = useViewStore((s) => s.collapseAllEpics);
+  const expandedSet = useMemo(() => new Set(expandedEpicIds), [expandedEpicIds]);
 
   const { start, end } = useMemo(() => computeRange(projects, TIMEFRAME_MONTHS[zoom]), [projects, zoom]);
   const totalDays = Math.max(1, differenceInCalendarDays(end, start));
@@ -78,7 +98,36 @@ export function GanttTimeline(props: Props) {
     return out;
   }, [start, end]);
 
-  const groups = useMemo(() => groupProjects(projects, groupBy, users, lanes, teams), [projects, groupBy, users, lanes, teams]);
+  // Build the tree: which projects have subtasks (for the chevron
+  // affordance), and which roots exist in the current filtered set.
+  // `byId` / `kids` derive from the *scheduled* list only — a subtask
+  // whose parent isn't scheduled won't render as a top-level fallback
+  // because the roadmap deliberately anchors on epics.
+  const byId = useMemo(() => indexById(projects), [projects]);
+  const kids = useMemo(() => childrenByParent(projects), [projects]);
+  const rootIdsInSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of projects) {
+      const rooted = rootEpic(p, byId);
+      if (rooted) s.add(rooted.id);
+    }
+    return s;
+  }, [projects, byId]);
+
+  const groups = useMemo(
+    () => groupTreeRows(projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams),
+    [projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams],
+  );
+
+  // Enable / disable the "expand all" affordance based on how many
+  // epics could actually reveal subtasks. Keeps the UI honest — no
+  // teasing users with a button that does nothing.
+  const expandableEpics = useMemo(
+    () => [...rootIdsInSet].filter((id) => (kids.get(id) ?? []).length > 0),
+    [rootIdsInSet, kids],
+  );
+  const allExpanded = expandableEpics.length > 0
+    && expandableEpics.every((id) => expandedSet.has(id));
 
   const today = new Date();
   const todayX = differenceInCalendarDays(today, start) * dayPx;
@@ -172,6 +221,22 @@ export function GanttTimeline(props: Props) {
 
   return (
     <div className="p-4">
+      <div className="mb-2 flex items-center gap-2 text-xs text-wp-slate">
+        <button
+          type="button"
+          onClick={() => {
+            if (allExpanded) collapseAllEpics();
+            else expandAllEpics(expandableEpics);
+          }}
+          disabled={expandableEpics.length === 0}
+          className="rounded border border-wp-stone bg-white px-2 py-1 text-xs text-wp-ink hover:border-wp-red/40 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {allExpanded ? "Collapse all subtasks" : "Expand all subtasks"}
+        </button>
+        <span>
+          Epics only by default — click <ChevronRight size={11} className="inline align-[-2px]" /> next to an epic to reveal its subtasks.
+        </span>
+      </div>
       <div className="card-surface overflow-hidden">
         <div className="flex">
           <div className="shrink-0" style={{ width: LEFT_LABEL_WIDTH }}>
@@ -188,18 +253,44 @@ export function GanttTimeline(props: Props) {
                     style={{ height: GROUP_HEADER_HEIGHT }}
                   >
                     <span>{g.label}</span>
-                    <span>{g.projects.length}</span>
+                    <span>{g.rows.length}</span>
                   </div>
                 ) : null}
-                {g.projects.map((p) => (
-                  <div
-                    key={`lbl-${p.id}`}
-                    className="flex items-center border-b border-wp-stone px-3 text-xs"
-                    style={{ height: ROW_HEIGHT }}
-                  >
-                    <span className="truncate text-wp-ink">{p.title}</span>
-                  </div>
-                ))}
+                {g.rows.map((row) => {
+                  const p = row.project;
+                  return (
+                    <div
+                      key={`lbl-${p.id}`}
+                      className="flex items-center gap-1 border-b border-wp-stone px-2 text-xs"
+                      style={{ height: ROW_HEIGHT }}
+                    >
+                      {/* Indent scales with depth so nesting is obvious. */}
+                      <div style={{ width: row.depth * DEPTH_INDENT_PX, flexShrink: 0 }} />
+                      {row.hasChildren ? (
+                        <button
+                          type="button"
+                          className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-wp-slate hover:bg-wp-stone/60 hover:text-wp-ink"
+                          onClick={() => toggleEpicExpanded(p.id)}
+                          title={row.isExpanded ? "Hide subtasks" : "Show subtasks"}
+                          aria-label={row.isExpanded ? `Collapse ${p.title}` : `Expand ${p.title}`}
+                        >
+                          {row.isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                        </button>
+                      ) : (
+                        <div className="w-4 shrink-0" />
+                      )}
+                      {row.project.type === "epic" ? (
+                        <Layers size={11} className="shrink-0 text-wp-red" aria-label="Epic" />
+                      ) : null}
+                      <span
+                        className={`min-w-0 flex-1 truncate ${row.depth > 0 ? "text-wp-slate" : "text-wp-ink"}`}
+                        title={p.title}
+                      >
+                        {p.title}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             ))}
           </div>
@@ -211,7 +302,7 @@ export function GanttTimeline(props: Props) {
                 s
                 + (gi > 0 && g.label ? GROUP_GAP : 0)
                 + (g.label ? GROUP_HEADER_HEIGHT : 0)
-                + g.projects.length * ROW_HEIGHT
+                + g.rows.length * ROW_HEIGHT
               ), 0)}
               onPointerMove={onPointerMove}
               onPointerUp={endDrag}
@@ -258,7 +349,8 @@ export function GanttTimeline(props: Props) {
                   if (gi > 0 && g.label) cursorY += GROUP_GAP;
                   const groupStartY = cursorY;
                   if (g.label) cursorY += GROUP_HEADER_HEIGHT;
-                  const rows = g.projects.map((p, idx) => {
+                  const rows = g.rows.map((row, idx) => {
+                    const p = row.project;
                     const rowY = cursorY + idx * ROW_HEIGHT;
                     const activeDrag = drag?.projectId === p.id ? drag : null;
                     const previewProject = activeDrag ? applyDragToProject(p, activeDrag) : p;
@@ -276,10 +368,11 @@ export function GanttTimeline(props: Props) {
                         canEdit={canEdit}
                         activeDrag={activeDrag}
                         onStartDrag={startDrag}
+                        isSubtask={row.depth > 0}
                       />
                     );
                   });
-                  cursorY += g.projects.length * ROW_HEIGHT;
+                  cursorY += g.rows.length * ROW_HEIGHT;
                   return (
                     <g key={`grp-${g.key}`}>
                       {g.label ? (
@@ -317,8 +410,9 @@ function Bar(props: {
   canEdit: boolean;
   activeDrag: DragState | null;
   onStartDrag: (e: React.PointerEvent, projectId: string, mode: DragMode) => void;
+  isSubtask?: boolean;
 }) {
-  const { project: p, y, chartStart, dayPx, lanes, teams, users, colorBy, canEdit, activeDrag, onStartDrag } = props;
+  const { project: p, y, chartStart, dayPx, lanes, teams, users, colorBy, canEdit, activeDrag, onStartDrag, isSubtask } = props;
   const phases = computePhases(p);
   if (!phases.scheduled) return null;
   const lane = lanes.find((l) => l.id === p.swim_lane_id);
@@ -326,8 +420,12 @@ function Bar(props: {
   const owner = users.find((u) => u.id === p.owner_id);
   const base = pickBase(colorBy, lane, primaryTeam, owner);
 
-  const barY = y + BAR_PADDING;
-  const barH = ROW_HEIGHT - BAR_PADDING * 2;
+  // Subtask bars sit a bit thinner so the epic stays visually dominant.
+  // Same y-anchor so the row heights are constant and drag hitboxes
+  // don't shift when you expand a tree.
+  const extraPad = isSubtask ? 3 : 0;
+  const barY = y + BAR_PADDING + extraPad;
+  const barH = ROW_HEIGHT - BAR_PADDING * 2 - extraPad * 2;
 
   const disc = phases.discovery!;
   const dev = phases.development!;
@@ -509,35 +607,91 @@ function computeRange(projects: Project[], timeframeMonths: number) {
   return { start, end };
 }
 
-type Group = { key: string; label: string | null; projects: Project[] };
+type Group = { key: string; label: string | null; rows: TreeRow[] };
 
-function groupProjects(projects: Project[], groupBy: GroupBy, users: User[], lanes: SwimLane[], teams: Team[]): Group[] {
+/**
+ * Build the ordered list of rows for the roadmap. The top-level rows
+ * are the roots of the currently-visible tree (epics and any orphan
+ * subtasks whose parent isn't in the set). Under each root, if the
+ * root is expanded, we recursively include its scheduled descendants
+ * in depth-first order — this is what makes clicking an epic reveal
+ * every subtask below it at once.
+ *
+ * Grouping keys always come from the ROOT, never from the descendant:
+ * expanding an epic under Team A shows the whole tree under Team A
+ * even if a subtask belongs to Team B. That matches the "epic is the
+ * primary unit" mental model the user asked for.
+ */
+function groupTreeRows(
+  projects: Project[],
+  byId: Map<string, Project>,
+  kids: Map<string, Project[]>,
+  rootIdsInSet: Set<string>,
+  expanded: Set<string>,
+  groupBy: GroupBy,
+  users: User[],
+  lanes: SwimLane[],
+  teams: Team[],
+): Group[] {
+  const inSet = new Set(projects.map((p) => p.id));
+
+  // Roots = projects whose nearest ancestor in the current set is
+  // themselves (so: an epic, OR a subtask whose ancestors were
+  // filtered out — treat as an "orphan root" so its bar still renders).
+  const roots = projects.filter((p) => {
+    if (!p.parent_id) return true;
+    // Walk up; if any ancestor is in the set, this project is a
+    // descendant of that ancestor and should NOT be a root.
+    let cursor: Project | undefined = byId.get(p.parent_id);
+    let hops = 0;
+    while (cursor && hops < 32) {
+      if (inSet.has(cursor.id)) return false;
+      cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined;
+      hops++;
+    }
+    return true;
+  });
+
+  const rowsFor = (rootId: string): TreeRow[] => {
+    const out: TreeRow[] = [];
+    const walk = (p: Project, depth: number) => {
+      const children = (kids.get(p.id) ?? []).filter((c) => inSet.has(c.id));
+      const isExpanded = expanded.has(p.id);
+      out.push({ project: p, depth, hasChildren: children.length > 0, isExpanded });
+      if (isExpanded) {
+        for (const c of children.slice().sort(byStart)) walk(c, depth + 1);
+      }
+    };
+    const root = byId.get(rootId);
+    if (root) walk(root, 0);
+    return out;
+  };
+
   if (groupBy === "none") {
-    const sorted = [...projects].sort(byStart);
-    return [{ key: "all", label: null, projects: sorted }];
+    const sorted = roots.slice().sort(byStart);
+    const flat = sorted.flatMap((r) => rowsFor(r.id));
+    return [{ key: "all", label: null, rows: flat }];
   }
 
   const bucket = new Map<string, Project[]>();
   const labels = new Map<string, string>();
-  // Optional explicit sort weight per bucket key. When present, we
-  // honor it before falling back to alphabetical, so admin-defined
-  // orders for teams / swim lanes carry through to the Roadmap.
   const sortKeys = new Map<string, number>();
-  // The unassigned catch-all always sits at the bottom regardless of
-  // what everything else uses for ordering. Big number keeps it there
-  // for the numeric comparator without needing a special branch.
   const UNASSIGNED_KEY = "__unassigned";
   const UNASSIGNED_SORT = Number.MAX_SAFE_INTEGER;
 
-  const put = (key: string, label: string, sortKey: number | undefined, project: Project) => {
+  const put = (key: string, label: string, sortKey: number | undefined, root: Project) => {
     labels.set(key, label);
     if (sortKey !== undefined) sortKeys.set(key, sortKey);
     const arr = bucket.get(key) ?? [];
-    arr.push(project);
+    arr.push(root);
     bucket.set(key, arr);
   };
 
-  for (const p of projects) {
+  // Group by ROOT's attributes so a whole tree lives under a single
+  // heading. Suppress the void where root.rootIdsInSet check is
+  // implicit because roots are already the top-of-tree elements.
+  void rootIdsInSet;
+  for (const p of roots) {
     if (groupBy === "owner") {
       const u = users.find((x) => x.id === p.owner_id);
       put(u?.id ?? UNASSIGNED_KEY, u?.name ?? "Unassigned", undefined, p);
@@ -545,8 +699,6 @@ function groupProjects(projects: Project[], groupBy: GroupBy, users: User[], lan
       const l = lanes.find((x) => x.id === p.swim_lane_id);
       put(l?.id ?? UNASSIGNED_KEY, l?.name ?? "Unassigned", l?.order, p);
     } else if (groupBy === "team") {
-      // Projects can have multiple teams; render the bar under each so
-      // every team sees its own row of work.
       if (p.teams.length === 0) {
         put(UNASSIGNED_KEY, "Unassigned", undefined, p);
       } else {
@@ -563,7 +715,11 @@ function groupProjects(projects: Project[], groupBy: GroupBy, users: User[], lan
   }
 
   return Array.from(bucket.entries())
-    .map(([k, ps]) => ({ key: k, label: labels.get(k) ?? k, projects: ps.slice().sort(byStart) }))
+    .map(([k, rs]) => ({
+      key: k,
+      label: labels.get(k) ?? k,
+      rows: rs.slice().sort(byStart).flatMap((r) => rowsFor(r.id)),
+    }))
     .sort((a, b) => {
       const aw = a.key === UNASSIGNED_KEY ? UNASSIGNED_SORT : sortKeys.get(a.key);
       const bw = b.key === UNASSIGNED_KEY ? UNASSIGNED_SORT : sortKeys.get(b.key);

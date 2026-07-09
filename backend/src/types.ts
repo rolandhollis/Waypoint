@@ -67,6 +67,8 @@ export type TeamRow = {
   updated_at: Date;
 };
 
+export type ProjectType = "epic" | "subtask";
+
 /**
  * A project row as returned by API queries. `teams` is always populated
  * from the `project_teams` join table via a subquery in the SELECT; it
@@ -81,6 +83,14 @@ export type ProjectRow = {
   owner_id: string | null;
   teams: string[];
   tags: string[];
+  /**
+   * Every card is either a top-level epic or a subtask nested under
+   * another card (which may itself be a subtask — the tree can be
+   * arbitrarily deep). Enforced by CHECK constraints in migration 013:
+   * type='epic' ⇒ parent_id NULL; type='subtask' ⇒ parent_id NOT NULL.
+   */
+  type: ProjectType;
+  parent_id: string | null;
   start_date: string | null;
   target_date: string | null;
   dev_start_date: string | null;

@@ -1,5 +1,5 @@
 import { differenceInCalendarDays, format } from "date-fns";
-import { AlertTriangle, Calendar, ChevronRight, Map } from "lucide-react";
+import { AlertTriangle, Calendar, ChevronRight, Layers, Map } from "lucide-react";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy } from "../lib/viewState";
 import { cn } from "../lib/cn";
@@ -14,15 +14,23 @@ export function ProjectCard(props: {
   users: User[];
   teams: Team[];
   lanes: SwimLane[];
+  /** Full project list — used to look up the parent's title for
+   *  subtask cards. Optional so the DragOverlay use case (which just
+   *  clones the card mid-drag) can skip passing it. */
+  allProjects?: Project[];
   onOpen?: () => void;
   isDragging?: boolean;
   dragHandleProps?: React.HTMLAttributes<HTMLElement> & Record<string, unknown>;
 }) {
-  const { project, colorBy, users, teams, lanes, onOpen, isDragging, dragHandleProps } = props;
+  const { project, colorBy, users, teams, lanes, allProjects, onOpen, isDragging, dragHandleProps } = props;
   const owner = users.find((u) => u.id === project.owner_id);
   const projectTeams = teams.filter((t) => project.teams.includes(t.id));
   const lane = lanes.find((l) => l.id === project.swim_lane_id);
   const accent = pickAccent({ colorBy, lane, teams: projectTeams, owner });
+  const parent = project.parent_id
+    ? allProjects?.find((p) => p.id === project.parent_id)
+    : undefined;
+  const isEpic = project.type === "epic";
 
   const daysInStage = project.updated_at
     ? Math.max(0, differenceInCalendarDays(new Date(), new Date(project.updated_at)))
@@ -68,7 +76,27 @@ export function ProjectCard(props: {
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1 pr-4">
-          <div className="line-clamp-2 text-sm font-medium text-wp-ink">{project.title}</div>
+          {/* Parent breadcrumb on subtasks — small so it doesn't compete
+              with the title but present so it's obvious what tree the
+              card belongs to. Only rendered when we can resolve the
+              parent (allProjects passed). */}
+          {parent ? (
+            <div className="mb-0.5 truncate text-[11px] text-wp-slate/80">
+              ↳ {parent.title}
+            </div>
+          ) : null}
+          <div className="line-clamp-2 flex items-center gap-1 text-sm font-medium text-wp-ink">
+            {isEpic ? (
+              <span
+                className="inline-flex shrink-0 items-center text-wp-red"
+                title="Epic"
+                aria-label="Epic"
+              >
+                <Layers size={12} />
+              </span>
+            ) : null}
+            <span className="min-w-0 flex-1 truncate">{project.title}</span>
+          </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-wp-slate">
             {projectTeams.map((t) => (
               <span

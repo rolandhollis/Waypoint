@@ -29,9 +29,19 @@ type PerView = {
 type Store = {
   board: PerView;
   roadmap: PerView;
+  /**
+   * Set of epic ids that are expanded on the Roadmap. Everything else
+   * shows only the epic row; expanding reveals the full descendant
+   * subtree indented under it. Stored as an array (not Set) so
+   * zustand's `persist` can serialize it.
+   */
+  expandedEpicIds: string[];
   setFilters: (view: ViewKey, filters: FilterState) => void;
   setColorBy: (view: ViewKey, colorBy: ColorBy) => void;
   setGroupBy: (view: ViewKey, groupBy: GroupBy) => void;
+  toggleEpicExpanded: (epicId: string) => void;
+  expandAllEpics: (epicIds: string[]) => void;
+  collapseAllEpics: () => void;
   clear: (view: ViewKey) => void;
 };
 
@@ -47,9 +57,18 @@ export const useViewStore = create<Store>()(
     (set) => ({
       board: defaultBoardPerView,
       roadmap: defaultRoadmapPerView,
+      expandedEpicIds: [],
       setFilters: (view, filters) => set((s) => ({ ...s, [view]: { ...s[view], filters } })),
       setColorBy: (view, colorBy) => set((s) => ({ ...s, [view]: { ...s[view], colorBy } })),
       setGroupBy: (view, groupBy) => set((s) => ({ ...s, [view]: { ...s[view], groupBy } })),
+      toggleEpicExpanded: (epicId) => set((s) => {
+        const has = s.expandedEpicIds.includes(epicId);
+        return { expandedEpicIds: has
+          ? s.expandedEpicIds.filter((id) => id !== epicId)
+          : [...s.expandedEpicIds, epicId] };
+      }),
+      expandAllEpics: (epicIds) => set(() => ({ expandedEpicIds: [...epicIds] })),
+      collapseAllEpics: () => set(() => ({ expandedEpicIds: [] })),
       clear: (view) => set((s) => ({
         ...s,
         [view]: view === "board" ? defaultBoardPerView : defaultRoadmapPerView,
@@ -61,7 +80,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 2,
+      version: 3,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -70,6 +89,11 @@ export const useViewStore = create<Store>()(
         // any custom pick stays intact.
         if (version < 2 && persisted.roadmap?.groupBy === "none") {
           persisted.roadmap = { ...persisted.roadmap, groupBy: "team" };
+        }
+        // < v3: added expandedEpicIds. Default to collapsed for a
+        // clean landing view — epics-only is the requested norm.
+        if (version < 3 && !Array.isArray(persisted.expandedEpicIds)) {
+          persisted.expandedEpicIds = [];
         }
         return persisted;
       },

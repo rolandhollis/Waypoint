@@ -195,7 +195,7 @@ export function StatusReportView() {
         </table>
       </div>
 
-      {selectedId ? <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} /> : null}
+      {selectedId ? <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} onOpenProject={setSelectedId} /> : null}
       {statusModalId ? <StatusUpdateModal projectId={statusModalId} onClose={() => setStatusModalId(null)} /> : null}
     </div>
   );

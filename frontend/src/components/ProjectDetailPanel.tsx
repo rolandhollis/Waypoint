@@ -2,15 +2,17 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
-import { X } from "lucide-react";
+import { ChevronRight, X } from "lucide-react";
 import { api } from "../lib/api";
-import type { Project, ProjectTimelineEntry, Team, WeeklyStatusUpdate } from "../lib/types";
+import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
 import { useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { computePhases } from "../lib/phaseCompute";
 import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
+import { ancestors, childrenByParent, descendants, indexById } from "../lib/hierarchy";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 import { PairedDates } from "./PairedDates";
 import { ProjectComments } from "./ProjectComments";
+import { ProjectPicker } from "./ProjectPicker";
 import { StatusPill } from "./StatusPill";
 import { StatusUpdateForm } from "./StatusUpdateForm";
 import { TagPicker } from "./TagPicker";
@@ -18,7 +20,20 @@ import { TeamMultiSelect } from "./TeamMultiSelect";
 
 type Draft = Partial<Project>;
 
-export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () => void }) {
+export function ProjectDetailPanel({
+  id,
+  onClose,
+  onOpenProject,
+}: {
+  id: string;
+  onClose: () => void;
+  /**
+   * Optional handler the parent view passes so breadcrumb / children
+   * clicks can swap the currently-selected project without closing the
+   * panel. Views that don't supply it fall back to a plain close.
+   */
+  onOpenProject?: (nextId: string) => void;
+}) {
   const me = useMe();
   const canWrite = me.data?.role !== "viewer";
   const lanes = useSwimLanes();
@@ -80,6 +95,20 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
   const projectTeams = (teams.data ?? []).filter((t) => merged.teams.includes(t.id));
   const lane = lanes.data?.find((l) => l.id === merged.swim_lane_id);
   const requiresStatus = !!lane?.requires_weekly_status;
+  // Hierarchy context: indices built once from the flat list so the
+  // parent picker, breadcrumb, and children section all see the same
+  // topology. `excludeIds` prevents cycle attempts in the picker
+  // (self + everything currently rooted under this project).
+  const projectList = allProjects.data ?? [];
+  const byId = useMemo(() => indexById(projectList), [projectList]);
+  const kids = useMemo(() => childrenByParent(projectList), [projectList]);
+  const parentChain = useMemo(() => ancestors(merged.id, byId).reverse(), [merged.id, byId]);
+  const myChildren = kids.get(merged.id) ?? [];
+  const excludeParentIds = useMemo(() => {
+    const s = new Set<string>([merged.id]);
+    for (const d of descendants(merged.id, kids)) s.add(d.id);
+    return s;
+  }, [merged.id, kids]);
   // Show the archive button whenever the card isn't already in an
   // archive lane. Non-admins never see admin-only lanes in
   // `lanes.data`, so `lane.is_archive` is always false for them and
@@ -95,6 +124,29 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
         <Dialog.Content className="fixed inset-y-0 right-0 z-50 flex w-full max-w-2xl flex-col bg-white shadow-xl outline-none">
           <div className="flex items-start justify-between border-b border-wp-stone px-5 py-3">
             <div className="min-w-0 flex-1">
+              {/* Type + parent breadcrumb above the title so hierarchy
+                  context is the first thing a viewer registers. Clicking
+                  a crumb navigates to that ancestor's detail panel. */}
+              <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[11px] text-wp-slate">
+                <TypeBadge type={merged.type} />
+                {parentChain.length ? (
+                  <>
+                    {parentChain.map((a, i) => (
+                      <span key={a.id} className="flex items-center gap-1">
+                        <button
+                          className="max-w-[16rem] truncate text-left text-wp-slate hover:text-wp-ink hover:underline"
+                          onClick={() => onOpenProject ? onOpenProject(a.id) : onClose()}
+                          title={onOpenProject ? `Open ${a.title}` : "Close and navigate to the parent from the board"}
+                        >
+                          {a.title}
+                        </button>
+                        {i < parentChain.length - 1 ? <ChevronRight size={12} /> : null}
+                      </span>
+                    ))}
+                    <ChevronRight size={12} />
+                  </>
+                ) : null}
+              </div>
               <Dialog.Title asChild>
                 <input
                   className="input !border-transparent !bg-transparent !p-0 text-lg font-semibold focus:!border-wp-red focus:!bg-white focus:!px-2"
@@ -142,6 +194,50 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
                   suggestions={knownTags}
                   disabled={!canWrite}
                 />
+              </Field>
+              <Field
+                label="Hierarchy"
+                className="col-span-2"
+                hint={merged.type === "subtask"
+                  ? "Extending an end date here also extends its parent (and its ancestors) automatically."
+                  : "Subtasks live under this epic. Shrinking an end date is rejected when a subtask still needs the room."}
+              >
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-4">
+                    {(["epic", "subtask"] as ProjectType[]).map((t) => (
+                      <label key={t} className="flex cursor-pointer items-center gap-2 text-sm text-wp-ink">
+                        <input
+                          type="radio"
+                          name={`project-type-${id}`}
+                          value={t}
+                          disabled={!canWrite}
+                          checked={merged.type === t}
+                          onChange={() => setDraft((d) => ({
+                            ...d,
+                            type: t,
+                            // Flipping to epic clears the parent; flipping
+                            // to subtask keeps whatever parent is currently
+                            // set (or leaves it null for the picker to fill).
+                            parent_id: t === "epic" ? null : d.parent_id ?? project.parent_id,
+                          }))}
+                        />
+                        <span className="capitalize">{t}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {merged.type === "subtask" ? (
+                    <div className="min-w-0 flex-1">
+                      <ProjectPicker
+                        value={merged.parent_id}
+                        onChange={(next) => setDraft((d) => ({ ...d, parent_id: next }))}
+                        projects={projectList}
+                        excludeIds={excludeParentIds}
+                        disabled={!canWrite}
+                        placeholder="— Pick a parent —"
+                      />
+                    </div>
+                  ) : null}
+                </div>
               </Field>
               <Field label="Discovery and Definition" className="col-span-2">
                 <PairedDates
@@ -213,6 +309,37 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
               )}
             </section>
 
+            {myChildren.length ? (
+              <section className="mt-6">
+                <h3 className="text-sm font-semibold text-wp-ink">
+                  Subtasks <span className="text-xs font-normal text-wp-slate">({myChildren.length} direct)</span>
+                </h3>
+                <ul className="mt-2 space-y-1">
+                  {myChildren.map((child) => {
+                    const childLane = lanes.data?.find((l) => l.id === child.swim_lane_id);
+                    const grandkids = kids.get(child.id) ?? [];
+                    return (
+                      <li key={child.id}>
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-sm text-wp-ink hover:border-wp-stone hover:bg-wp-stone/30"
+                          onClick={() => onOpenProject ? onOpenProject(child.id) : onClose()}
+                          title={`Open ${child.title}`}
+                        >
+                          <TypeBadge type={child.type} />
+                          <span className="min-w-0 flex-1 truncate">{child.title}</span>
+                          <span className="text-[11px] text-wp-slate">
+                            {childLane?.name ?? "—"}
+                            {grandkids.length ? ` · ${grandkids.length} sub` : ""}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ) : null}
+
             {requiresStatus ? (
               <section className="mt-6 rounded-md border border-wp-stone bg-wp-bg p-3">
                 <h3 className="text-sm font-semibold text-wp-ink">This week&rsquo;s status</h3>
@@ -239,7 +366,7 @@ export function ProjectDetailPanel({ id, onClose }: { id: string; onClose: () =>
               <h3 className="text-sm font-semibold text-wp-ink">Audit trail</h3>
               {history.data && history.data.length ? (
                 <ol className="mt-2 space-y-1 text-xs text-wp-slate">
-                  {history.data.map((h) => <HistoryRow key={h.id} h={h} />)}
+                  {history.data.map((h) => <HistoryRow key={h.id} h={h} allProjectsById={byId} />)}
                 </ol>
               ) : (
                 <p className="mt-1.5 text-xs text-wp-slate">No activity yet.</p>
@@ -348,7 +475,7 @@ function StatusHistoryRow({ u }: { u: WeeklyStatusUpdate }) {
   );
 }
 
-function HistoryRow({ h }: { h: ProjectTimelineEntry }) {
+function HistoryRow({ h, allProjectsById }: { h: ProjectTimelineEntry; allProjectsById?: Map<string, Project> }) {
   const users = useUsers();
   const lanes = useSwimLanes();
   const teams = useTeams();
@@ -363,6 +490,7 @@ function HistoryRow({ h }: { h: ProjectTimelineEntry }) {
         lanes={lanes.data ?? []}
         teams={teams.data ?? []}
         users={users.data ?? []}
+        projectsById={allProjectsById}
       />
     </li>
   );
@@ -373,11 +501,13 @@ function HistoryRowBody({
   lanes,
   teams,
   users,
+  projectsById,
 }: {
   entry: ProjectTimelineEntry;
   lanes: { id: string; name: string }[];
   teams: Team[];
   users: { id: string; name: string }[];
+  projectsById?: Map<string, Project>;
 }) {
   const strong = (s: string) => <b className="text-wp-ink">{s}</b>;
 
@@ -450,6 +580,21 @@ function HistoryRowBody({
     return <>changed {label} from {strong(fromName ?? "—")} to {strong(toName ?? "—")}.</>;
   }
 
+  // Parent-id edits: swap UUIDs for project titles when possible so
+  // the trail reads naturally ("re-parented under X"). Fall back to
+  // the raw id if the project isn't in the current list (e.g., deleted).
+  if (field === "parent_id") {
+    const nameFor = (v: unknown) => {
+      if (isBlank(v)) return null;
+      return projectsById?.get(String(v))?.title ?? String(v);
+    };
+    const fromName = nameFor(from);
+    const toName = nameFor(to);
+    if (fromName == null && toName != null) return <>re-parented under {strong(toName)}.</>;
+    if (fromName != null && toName == null) return <>promoted to a top-level epic (was under {strong(fromName)}).</>;
+    return <>moved from {strong(fromName ?? "—")} to {strong(toName ?? "—")}.</>;
+  }
+
   // Generic scalar (dates, title, etc.).
   if (isBlank(to)) return <>cleared {label}.</>;
   if (isBlank(from)) return <>set {label} to {strong(String(to))}.</>;
@@ -462,6 +607,8 @@ const FIELD_LABELS: Record<string, string> = {
   owner_id: "owner",
   teams: "teams",
   tags: "tags",
+  type: "type",
+  parent_id: "parent",
   start_date: "discovery start",
   target_date: "discovery target",
   dev_start_date: "development start",
@@ -478,4 +625,20 @@ function isBlank(v: unknown): boolean {
 function toStrArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.map(String);
+}
+
+/** Compact "epic" / "subtask" chip. Colored to nudge epics as the
+ *  primary structural unit. */
+function TypeBadge({ type }: { type: ProjectType }) {
+  return (
+    <span
+      className={
+        type === "epic"
+          ? "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-wp-red/10 text-wp-red"
+          : "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-wp-stone/60 text-wp-slate"
+      }
+    >
+      {type}
+    </span>
+  );
 }

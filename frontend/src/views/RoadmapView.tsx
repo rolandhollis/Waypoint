@@ -90,7 +90,7 @@ export function RoadmapView() {
         ) : null}
       </div>
 
-      {selectedId ? <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} /> : null}
+      {selectedId ? <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} onOpenProject={setSelectedId} /> : null}
     </div>
   );
 }

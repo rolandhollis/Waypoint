@@ -6,6 +6,26 @@ import { requireWrite } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
 import type { ProjectAuditAction, ProjectRow, SwimLaneRow, TimelineEntryRow } from "../types.js";
 
+/** Ordered phase-date fields, earliest → latest. Used by both the
+ * internal-ordering validator and the forward-cascade helper. */
+const PHASE_ORDER = [
+  "start_date",
+  "target_date",
+  "dev_start_date",
+  "dev_end_date",
+  "optimization_start_date",
+  "optimization_end_date",
+] as const;
+type PhaseField = (typeof PHASE_ORDER)[number];
+
+/** Only these three "end-of-phase" dates trigger cross-hierarchy
+ * enforcement (parent must cover its subtasks; subtasks pushing out
+ * automatically extend their ancestors). The start/mid dates were
+ * deliberately left out — projects often have loose starts and the
+ * user only cares that the shipping milestones stay consistent. */
+const HIERARCHY_END_FIELDS = ["target_date", "dev_end_date", "optimization_end_date"] as const;
+type HierarchyEndField = (typeof HIERARCHY_END_FIELDS)[number];
+
 export const projectsRouter = Router();
 
 /**
@@ -19,6 +39,8 @@ const AUDITED_FIELDS = [
   "owner_id",
   "teams",
   "tags",
+  "type",
+  "parent_id",
   "start_date",
   "target_date",
   "dev_start_date",
@@ -145,6 +167,247 @@ function validatePhaseDates(p: {
   }
 }
 
+/**
+ * Validate a proposed (type, parent_id) pair against the current DB
+ * state. Rejects self-parenting, parenting to a soft-deleted item,
+ * parenting to a nonexistent item, and cycles (candidate parent must
+ * not be a descendant of `selfId`). Called on both create and patch;
+ * `selfId` is null when creating a brand-new row.
+ */
+async function validateHierarchy(
+  client: PoolClient,
+  selfId: string | null,
+  nextType: "epic" | "subtask",
+  nextParentId: string | null,
+) {
+  if (nextType === "epic") {
+    if (nextParentId != null) {
+      throw new HttpError(400, "epics cannot have a parent — clear parent_id or set type to 'subtask'");
+    }
+    return;
+  }
+  // Subtask branch: must have a real, live parent that isn't itself
+  // (direct self-loop caught here so error message is nice; the DB
+  // CHECK is a redundant safety net).
+  if (!nextParentId) {
+    throw new HttpError(400, "subtasks require a parent_id");
+  }
+  if (nextParentId === selfId) {
+    throw new HttpError(400, "a project cannot be its own parent");
+  }
+  const { rows: parentRows } = await client.query<{ id: string; deleted_at: Date | null }>(
+    `SELECT id, deleted_at FROM projects WHERE id = $1`,
+    [nextParentId],
+  );
+  const parent = parentRows[0];
+  if (!parent) throw new HttpError(400, "parent project does not exist");
+  if (parent.deleted_at) throw new HttpError(400, "cannot parent a subtask under a deleted project");
+
+  // Cycle check: walk down from selfId (only meaningful on PATCH) and
+  // make sure the candidate parent isn't in its subtree. Cheap even for
+  // deep trees because we short-circuit on the first hit.
+  if (selfId) {
+    const { rows: descendants } = await client.query<{ id: string }>(
+      `WITH RECURSIVE tree AS (
+         SELECT id FROM projects WHERE parent_id = $1 AND deleted_at IS NULL
+         UNION ALL
+         SELECT p.id FROM projects p JOIN tree t ON p.parent_id = t.id
+          WHERE p.deleted_at IS NULL
+       )
+       SELECT id FROM tree WHERE id = $2 LIMIT 1`,
+      [selfId, nextParentId],
+    );
+    if (descendants[0]) {
+      throw new HttpError(400, "cannot move a project under one of its own descendants (would create a cycle)");
+    }
+  }
+}
+
+/**
+ * Look up the maximum END-phase date across every descendant of
+ * `projectId` (transitive; not just direct children). Returns null
+ * for any field with no descendant contribution — treat null as "no
+ * constraint from below". Used to reject a parent PATCH that would
+ * shrink an end date past its subtasks.
+ */
+async function getDescendantMaxEnds(
+  client: PoolClient,
+  projectId: string,
+): Promise<Record<HierarchyEndField, string | null>> {
+  const { rows } = await client.query<{
+    max_target: string | null;
+    max_dev_end: string | null;
+    max_opt_end: string | null;
+  }>(
+    `WITH RECURSIVE descendants AS (
+       SELECT id, target_date, dev_end_date, optimization_end_date
+         FROM projects
+        WHERE parent_id = $1 AND deleted_at IS NULL
+       UNION ALL
+       SELECT p.id, p.target_date, p.dev_end_date, p.optimization_end_date
+         FROM projects p
+         JOIN descendants d ON p.parent_id = d.id
+        WHERE p.deleted_at IS NULL
+     )
+     SELECT MAX(target_date)::text        AS max_target,
+            MAX(dev_end_date)::text       AS max_dev_end,
+            MAX(optimization_end_date)::text AS max_opt_end
+       FROM descendants`,
+    [projectId],
+  );
+  const r = rows[0] ?? { max_target: null, max_dev_end: null, max_opt_end: null };
+  return {
+    target_date: r.max_target,
+    dev_end_date: r.max_dev_end,
+    optimization_end_date: r.max_opt_end,
+  };
+}
+
+/**
+ * Given a proposed set of end-date changes, throw if any descendant
+ * would be left "sticking out" past the parent (i.e. the user tried
+ * to shrink the parent below a child). Listing the offending fields
+ * with actual dates makes it obvious what to fix. Called from PATCH
+ * of any item — cheap when the item has no subtasks (single query).
+ */
+async function assertEndsCoverDescendants(
+  client: PoolClient,
+  projectId: string,
+  proposed: Partial<Record<HierarchyEndField, string | null>>,
+) {
+  // Only bother querying if any HIERARCHY_END_FIELDS is being written.
+  if (!HIERARCHY_END_FIELDS.some((f) => proposed[f] !== undefined)) return;
+  const maxes = await getDescendantMaxEnds(client, projectId);
+  for (const field of HIERARCHY_END_FIELDS) {
+    const next = proposed[field];
+    if (next === undefined) continue;
+    const childMax = maxes[field];
+    if (!childMax) continue;
+    if (next === null) {
+      throw new HttpError(400,
+        `cannot clear ${field} because subtasks still have it set (latest is ${childMax}); update or archive those subtasks first`);
+    }
+    if (next < childMax) {
+      throw new HttpError(400,
+        `cannot set ${field} to ${next} — a subtask has it set to ${childMax}; extend the parent or adjust the subtask first`);
+    }
+  }
+}
+
+/**
+ * Push the given END fields forward in the parent chain so every
+ * ancestor's end dates cover the change. Called after a subtask's
+ * dates are extended so the epic (and any intermediate parents)
+ * stay consistent automatically. Each field is cascaded independently
+ * and, on any ancestor whose end date is extended, we also push its
+ * downstream phase dates forward to keep that ancestor internally
+ * ordered (target must stay ≤ dev_end etc.). Writes audit rows so
+ * the PM sees "extended dev_end_date because subtask X was pushed".
+ */
+async function cascadeEndsUpward(
+  client: PoolClient,
+  fromProjectId: string,
+  extensions: Partial<Record<HierarchyEndField, string>>,
+  userId: string,
+) {
+  if (Object.values(extensions).every((v) => v == null)) return;
+
+  const { rows: selfRows } = await client.query<{ parent_id: string | null }>(
+    `SELECT parent_id FROM projects WHERE id = $1`,
+    [fromProjectId],
+  );
+  const parentId = selfRows[0]?.parent_id;
+  if (!parentId) return;
+
+  const { rows: parentRows } = await client.query<ProjectRow>(
+    `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1 AND p.deleted_at IS NULL FOR UPDATE`,
+    [parentId],
+  );
+  const parent = parentRows[0];
+  if (!parent) return;
+
+  // Start from parent's current dates; overlay extensions where they
+  // extend the current value; then cascade FORWARD within the parent
+  // (each end field pushes any later phase-date field that is set and
+  // now trails behind).
+  const proposed: Record<PhaseField, string | null> = {
+    start_date: parent.start_date,
+    target_date: parent.target_date,
+    dev_start_date: parent.dev_start_date,
+    dev_end_date: parent.dev_end_date,
+    optimization_start_date: parent.optimization_start_date,
+    optimization_end_date: parent.optimization_end_date,
+  };
+
+  const parentExtensions: Partial<Record<HierarchyEndField, string>> = {};
+
+  for (const field of HIERARCHY_END_FIELDS) {
+    const incoming = extensions[field];
+    if (!incoming) continue;
+    if (!proposed[field] || (proposed[field] as string) < incoming) {
+      proposed[field] = incoming;
+      parentExtensions[field] = incoming;
+      // Ripple forward: any later phase date that's set and now sits
+      // before `incoming` must be pushed to `incoming` too, otherwise
+      // we'd break the parent's internal phase-order invariant.
+      const startIdx = PHASE_ORDER.indexOf(field);
+      for (let i = startIdx + 1; i < PHASE_ORDER.length; i++) {
+        const later = PHASE_ORDER[i]!;
+        if (proposed[later] && (proposed[later] as string) < incoming) {
+          proposed[later] = incoming;
+        }
+      }
+    }
+  }
+
+  const changed: PhaseField[] = PHASE_ORDER.filter((f) => proposed[f] !== parent[f]);
+  if (changed.length === 0) return;
+
+  const setFragments = changed.map((k, i) => `"${k}" = $${i + 2}`).join(", ");
+  const values = changed.map((k) => proposed[k]);
+  await client.query(
+    `UPDATE projects SET ${setFragments}, updated_at = NOW() WHERE id = $1`,
+    [parentId, ...values],
+  );
+
+  for (const field of changed) {
+    await recordAudit(client, {
+      projectId: parentId,
+      userId,
+      action: "edit",
+      field,
+      from: parent[field] ?? null,
+      to: proposed[field] ?? null,
+    });
+  }
+
+  await cascadeEndsUpward(client, parentId, parentExtensions, userId);
+}
+
+/**
+ * Reject the delete if the project still has any live subtasks. User
+ * chose "block" over "auto-promote" or "cascade delete" so the
+ * failure mode is clear rather than surprising.
+ */
+async function assertNoLiveSubtasks(client: PoolClient, projectId: string, verb: string) {
+  const { rows } = await client.query<{ n: number; titles: string[] }>(
+    `SELECT COUNT(*)::int AS n,
+            COALESCE(array_agg(title) FILTER (WHERE title IS NOT NULL), ARRAY[]::text[]) AS titles
+       FROM (
+         SELECT title FROM projects
+          WHERE parent_id = $1 AND deleted_at IS NULL
+          LIMIT 3
+       ) s`,
+    [projectId],
+  );
+  const n = rows[0]?.n ?? 0;
+  if (n > 0) {
+    const preview = rows[0]!.titles.map((t) => `"${t}"`).join(", ");
+    throw new HttpError(400,
+      `cannot ${verb} this item because it still has ${n} live subtask${n === 1 ? "" : "s"} (${preview}). Re-parent or archive them first.`);
+  }
+}
+
 const projectBaseSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(50_000).optional(),
@@ -152,6 +415,8 @@ const projectBaseSchema = z.object({
   owner_id: z.string().uuid().nullable().optional(),
   teams: z.array(z.string().uuid()).max(10).optional(),
   tags: z.array(z.string().max(64)).max(20).optional(),
+  type: z.enum(["epic", "subtask"]).optional(),
+  parent_id: z.string().uuid().nullable().optional(),
   start_date: z.string().nullable().optional(),
   target_date: z.string().nullable().optional(),
   dev_start_date: z.string().nullable().optional(),
@@ -165,6 +430,7 @@ const projectBaseSchema = z.object({
  * column derived from the join, so it's excluded. */
 const PROJECT_COLUMN_KEYS = [
   "title", "description", "swim_lane_id", "owner_id", "tags",
+  "type", "parent_id",
   "start_date", "target_date", "dev_start_date", "dev_end_date",
   "optimization_start_date", "optimization_end_date",
 ] as const;
@@ -216,6 +482,8 @@ projectsRouter.get("/:id", async (req, res) => {
 projectsRouter.post("/", requireWrite, async (req, res) => {
   const body = projectBaseSchema.parse(req.body);
   validatePhaseDates(body);
+  const nextType = body.type ?? "epic";
+  const nextParentId = body.parent_id ?? null;
   const result = await withTransaction(async (client) => {
     // Every project must live in a lane (migration 010 enforces this
     // at the DB level). If the client didn't pick one, fall back to
@@ -235,6 +503,11 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
       if (!laneId) throw new HttpError(400, "cannot create a project: no swim lanes exist yet");
     }
 
+    // Verify (type, parent_id) is legal — subtask needs a real parent,
+    // epic must not carry one. Runs before the INSERT so the DB CHECK
+    // isn't the one surfacing errors to the user.
+    await validateHierarchy(client, null, nextType, nextParentId);
+
     const { rows: maxRows } = await client.query<{ next: number }>(
       `SELECT COALESCE(MAX(position), -1) + 1 AS next
          FROM projects WHERE swim_lane_id = $1 AND deleted_at IS NULL`,
@@ -244,9 +517,10 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO projects
          (title, description, swim_lane_id, position, owner_id, tags,
+          type, parent_id,
           start_date, target_date, dev_start_date, dev_end_date,
           optimization_start_date, optimization_end_date, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
       [
         body.title,
         body.description ?? "",
@@ -254,6 +528,8 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
         position,
         body.owner_id ?? req.user!.id,
         body.tags ?? [],
+        nextType,
+        nextParentId,
         body.start_date ?? null,
         body.target_date ?? null,
         body.dev_start_date ?? null,
@@ -277,6 +553,20 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
       userId: req.user!.id,
       action: "create",
     });
+
+    // If a subtask is created with end dates that push out the parent,
+    // extend the parent chain immediately so the tree lands consistent.
+    if (nextType === "subtask" && nextParentId) {
+      const extensions: Partial<Record<HierarchyEndField, string>> = {};
+      for (const field of HIERARCHY_END_FIELDS) {
+        const v = body[field];
+        if (v) extensions[field] = v;
+      }
+      if (Object.keys(extensions).length) {
+        await cascadeEndsUpward(client, projectId, extensions, req.user!.id);
+      }
+    }
+
     const { rows: finalRows } = await client.query<ProjectRow>(
       `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
       [projectId],
@@ -302,6 +592,33 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
     const existing = existingRows[0];
     if (!existing) throw new HttpError(404, "project not found");
 
+    // Resolve the effective (type, parent_id) after the PATCH so we
+    // can validate the pair as a whole. Changing type flips whether
+    // parent_id is required — enforce that here rather than let the
+    // DB CHECK be the messenger.
+    const effectiveType = body.type ?? existing.type;
+    let effectiveParent: string | null;
+    if (body.parent_id !== undefined) {
+      effectiveParent = body.parent_id;
+    } else if (body.type === "epic") {
+      // Type flipped epic → we intentionally clear any dangling parent.
+      effectiveParent = null;
+    } else if (body.type === "subtask" && !existing.parent_id) {
+      throw new HttpError(400, "flipping type to 'subtask' also requires a parent_id");
+    } else {
+      effectiveParent = existing.parent_id;
+    }
+    // Normalize: clear parent when the effective type is epic even if
+    // the caller forgot to. Keeps DB CHECK happy without extra hoops.
+    if (effectiveType === "epic") effectiveParent = null;
+
+    if (
+      body.type !== undefined ||
+      body.parent_id !== undefined
+    ) {
+      await validateHierarchy(client, projectId, effectiveType, effectiveParent);
+    }
+
     // If any phase-date is being changed, revalidate the whole chain using
     // the incoming value where present, otherwise the persisted value. This
     // catches attempts to (say) push target_date past a persisted dev_start.
@@ -321,6 +638,17 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
         optimization_start_date: body.optimization_start_date !== undefined ? body.optimization_start_date : existing.optimization_start_date,
         optimization_end_date: body.optimization_end_date !== undefined ? body.optimization_end_date : existing.optimization_end_date,
       });
+
+      // Cross-hierarchy rule: on this item's PATCH, no end date may
+      // be shrunk below any subtask that currently sits under it.
+      // Only checks fields actually present in the body (undefined =
+      // "not changing"; null / earlier date on an existing field is
+      // where the violation shows up).
+      const proposedEnds: Partial<Record<HierarchyEndField, string | null>> = {};
+      for (const field of HIERARCHY_END_FIELDS) {
+        if (body[field] !== undefined) proposedEnds[field] = body[field] ?? null;
+      }
+      await assertEndsCoverDescendants(client, projectId, proposedEnds);
     }
 
     // `teams` is a join-table field, not a column on projects. Apply it
@@ -332,6 +660,23 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
     const fields: string[] = [];
     const values: unknown[] = [];
     for (const key of PROJECT_COLUMN_KEYS) {
+      if (key === "type") {
+        if (body.type === undefined) continue;
+        values.push(effectiveType);
+        fields.push(`"type" = $${values.length}`);
+        continue;
+      }
+      if (key === "parent_id") {
+        // Only write parent_id when the *effective* parent differs from
+        // what's persisted. Clearing happens both on explicit body.parent_id
+        // = null and on an implicit "type flipped to epic" transition.
+        const hasExplicitParent = body.parent_id !== undefined;
+        const parentChangedImplicitly = body.type === "epic" && existing.parent_id !== null;
+        if (!hasExplicitParent && !parentChangedImplicitly) continue;
+        values.push(effectiveParent);
+        fields.push(`"parent_id" = $${values.length}`);
+        continue;
+      }
       const v = (body as Record<string, unknown>)[key];
       if (v === undefined) continue;
       values.push(v);
@@ -350,7 +695,15 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
     // `existing` is the pre-mutation row we already fetched under FOR
     // UPDATE, so we compare against it (not against another SELECT).
     for (const field of AUDITED_FIELDS) {
-      const incoming = (body as Record<string, unknown>)[field];
+      let incoming: unknown;
+      if (field === "type") incoming = body.type;
+      else if (field === "parent_id") {
+        if (body.parent_id !== undefined) incoming = effectiveParent;
+        else if (body.type === "epic" && existing.parent_id !== null) incoming = null;
+        else incoming = undefined;
+      } else {
+        incoming = (body as Record<string, unknown>)[field];
+      }
       if (incoming === undefined) continue;
       const before = (existing as unknown as Record<string, unknown>)[field];
       if (valuesEqual(before, incoming)) continue;
@@ -362,6 +715,24 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
         from: before ?? null,
         to: incoming ?? null,
       });
+    }
+
+    // If any END dates were extended, ripple that change up the parent
+    // chain — cascading is the "recommended" behavior the user picked.
+    // Only cascades on positive extensions (child pushed past parent);
+    // reductions are already blocked by assertEndsCoverDescendants
+    // above so we never cascade a shrink.
+    if (touchesPhaseDates) {
+      const extensions: Partial<Record<HierarchyEndField, string>> = {};
+      for (const field of HIERARCHY_END_FIELDS) {
+        const incoming = body[field];
+        if (!incoming) continue;
+        const before = existing[field];
+        if (!before || incoming > before) extensions[field] = incoming;
+      }
+      if (Object.keys(extensions).length) {
+        await cascadeEndsUpward(client, projectId, extensions, req.user!.id);
+      }
     }
 
     const { rows: finalRows } = await client.query<ProjectRow>(
@@ -517,6 +888,7 @@ projectsRouter.post("/:id/move", requireWrite, async (req, res) => {
  */
 projectsRouter.post("/:id/archive", requireWrite, async (req, res) => {
   const result = await withTransaction(async (client) => {
+    const projectId = String(req.params.id);
     const { rows: laneRows } = await client.query<{ id: string }>(
       `SELECT id FROM swim_lanes WHERE is_archive = TRUE LIMIT 1`,
     );
@@ -524,8 +896,33 @@ projectsRouter.post("/:id/archive", requireWrite, async (req, res) => {
     if (!archiveLaneId) {
       throw new HttpError(400, "no archive lane is configured. Ask an admin to flag one in Admin → Swim lanes.");
     }
+    // Block if any subtask lives outside the archive lane — the user
+    // opted for "block, tell them to fix it" over "cascade the action
+    // through the subtree". Children already sitting in Archive don't
+    // count so bottom-up archiving works: archive leaves first, then
+    // parents, then the epic.
+    const { rows: openChildren } = await client.query<{ n: number; titles: string[] }>(
+      `SELECT COUNT(*)::int AS n,
+              COALESCE(array_agg(title) FILTER (WHERE title IS NOT NULL), ARRAY[]::text[]) AS titles
+         FROM (
+           SELECT p.title
+             FROM projects p
+             LEFT JOIN swim_lanes sl ON sl.id = p.swim_lane_id
+            WHERE p.parent_id = $1
+              AND p.deleted_at IS NULL
+              AND (sl.is_archive IS DISTINCT FROM TRUE)
+            LIMIT 3
+         ) s`,
+      [projectId],
+    );
+    const n = openChildren[0]?.n ?? 0;
+    if (n > 0) {
+      const preview = openChildren[0]!.titles.map((t) => `"${t}"`).join(", ");
+      throw new HttpError(400,
+        `cannot archive this item because ${n} subtask${n === 1 ? "" : "s"} still live outside Archive (${preview}). Archive those first.`);
+    }
     return moveProjectImpl(client, {
-      projectId: String(req.params.id),
+      projectId,
       toLaneId: archiveLaneId,
       userId: req.user!.id,
     });
@@ -536,6 +933,10 @@ projectsRouter.post("/:id/archive", requireWrite, async (req, res) => {
 projectsRouter.delete("/:id", requireWrite, async (req, res) => {
   const projectId = String(req.params.id);
   const result = await withTransaction(async (client) => {
+    // Block hard-delete of a parent that still has any live subtasks
+    // — deleting the parent would either orphan or cascade, both of
+    // which surprise. Force the caller to walk the tree bottom-up.
+    await assertNoLiveSubtasks(client, projectId, "delete");
     const { rows: updated } = await client.query<{ id: string }>(
       `UPDATE projects SET deleted_at = NOW(), updated_at = NOW()
          WHERE id = $1 AND deleted_at IS NULL RETURNING id`,
