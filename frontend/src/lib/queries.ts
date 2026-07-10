@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import type {
+  Group,
   Kpi,
   PendingStatusResponse,
   Project,
   ProjectComment,
   ProjectTimelineEntry,
+  Role,
   StatusReportResponse,
   SwimLane,
   Team,
@@ -42,6 +44,44 @@ export function useMe(enabled = true) {
     },
     enabled,
   });
+}
+
+/**
+ * Effective role for the caller in whichever group they're
+ * currently "in". Falls back to the deprecated global role for
+ * pre-migration users, matching the backend's requireRole()
+ * fallback in middleware/auth.ts.
+ *
+ * Returns null while /users/me is still loading; callers should
+ * treat that as "assume viewer" until it resolves.
+ */
+export function useCurrentGroupRole(): Role | null {
+  const me = useMe();
+  if (!me.data) return null;
+  const currentId = me.data.current_group_id;
+  const membership = me.data.memberships?.find((m) => m.group_id === currentId);
+  return membership?.role ?? me.data.role ?? null;
+}
+
+/** Convenience wrappers used by nav gating + write buttons. */
+export function useIsAdmin(): boolean {
+  return useCurrentGroupRole() === "admin";
+}
+
+/**
+ * True if the caller can write in the currently-active group.
+ * Owners + admins can write; viewers can't. Used to gate mutation
+ * buttons across the board / roadmap / project detail panel etc.
+ */
+export function useCanWrite(): boolean {
+  const role = useCurrentGroupRole();
+  return role === "admin" || role === "owner";
+}
+
+/** Global "manage tenants" capability — unlocks the Groups admin section. */
+export function useIsSuperUser(): boolean {
+  const me = useMe();
+  return !!me.data?.is_super_user;
 }
 
 export function useUsers(enabled = true) {
@@ -132,5 +172,41 @@ export function useStatusReport(weekOf?: string) {
     queryKey: ["statusReport", weekOf ?? "current"],
     queryFn: () => api<StatusReportResponse>(`/status-updates/report${qs}`),
     refetchInterval: POLL_MS,
+  });
+}
+
+/**
+ * Groups the caller can see. Super-users see every group in the
+ * system; regular users see just the ones they're members of.
+ * Used by the admin Groups tab, not the navbar switcher — the
+ * switcher reads from `useMe().memberships` so it doesn't need a
+ * second request to render.
+ */
+export function useGroups(enabled = true) {
+  return useQuery({
+    queryKey: ["groups"],
+    queryFn: () => api<Group[]>("/groups"),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * Members of a specific group with per-user role. Only fetched
+ * when the admin opens a group's membership row.
+ */
+export type GroupMemberRow = {
+  user_id: string;
+  role: Role;
+  name: string;
+  email: string;
+};
+
+export function useGroupMembers(groupId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["groupMembers", groupId],
+    queryFn: () => api<GroupMemberRow[]>(`/groups/${groupId}/members`),
+    enabled: enabled && !!groupId,
+    staleTime: 30_000,
   });
 }

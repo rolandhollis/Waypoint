@@ -17,7 +17,10 @@ export const statusUpdatesRouter = Router();
  * Implementation uses status_history joined against lanes for the week's range,
  * union'd with projects currently sitting in a flagged lane.
  */
-async function eligibleProjects(weekOf: Date): Promise<Array<{ project_id: string; owner_id: string | null }>> {
+async function eligibleProjects(
+  weekOf: Date,
+  groupId: string,
+): Promise<Array<{ project_id: string; owner_id: string | null }>> {
   const weekStart = weekOf.toISOString();
   const weekEnd = addDays(weekOf, 7).toISOString();
   const { rows } = await query<{ project_id: string; owner_id: string | null }>(
@@ -29,21 +32,21 @@ async function eligibleProjects(weekOf: Date): Promise<Array<{ project_id: strin
         AND h."timestamp" >= $1 AND h."timestamp" < $2
       LEFT JOIN swim_lanes to_lane ON to_lane.id = h.to_swim_lane_id
      WHERE p.deleted_at IS NULL
+       AND p.group_id = $3
        AND (
              cur.requires_weekly_status = TRUE
           OR to_lane.requires_weekly_status = TRUE
        )
     `,
-    [weekStart, weekEnd],
+    [weekStart, weekEnd, groupId],
   );
   return rows;
 }
 
-/** GET /status-updates/pending?user_id=me → this week's incomplete eligible projects for the current user. */
 statusUpdatesRouter.get("/pending", async (req, res) => {
   const userId = req.query.user_id === "me" ? req.user!.id : String(req.query.user_id ?? req.user!.id);
   const week = weekOfMonday(new Date());
-  const eligible = await eligibleProjects(week);
+  const eligible = await eligibleProjects(week, req.groupId!);
   const myEligible = eligible.filter((e) => e.owner_id === userId);
 
   const projectIds = myEligible.map((e) => e.project_id);
@@ -76,7 +79,7 @@ statusUpdatesRouter.get("/pending", async (req, res) => {
 statusUpdatesRouter.get("/report", async (req, res) => {
   const weekParam = req.query.week_of ? String(req.query.week_of) : null;
   const week = weekParam ? weekOfMonday(new Date(`${weekParam}T12:00:00Z`)) : weekOfMonday(new Date());
-  const eligible = await eligibleProjects(week);
+  const eligible = await eligibleProjects(week, req.groupId!);
   const projectIds = eligible.map((e) => e.project_id);
 
   if (!projectIds.length) {
@@ -142,7 +145,21 @@ export const projectStatusUpdatesRouter = Router({ mergeParams: true });
 
 type ProjectIdParam = { id: string };
 
+/**
+ * Reject the request if the project isn't in the caller's tenant.
+ * Consistent 404 response prevents a UUID guesser from mapping ids
+ * to groups.
+ */
+async function assertProjectInGroup(projectId: string, groupId: string) {
+  const { rows } = await query<{ id: string }>(
+    `SELECT id FROM projects WHERE id = $1 AND group_id = $2`,
+    [projectId, groupId],
+  );
+  if (!rows[0]) throw new HttpError(404, "project not found");
+}
+
 projectStatusUpdatesRouter.get<ProjectIdParam>("/", async (req, res) => {
+  await assertProjectInGroup(req.params.id, req.groupId!);
   const { rows } = await query<WeeklyStatusUpdateRow>(
     `SELECT * FROM weekly_status_updates WHERE project_id = $1 ORDER BY week_of DESC`,
     [req.params.id],
@@ -159,6 +176,7 @@ const upsertSchema = z.object({
 });
 
 projectStatusUpdatesRouter.post<ProjectIdParam>("/", requireWrite, async (req, res) => {
+  await assertProjectInGroup(req.params.id, req.groupId!);
   const body = upsertSchema.parse(req.body);
   const week = body.week_of ? weekOfMonday(new Date(`${body.week_of}T12:00:00Z`)) : weekOfMonday(new Date());
   const weekIso = week.toISOString().slice(0, 10);

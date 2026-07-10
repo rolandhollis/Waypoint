@@ -22,8 +22,52 @@ export type User = {
    * are never sent to the client.
    */
   password_updated_at: string | null;
+  /**
+   * Global "manage tenants" capability. Distinct from role — role
+   * lives per-group (see `memberships`), while is_super_user is
+   * either true (bootstrap super-admin) or false (everyone else).
+   */
+  is_super_user: boolean;
+  /**
+   * The group the user is currently "in". All group-scoped API
+   * calls filter server-side against this id; changing groups is
+   * done via a PATCH /users/me/current-group.
+   */
+  current_group_id: string | null;
+  /**
+   * Populated by GET /users/me. One entry per (user, group) pair
+   * with the caller's role in that specific tenant. Super-users
+   * see one entry per group in the system even without explicit
+   * enrollment.
+   */
+  memberships?: GroupMembership[];
   created_at: string;
   updated_at: string;
+};
+
+/**
+ * A single tenant workspace ("brand"). Every project, swim lane,
+ * team, and KPI belongs to exactly one group.
+ */
+export type Group = {
+  id: string;
+  name: string;
+  color: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * The user's role in a specific group. Returned inline in the
+ * /users/me response so the navbar can render the group switcher
+ * without a second round trip.
+ */
+export type GroupMembership = {
+  group_id: string;
+  role: Role;
+  name: string;
+  color: string | null;
 };
 
 export type SwimLane = {
@@ -95,6 +139,36 @@ export type Kpi = {
 
 export type ProjectType = "epic" | "subtask";
 
+/**
+ * A promise that a specific phase of the project (bound via the
+ * swim lane's `phase_date_key`) will finish no later than
+ * `deadline_date`. Nested inside `Project.deadlines` and edited
+ * via /api/projects/:id/deadlines. See migration 018 for the
+ * schema and `lib/deadlines.ts` for the client-side violation
+ * calculation.
+ */
+export type ProjectDeadline = {
+  id: string;
+  swim_lane_id: string;
+  deadline_date: string;
+  note: string;
+};
+
+/**
+ * A dependency links THIS project's phase START (identified by
+ * `project_swim_lane_id`) to another project's phase END
+ * (identified by `depends_on_project_id` + `depends_on_swim_lane_id`).
+ * Multiple deps per project + per lane are allowed. See
+ * `lib/dependencies.ts` for the violation calculator.
+ */
+export type ProjectDependency = {
+  id: string;
+  project_swim_lane_id: string;
+  depends_on_project_id: string;
+  depends_on_swim_lane_id: string;
+  note: string;
+};
+
 export type Project = {
   id: string;
   title: string;
@@ -119,6 +193,18 @@ export type Project = {
    */
   type: ProjectType;
   parent_id: string | null;
+  /**
+   * Hard deadlines pinned to individual swim-lane phases. At most
+   * one per (project, swim_lane) pair. See lib/deadlines.ts for the
+   * violation calculator used by the detail panel + roadmap.
+   */
+  deadlines: ProjectDeadline[];
+  /**
+   * Cross-project blockers. This project's phase start (identified
+   * by project_swim_lane_id) must not begin before the upstream
+   * project's phase end. See lib/dependencies.ts for status logic.
+   */
+  dependencies: ProjectDependency[];
   start_date: string | null;
   target_date: string | null;
   dev_start_date: string | null;

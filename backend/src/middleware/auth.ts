@@ -10,6 +10,20 @@ declare global {
   namespace Express {
     interface Request {
       user?: UserRow;
+      /**
+       * Tenant scope for the current request. Populated by
+       * authenticate() from req.user.current_group_id, then
+       * validated + narrowed by groupScope(). All group-scoped
+       * routes read this instead of touching req.user directly so
+       * they never accidentally read a stale value.
+       */
+      groupId?: string;
+      /**
+       * The user's role in the current group (per user_groups).
+       * Distinct from req.user.role (deprecated global column) —
+       * that field is only preserved for backfill history.
+       */
+      userGroupRole?: Role;
     }
   }
 }
@@ -162,7 +176,14 @@ export function requireRole(...roles: Role[]) {
       res.status(401).json({ error: "not authenticated" });
       return;
     }
-    if (!roles.includes(req.user.role)) {
+    // Use the per-group role (populated by groupScope) if it's
+    // been resolved for this request; otherwise fall back to the
+    // legacy global column. In practice every group-scoped route
+    // is mounted behind groupScope so the fallback only matters
+    // for the small number of tenant-agnostic endpoints (e.g.
+    // /users/me/prefs, /users/me/current-group).
+    const effective = req.userGroupRole ?? req.user.role;
+    if (!roles.includes(effective)) {
       res.status(403).json({ error: `requires role: ${roles.join(" or ")}` });
       return;
     }
@@ -172,5 +193,76 @@ export function requireRole(...roles: Role[]) {
 
 /** Anything that writes: block Viewers hard. */
 export const requireWrite = requireRole("admin", "owner");
-/** Admin-only endpoints (swim lane admin, product area admin, role management). */
+/** Admin-only endpoints (swim lane / team / KPI mgmt, member role
+ *  changes). Per-group role — a user who is admin in RMN but only
+ *  viewer in VC gets an admin panel when they're in RMN and a
+ *  read-only view when they switch to VC. */
 export const requireAdmin = requireRole("admin");
+
+/**
+ * Global "manage tenants" capability. Distinct from requireAdmin
+ * because SuperUser lives outside the per-group role system —
+ * only the env-bootstrapped account holds it, and it gates group
+ * CRUD + membership management.
+ */
+export function requireSuperUser(req: Request, res: Response, next: NextFunction) {
+  if (!req.user) {
+    res.status(401).json({ error: "not authenticated" });
+    return;
+  }
+  if (!req.user.is_super_user) {
+    res.status(403).json({ error: "super-user required" });
+    return;
+  }
+  next();
+}
+
+/**
+ * Attach req.groupId + req.userGroupRole for the current tenant.
+ * Must run after authenticate(). SuperUsers are treated as
+ * implicit members of every group with admin role — they can
+ * inspect a tenant without being explicitly added, matching the
+ * "manage all tenants" spirit of the role.
+ *
+ * Emits 400 (not 403) when the user has no current group at all;
+ * that's a client bug (they should have picked one from the
+ * navbar dropdown) not an auth failure.
+ */
+export async function groupScope(req: Request, res: Response, next: NextFunction) {
+  if (!req.user) {
+    res.status(401).json({ error: "not authenticated" });
+    return;
+  }
+  const groupId = req.user.current_group_id;
+  if (!groupId) {
+    res.status(400).json({ error: "no active group selected" });
+    return;
+  }
+
+  // Look up the user's role in this group. SuperUser gets admin
+  // access to every tenant even without an explicit membership row
+  // (matches the "manage all tenants" spirit of the role).
+  if (req.user.is_super_user) {
+    req.groupId = groupId;
+    req.userGroupRole = "admin";
+    next();
+    return;
+  }
+
+  const { rows } = await query<{ role: Role }>(
+    `SELECT role FROM user_groups WHERE user_id = $1 AND group_id = $2`,
+    [req.user.id, groupId],
+  );
+  const membership = rows[0];
+  if (!membership) {
+    // Client is out of sync — they've been removed from the group
+    // they thought they were in. 403 tells the frontend to refresh
+    // its membership list and pick a valid one.
+    res.status(403).json({ error: "you are not a member of the active group" });
+    return;
+  }
+
+  req.groupId = groupId;
+  req.userGroupRole = membership.role;
+  next();
+}

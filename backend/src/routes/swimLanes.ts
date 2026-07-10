@@ -11,11 +11,13 @@ swimLanesRouter.get("/", async (req, res) => {
   // Admin-only lanes (Archive et al) are filtered server-side rather
   // than by the client, so a non-admin can never obtain their ids
   // — even via curl. Admins see the full list, including hidden lanes.
-  const isAdmin = req.user?.role === "admin";
+  const isAdmin = req.userGroupRole === "admin";
+  const groupId = req.groupId!;
   const { rows } = await query<SwimLaneRow>(
     isAdmin
-      ? `SELECT * FROM swim_lanes ORDER BY "order" ASC`
-      : `SELECT * FROM swim_lanes WHERE is_admin_only = FALSE ORDER BY "order" ASC`,
+      ? `SELECT * FROM swim_lanes WHERE group_id = $1 ORDER BY "order" ASC`
+      : `SELECT * FROM swim_lanes WHERE group_id = $1 AND is_admin_only = FALSE ORDER BY "order" ASC`,
+    [groupId],
   );
   res.json(rows);
 });
@@ -42,25 +44,32 @@ const createSchema = z.object({
 
 swimLanesRouter.post("/", requireAdmin, async (req, res) => {
   const body = createSchema.parse(req.body);
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
     if (body.is_default_new) {
-      await client.query(`UPDATE swim_lanes SET is_default_new = FALSE WHERE is_default_new = TRUE`);
+      await client.query(
+        `UPDATE swim_lanes SET is_default_new = FALSE WHERE is_default_new = TRUE AND group_id = $1`,
+        [groupId],
+      );
     }
-    // Same partial-unique-index dance as is_default_new: clear any prior
-    // archive lane before creating a new one flagged as the archive.
     if (body.is_archive) {
-      await client.query(`UPDATE swim_lanes SET is_archive = FALSE WHERE is_archive = TRUE`);
+      await client.query(
+        `UPDATE swim_lanes SET is_archive = FALSE WHERE is_archive = TRUE AND group_id = $1`,
+        [groupId],
+      );
     }
     const { rows: maxRows } = await client.query<{ next: number }>(
-      `SELECT COALESCE(MAX("order"), -1) + 1 AS next FROM swim_lanes`,
+      `SELECT COALESCE(MAX("order"), -1) + 1 AS next FROM swim_lanes WHERE group_id = $1`,
+      [groupId],
     );
     const nextOrder = maxRows[0]?.next ?? 0;
     const { rows } = await client.query<SwimLaneRow>(
       `INSERT INTO swim_lanes
-         (name, description, "order", color, is_terminal, requires_weekly_status,
+         (group_id, name, description, "order", color, is_terminal, requires_weekly_status,
           is_default_new, is_admin_only, is_archive, phase_date_key, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
       [
+        groupId,
         body.name, body.description ?? "", nextOrder, body.color ?? null,
         body.is_terminal ?? false, body.requires_weekly_status ?? false,
         body.is_default_new ?? false,
@@ -87,29 +96,31 @@ const patchSchema = z.object({
   phase_date_key: z.enum(PHASE_DATE_KEYS).nullable().optional(),
 });
 
-// Columns the patch is allowed to write, guarding the dynamic SET.
 const PATCHABLE_COLUMNS = new Set(Object.keys(patchSchema.shape));
 
 swimLanesRouter.patch("/:id", requireAdmin, async (req, res) => {
   const body = patchSchema.parse(req.body);
   const laneId = String(req.params.id);
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
-    // Promoting this lane to be the new-item default must first clear
-    // whichever lane currently holds the flag, otherwise the partial
-    // unique index would reject the update.
+    // Existence + tenant check up front: we never want a cross-tenant
+    // patch to succeed even by accident.
+    const { rows: existing } = await client.query<SwimLaneRow>(
+      `SELECT * FROM swim_lanes WHERE id = $1 AND group_id = $2`,
+      [laneId, groupId],
+    );
+    if (!existing[0]) throw new HttpError(404, "swim lane not found");
+
     if (body.is_default_new === true) {
       await client.query(
-        `UPDATE swim_lanes SET is_default_new = FALSE WHERE is_default_new = TRUE AND id <> $1`,
-        [laneId],
+        `UPDATE swim_lanes SET is_default_new = FALSE WHERE is_default_new = TRUE AND id <> $1 AND group_id = $2`,
+        [laneId, groupId],
       );
     }
-    // Same treatment for the "archive" flag: it's guarded by the same
-    // sort of partial unique index (only one lane may be the archive
-    // at a time), so clear the previous holder in the same txn.
     if (body.is_archive === true) {
       await client.query(
-        `UPDATE swim_lanes SET is_archive = FALSE WHERE is_archive = TRUE AND id <> $1`,
-        [laneId],
+        `UPDATE swim_lanes SET is_archive = FALSE WHERE is_archive = TRUE AND id <> $1 AND group_id = $2`,
+        [laneId, groupId],
       );
     }
 
@@ -121,17 +132,11 @@ swimLanesRouter.patch("/:id", requireAdmin, async (req, res) => {
       values.push(v);
       fields.push(`"${k}" = $${values.length}`);
     }
-    if (!fields.length) {
-      const { rows } = await client.query<SwimLaneRow>(
-        `SELECT * FROM swim_lanes WHERE id = $1`,
-        [laneId],
-      );
-      if (!rows[0]) throw new HttpError(404, "swim lane not found");
-      return rows[0];
-    }
-    values.push(laneId);
+    if (!fields.length) return existing[0];
+    values.push(laneId, groupId);
     const { rows } = await client.query<SwimLaneRow>(
-      `UPDATE swim_lanes SET ${fields.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+      `UPDATE swim_lanes SET ${fields.join(", ")}, updated_at = NOW()
+         WHERE id = $${values.length - 1} AND group_id = $${values.length} RETURNING *`,
       values,
     );
     if (!rows[0]) throw new HttpError(404, "swim lane not found");
@@ -146,16 +151,21 @@ const reorderSchema = z.object({
 
 swimLanesRouter.post("/reorder", requireAdmin, async (req, res) => {
   const body = reorderSchema.parse(req.body);
+  const groupId = req.groupId!;
   await withTransaction(async (client) => {
-    // Two-step reorder to avoid unique-index conflicts if we ever add one.
     for (let i = 0; i < body.order.length; i++) {
+      // Filter by group_id so an attacker can't shuffle another
+      // tenant's lanes by passing their ids in the reorder list.
       await client.query(
-        `UPDATE swim_lanes SET "order" = $1, updated_at = NOW() WHERE id = $2`,
-        [i, body.order[i]],
+        `UPDATE swim_lanes SET "order" = $1, updated_at = NOW() WHERE id = $2 AND group_id = $3`,
+        [i, body.order[i], groupId],
       );
     }
   });
-  const { rows } = await query<SwimLaneRow>(`SELECT * FROM swim_lanes ORDER BY "order" ASC`);
+  const { rows } = await query<SwimLaneRow>(
+    `SELECT * FROM swim_lanes WHERE group_id = $1 ORDER BY "order" ASC`,
+    [groupId],
+  );
   res.json(rows);
 });
 
@@ -163,19 +173,13 @@ const deleteSchema = z.object({
   reassign_to: z.string().uuid().nullable().optional(),
 });
 
-/**
- * Delete a swim lane.
- *   - If lane has cards and at least one other lane exists, admin must pass reassign_to.
- *   - If lane has cards and it is the only remaining lane, refuse the delete
- *     (projects.swim_lane_id is NOT NULL — see migration 010).
- *   - Empty lanes always delete freely.
- */
 swimLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
   const body = deleteSchema.parse(req.body ?? {});
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
     const { rows: laneRows } = await client.query<SwimLaneRow>(
-      `SELECT * FROM swim_lanes WHERE id = $1 FOR UPDATE`,
-      [req.params.id],
+      `SELECT * FROM swim_lanes WHERE id = $1 AND group_id = $2 FOR UPDATE`,
+      [req.params.id, groupId],
     );
     const lane = laneRows[0];
     if (!lane) throw new HttpError(404, "swim lane not found");
@@ -187,8 +191,8 @@ swimLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
     const hasCards = (countRows[0]?.n ?? 0) > 0;
 
     const { rows: otherLanes } = await client.query<{ id: string }>(
-      `SELECT id FROM swim_lanes WHERE id <> $1`,
-      [lane.id],
+      `SELECT id FROM swim_lanes WHERE id <> $1 AND group_id = $2`,
+      [lane.id, groupId],
     );
     const hasOtherLanes = otherLanes.length > 0;
 
@@ -197,7 +201,7 @@ swimLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
         throw new HttpError(400, "reassign_to is required when lane has cards and other lanes exist");
       }
       if (!otherLanes.find((l) => l.id === body.reassign_to)) {
-        throw new HttpError(400, "reassign_to must be another existing lane");
+        throw new HttpError(400, "reassign_to must be another existing lane in this group");
       }
       await client.query(
         `UPDATE projects SET swim_lane_id = $1, updated_at = NOW()
@@ -205,9 +209,6 @@ swimLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
         [body.reassign_to, lane.id],
       );
     } else if (hasCards) {
-      // Last remaining lane still holds cards — every project must
-      // live in a lane, so the admin needs to create a new lane and
-      // reassign these first.
       throw new HttpError(400, "cannot delete the only remaining swim lane while it still holds cards");
     }
 

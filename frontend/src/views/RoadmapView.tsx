@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { Wand2 } from "lucide-react";
+import { useCanWrite, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { applyFilters } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
@@ -9,6 +10,7 @@ import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
 import { UnscheduledList } from "../components/UnscheduledList";
 import { PhaseLegend } from "../components/PhaseLegend";
 import { ColorLegend } from "../components/ColorLegend";
+import { RoadmapHelper } from "../components/RoadmapHelper";
 
 export function RoadmapView() {
   const projects = useProjects();
@@ -19,8 +21,10 @@ export function RoadmapView() {
   const colorBy = useViewStore((s) => s.roadmap.colorBy);
   const groupBy = useViewStore((s) => s.roadmap.groupBy);
 
+  const canWrite = useCanWrite();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [zoom, setZoom] = useState<"6mo" | "1yr">("6mo");
+  const [helperOpen, setHelperOpen] = useState(false);
 
   if (projects.isLoading) return <div className="p-6 text-sm text-wp-slate">Loading roadmap…</div>;
 
@@ -50,6 +54,16 @@ export function RoadmapView() {
           </div>
         </div>
         <div className="flex items-center gap-4">
+          {canWrite ? (
+            <button
+              className="btn-secondary !py-1 !text-xs"
+              onClick={() => setHelperOpen(true)}
+              title="Propose an optimized schedule for a batch of items"
+            >
+              <Wand2 size={12} />
+              Auto-schedule…
+            </button>
+          ) : null}
           <PhaseLegend />
           <ColorLegend
             colorBy={colorBy}
@@ -91,6 +105,16 @@ export function RoadmapView() {
       </div>
 
       {selectedId ? <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} onOpenProject={setSelectedId} /> : null}
+
+      {helperOpen ? (
+        <RoadmapHelper
+          projects={projects.data ?? []}
+          lanes={lanes.data ?? []}
+          users={users.data ?? []}
+          teams={teams.data ?? []}
+          onClose={() => setHelperOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { format } from "date-fns";
 import { Pencil, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { api } from "../lib/api";
-import { useMe, useProjectComments, useUsers } from "../lib/queries";
+import { useCurrentGroupRole, useMe, useProjectComments, useUsers } from "../lib/queries";
 import type { ProjectComment, User } from "../lib/types";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 
@@ -18,6 +18,10 @@ import { MutationErrorBanner } from "./MutationErrorBanner";
  */
 export function ProjectComments({ projectId }: { projectId: string }) {
   const me = useMe();
+  // Per-group role controls edit/delete access; a user's role can
+  // differ between tenants so we resolve it against the active
+  // group rather than the deprecated users.role column.
+  const currentUserRole = useCurrentGroupRole() ?? "viewer";
   const users = useUsers();
   const comments = useProjectComments(projectId);
   const qc = useQueryClient();
@@ -80,7 +84,7 @@ export function ProjectComments({ projectId }: { projectId: string }) {
               projectId={projectId}
               users={users.data ?? []}
               currentUserId={me.data?.id ?? null}
-              currentUserRole={me.data?.role ?? "viewer"}
+              currentUserRole={currentUserRole}
             />
           ))}
         </ol>

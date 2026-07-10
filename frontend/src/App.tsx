@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { useHealth, useMe, useMockRoster } from "./lib/queries";
+import { useHealth, useIsAdmin, useMe, useMockRoster } from "./lib/queries";
 import { useMockUserStore } from "./lib/mockUser";
 import { setUnauthorizedHandler } from "./lib/api";
 import { cn } from "./lib/cn";
@@ -14,6 +14,7 @@ import { PhasesView } from "./views/PhasesView";
 import { LoginView } from "./views/LoginView";
 import { ReminderBanner } from "./components/ReminderBanner";
 import { UserSwitcher } from "./components/UserSwitcher";
+import { GroupSwitcher } from "./components/GroupSwitcher";
 
 export function App() {
   const health = useHealth();
@@ -175,9 +176,11 @@ function MockLoginScreen() {
 }
 
 function TopBar() {
-  const me = useMe();
   const location = useLocation();
-  const isAdmin = me.data?.role === "admin";
+  // Admin nav item follows PER-GROUP role: a user who's admin in
+  // RMN but only owner in VC sees the Admin tab appear/disappear
+  // as they switch tenants via the group dropdown.
+  const isAdmin = useIsAdmin();
   return (
     <header className="flex items-center justify-between border-b border-wp-stone bg-white px-5 py-2.5">
       <div className="flex items-center gap-6">
@@ -195,7 +198,10 @@ function TopBar() {
           ) : null}
         </nav>
       </div>
-      <UserSwitcher />
+      <div className="flex items-center gap-3">
+        <GroupSwitcher />
+        <UserSwitcher />
+      </div>
     </header>
   );
 }

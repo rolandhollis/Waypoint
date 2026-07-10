@@ -24,9 +24,26 @@ const bodySchema = z.object({
 
 type CommentParams = { id: string; commentId?: string };
 
-/** List all comments for the project, newest first. */
+/**
+ * Confirm the referenced project both exists AND belongs to the
+ * caller's tenant. Every endpoint below funnels through this so a
+ * cross-tenant probe (guessing a project id from another group)
+ * gets an indistinguishable 404 rather than leaking the comment
+ * thread.
+ */
+async function assertProjectInGroup(projectId: string, groupId: string, requireLive = false) {
+  const clauses = ["id = $1", "group_id = $2"];
+  if (requireLive) clauses.push("deleted_at IS NULL");
+  const { rows } = await query<{ id: string }>(
+    `SELECT id FROM projects WHERE ${clauses.join(" AND ")}`,
+    [projectId, groupId],
+  );
+  if (!rows[0]) throw new HttpError(404, "project not found");
+}
+
 projectCommentsRouter.get("/", async (req, res) => {
   const projectId = String((req.params as CommentParams).id);
+  await assertProjectInGroup(projectId, req.groupId!);
   const { rows } = await query<ProjectCommentRow>(
     `SELECT * FROM project_comments
       WHERE project_id = $1
@@ -36,19 +53,10 @@ projectCommentsRouter.get("/", async (req, res) => {
   res.json(rows);
 });
 
-/** Post a new comment as the current user. */
 projectCommentsRouter.post("/", async (req, res) => {
   const { body } = bodySchema.parse(req.body);
   const projectId = String((req.params as CommentParams).id);
-
-  // Guard against orphan writes: return 404 if the project has been
-  // archived or never existed, matching how other project-nested
-  // routes behave.
-  const { rows: projectRows } = await query<{ id: string }>(
-    `SELECT id FROM projects WHERE id = $1 AND deleted_at IS NULL`,
-    [projectId],
-  );
-  if (!projectRows[0]) throw new HttpError(404, "project not found");
+  await assertProjectInGroup(projectId, req.groupId!, true);
 
   const { rows } = await query<ProjectCommentRow>(
     `INSERT INTO project_comments (project_id, author_user_id, body)
@@ -58,16 +66,12 @@ projectCommentsRouter.post("/", async (req, res) => {
   res.status(201).json(rows[0]);
 });
 
-/**
- * Edit an existing comment. Only the original author or an admin may
- * change the text; everyone else gets 403 so a viewer can't rewrite
- * someone else's message from the UI.
- */
 projectCommentsRouter.patch("/:commentId", async (req, res) => {
   const { body } = bodySchema.parse(req.body);
   const params = req.params as CommentParams;
   const projectId = String(params.id);
   const commentId = String(params.commentId);
+  await assertProjectInGroup(projectId, req.groupId!);
 
   const { rows: existing } = await query<ProjectCommentRow>(
     `SELECT * FROM project_comments WHERE id = $1 AND project_id = $2`,
@@ -77,7 +81,10 @@ projectCommentsRouter.patch("/:commentId", async (req, res) => {
   if (!comment) throw new HttpError(404, "comment not found");
 
   const isAuthor = comment.author_user_id === req.user!.id;
-  const isAdmin = req.user!.role === "admin";
+  // Use the per-group role that groupScope populated; falls back
+  // to the deprecated global role for compatibility, matching the
+  // pattern in middleware/auth.ts requireRole().
+  const isAdmin = (req.userGroupRole ?? req.user!.role) === "admin";
   if (!isAuthor && !isAdmin) throw new HttpError(403, "only the author or an admin may edit");
 
   const { rows } = await query<ProjectCommentRow>(
@@ -89,11 +96,11 @@ projectCommentsRouter.patch("/:commentId", async (req, res) => {
   res.json(rows[0]);
 });
 
-/** Hard-delete. Same author-or-admin gate as edit. */
 projectCommentsRouter.delete("/:commentId", async (req, res) => {
   const params = req.params as CommentParams;
   const projectId = String(params.id);
   const commentId = String(params.commentId);
+  await assertProjectInGroup(projectId, req.groupId!);
 
   const { rows: existing } = await query<ProjectCommentRow>(
     `SELECT * FROM project_comments WHERE id = $1 AND project_id = $2`,
@@ -103,7 +110,7 @@ projectCommentsRouter.delete("/:commentId", async (req, res) => {
   if (!comment) throw new HttpError(404, "comment not found");
 
   const isAuthor = comment.author_user_id === req.user!.id;
-  const isAdmin = req.user!.role === "admin";
+  const isAdmin = (req.userGroupRole ?? req.user!.role) === "admin";
   if (!isAuthor && !isAdmin) throw new HttpError(403, "only the author or an admin may delete");
 
   await query(`DELETE FROM project_comments WHERE id = $1`, [commentId]);

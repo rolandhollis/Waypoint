@@ -128,14 +128,33 @@ const USERS = [
 async function main() {
   await withTransaction(async (client) => {
     console.log("Clearing existing data...");
-    await client.query("TRUNCATE weekly_status_updates, status_history, project_audit_events, project_comments, project_teams, project_kpis, projects, teams, kpis, swim_lanes, users RESTART IDENTITY CASCADE");
+    // Include groups + user_groups in the wipe so a re-seed reliably
+    // starts from a blank multi-tenant world; CASCADE from users
+    // covers user_groups but we truncate explicitly to be obvious.
+    await client.query(
+      "TRUNCATE weekly_status_updates, status_history, project_audit_events, project_comments, project_teams, project_kpis, projects, teams, kpis, swim_lanes, user_groups, groups, users RESTART IDENTITY CASCADE",
+    );
+
+    console.log("Seeding groups...");
+    // Two tenants match what migration 017 provisions on an already-
+    // populated DB; the seeder is what a fresh install runs, so we
+    // set them up here too.
+    const { rows: rmnRows } = await client.query<{ id: string }>(
+      `INSERT INTO groups (name, color) VALUES ('RetailMeNot', '#DC2626') RETURNING id`,
+    );
+    const rmnGroupId = rmnRows[0]!.id;
+    const { rows: vcRows } = await client.query<{ id: string }>(
+      `INSERT INTO groups (name, color) VALUES ('VoucherCodes', '#0EA5E9') RETURNING id`,
+    );
+    const vcGroupId = vcRows[0]!.id;
 
     console.log("Seeding users...");
     const userIds: Record<string, string> = {};
     for (const u of USERS) {
       const { rows } = await client.query<{ id: string }>(
-        `INSERT INTO users (email, name, role, color) VALUES ($1, $2, $3, $4) RETURNING id`,
-        [u.email, u.name, u.role, u.color],
+        `INSERT INTO users (email, name, role, color, current_group_id)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [u.email, u.name, u.role, u.color, rmnGroupId],
       );
       userIds[u.email] = rows[0]!.id;
     }
@@ -143,20 +162,34 @@ async function main() {
     const owner1Id = userIds["roland@waypoint.example"]!;
     const owner2Id = userIds["mag@waypoint.example"]!;
 
-    console.log("Seeding swim lanes...");
+    console.log("Enrolling users in RetailMeNot...");
+    for (const u of USERS) {
+      await client.query(
+        `INSERT INTO user_groups (user_id, group_id, role) VALUES ($1, $2, $3)`,
+        [userIds[u.email], rmnGroupId, u.role],
+      );
+    }
+    // Roland + Mag also get admin access to VoucherCodes so the group
+    // switcher has something to switch TO out of the box.
+    for (const email of ["roland@waypoint.example", "mag@waypoint.example"]) {
+      await client.query(
+        `INSERT INTO user_groups (user_id, group_id, role) VALUES ($1, $2, 'admin')`,
+        [userIds[email], vcGroupId],
+      );
+    }
+
+    console.log("Seeding RetailMeNot swim lanes...");
     const laneIds: Record<string, string> = {};
     for (let i = 0; i < DEFAULT_LANES.length; i++) {
       const l = DEFAULT_LANES[i]!;
-      // Mark "Backlog" as the initial "new item" landing lane; new
-      // installs get a sensible target for the board's Add-new CTA
-      // without an admin having to visit settings. Admins can move it.
       const isDefaultNew = l.name === "Backlog";
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO swim_lanes
-           (name, description, "order", color, is_terminal, requires_weekly_status,
+           (group_id, name, description, "order", color, is_terminal, requires_weekly_status,
             is_default_new, is_admin_only, is_archive, phase_date_key, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
         [
+          rmnGroupId,
           l.name, l.description ?? "", i, l.color,
           l.is_terminal ?? false, l.requires_weekly_status ?? false,
           isDefaultNew,
@@ -169,25 +202,58 @@ async function main() {
       laneIds[l.name] = rows[0]!.id;
     }
 
-    console.log("Seeding teams...");
+    console.log("Seeding VoucherCodes swim lanes (minimal defaults)...");
+    // Give VC a slim workflow of its own so the group is usable the
+    // moment an admin switches to it. Deliberately shorter than RMN's
+    // so it's clearly a different tenant, not a mirror.
+    const vcLanes = [
+      { name: "Backlog",       color: "#94A3B8", is_default_new: true,  phase_date_key: null as string | null },
+      { name: "Ready for Dev", color: "#3B82F6", is_default_new: false, phase_date_key: "target_date" },
+      { name: "In Dev",        color: "#F59E0B", is_default_new: false, phase_date_key: "dev_start_date", requires_weekly_status: true },
+      { name: "Complete",      color: "#10B981", is_default_new: false, phase_date_key: "optimization_end_date", is_terminal: true },
+      { name: "Archive",       color: "#64748B", is_default_new: false, phase_date_key: null, is_admin_only: true, is_archive: true, is_terminal: true },
+    ];
+    for (let i = 0; i < vcLanes.length; i++) {
+      const l = vcLanes[i]!;
+      await client.query(
+        `INSERT INTO swim_lanes
+           (group_id, name, description, "order", color, is_terminal, requires_weekly_status,
+            is_default_new, is_admin_only, is_archive, phase_date_key, created_by)
+         VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          vcGroupId,
+          l.name, i, l.color,
+          (l as { is_terminal?: boolean }).is_terminal ?? false,
+          (l as { requires_weekly_status?: boolean }).requires_weekly_status ?? false,
+          l.is_default_new,
+          (l as { is_admin_only?: boolean }).is_admin_only ?? false,
+          (l as { is_archive?: boolean }).is_archive ?? false,
+          l.phase_date_key,
+          adminId,
+        ],
+      );
+    }
+
+    console.log("Seeding RetailMeNot teams...");
     const teamIds: Record<string, string> = {};
     for (let i = 0; i < TEAMS.length; i++) {
       const t = TEAMS[i]!;
       const { rows } = await client.query<{ id: string }>(
-        `INSERT INTO teams (name, color, "order", created_by) VALUES ($1, $2, $3, $4) RETURNING id`,
-        [t.name, t.color, i, adminId],
+        `INSERT INTO teams (group_id, name, color, "order", created_by)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+        [rmnGroupId, t.name, t.color, i, adminId],
       );
       teamIds[t.name] = rows[0]!.id;
     }
 
-    console.log("Seeding KPIs...");
+    console.log("Seeding RetailMeNot KPIs...");
     const kpiIds: Record<string, string> = {};
     for (let i = 0; i < KPIS.length; i++) {
       const k = KPIS[i]!;
       const { rows } = await client.query<{ id: string }>(
-        `INSERT INTO kpis (name, description, color, "order", created_by)
-         VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-        [k.name, k.description, k.color, i, adminId],
+        `INSERT INTO kpis (group_id, name, description, color, "order", created_by)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [rmnGroupId, k.name, k.description, k.color, i, adminId],
       );
       kpiIds[k.name] = rows[0]!.id;
     }
@@ -346,13 +412,14 @@ async function main() {
       const parentId = p.parentTitle ? idByTitle[p.parentTitle]! : null;
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO projects
-           (title, description, swim_lane_id, position, owner_id, tags,
+           (group_id, title, description, swim_lane_id, position, owner_id, tags,
             type, parent_id,
             start_date, target_date, dev_start_date, dev_end_date,
             optimization_start_date, optimization_end_date, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
          RETURNING id`,
         [
+          rmnGroupId,
           p.title, p.description, laneId, originalIndex, p.owner, p.tags,
           type, parentId,
           p.start_date ?? null,

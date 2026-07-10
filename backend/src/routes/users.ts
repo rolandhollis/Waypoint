@@ -20,8 +20,92 @@ export const usersRouter = Router();
 // Self endpoints
 // -----------------------------------------------------------------
 
-usersRouter.get("/me", (req, res) => {
-  res.json(scrubUser(req.user!));
+/**
+ * Return the caller's identity augmented with everything the
+ * frontend needs to bootstrap the multi-tenant shell in one round
+ * trip: their group memberships (with per-group role) and their
+ * currently-active group id. Kept as a single endpoint (rather
+ * than several) so the shell doesn't have to sequence three
+ * requests before rendering.
+ */
+usersRouter.get("/me", async (req, res) => {
+  const user = req.user!;
+  const { rows: memberships } = await query<{
+    group_id: string;
+    role: "admin" | "owner" | "viewer";
+    name: string;
+    color: string | null;
+  }>(
+    // Super-users see every group in the switcher even without an
+    // explicit user_groups row; the LEFT JOIN handles both cases
+    // (super or regular). Regular users only see rows in user_groups.
+    user.is_super_user
+      ? `SELECT g.id AS group_id, COALESCE(ug.role, 'admin') AS role, g.name, g.color
+           FROM groups g
+           LEFT JOIN user_groups ug ON ug.group_id = g.id AND ug.user_id = $1
+          ORDER BY g.name ASC`
+      : `SELECT g.id AS group_id, ug.role, g.name, g.color
+           FROM user_groups ug
+           JOIN groups g ON g.id = ug.group_id
+          WHERE ug.user_id = $1
+          ORDER BY g.name ASC`,
+    [user.id],
+  );
+
+  // If the persisted current_group_id points at a group the user is
+  // no longer part of (revoked mid-session, group deleted), drop to
+  // the first membership so the UI always lands somewhere valid.
+  let currentGroupId = user.current_group_id;
+  const validIds = memberships.map((m) => m.group_id);
+  if (!currentGroupId || !validIds.includes(currentGroupId)) {
+    currentGroupId = validIds[0] ?? null;
+    if (currentGroupId && currentGroupId !== user.current_group_id) {
+      await query(
+        `UPDATE users SET current_group_id = $1, updated_at = NOW() WHERE id = $2`,
+        [currentGroupId, user.id],
+      );
+    }
+  }
+
+  res.json({
+    ...scrubUser(user),
+    current_group_id: currentGroupId,
+    memberships,
+  });
+});
+
+const setCurrentGroupSchema = z.object({
+  group_id: z.string().uuid(),
+});
+
+/**
+ * Switch which tenant workspace the caller is currently "in".
+ * Verifies membership (or super-user status) before writing so a
+ * user can't hop into a group they don't belong to.
+ */
+usersRouter.patch("/me/current-group", async (req, res) => {
+  const { group_id } = setCurrentGroupSchema.parse(req.body);
+  const user = req.user!;
+
+  if (!user.is_super_user) {
+    const { rows: check } = await query<{ role: string }>(
+      `SELECT role FROM user_groups WHERE user_id = $1 AND group_id = $2`,
+      [user.id, group_id],
+    );
+    if (!check[0]) throw new HttpError(403, "you are not a member of that group");
+  } else {
+    const { rows: check } = await query<{ id: string }>(
+      `SELECT id FROM groups WHERE id = $1`,
+      [group_id],
+    );
+    if (!check[0]) throw new HttpError(404, "group not found");
+  }
+
+  const { rows } = await query<UserRow>(
+    `UPDATE users SET current_group_id = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
+    [group_id, user.id],
+  );
+  res.json({ ...scrubUser(rows[0]!), current_group_id: group_id });
 });
 
 usersRouter.patch("/me/prefs", async (req, res) => {

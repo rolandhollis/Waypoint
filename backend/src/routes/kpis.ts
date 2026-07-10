@@ -6,23 +6,20 @@ import { HttpError } from "../middleware/error.js";
 import type { KpiRow } from "../types.js";
 
 /**
- * KPI CRUD. Mirrors the shape of the Teams router (name / description /
- * color / order + drag-reorder), so the frontend admin UI can reuse the
- * same sortable-row pattern. Reads are available to any authenticated
- * user; mutations require admin.
+ * KPI CRUD, scoped to the caller's current tenant. Every read /
+ * write filters by req.groupId so RMN and VC KPIs stay independent.
  */
 export const kpisRouter = Router();
 
-// Cool-neutral palette so KPI chips don't visually collide with the
-// warmer team palette in `teams.ts` when both render side-by-side.
 const DEFAULT_PALETTE = [
   "#0ea5e9", "#22c55e", "#a855f7", "#f43f5e",
   "#eab308", "#14b8a6", "#f97316", "#6366f1",
 ];
 
-kpisRouter.get("/", async (_req, res) => {
+kpisRouter.get("/", async (req, res) => {
   const { rows } = await query<KpiRow>(
-    `SELECT * FROM kpis ORDER BY "order" ASC, name ASC`,
+    `SELECT * FROM kpis WHERE group_id = $1 ORDER BY "order" ASC, name ASC`,
+    [req.groupId!],
   );
   res.json(rows);
 });
@@ -35,14 +32,18 @@ const createSchema = z.object({
 
 kpisRouter.post("/", requireAdmin, async (req, res) => {
   const body = createSchema.parse(req.body);
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
-    const { rows: countRows } = await client.query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM kpis`);
+    const { rows: countRows } = await client.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM kpis WHERE group_id = $1`,
+      [groupId],
+    );
     const n = countRows[0]?.n ?? 0;
     const color = body.color ?? DEFAULT_PALETTE[n % DEFAULT_PALETTE.length]!;
     const { rows } = await client.query<KpiRow>(
-      `INSERT INTO kpis (name, description, color, "order", created_by)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [body.name, body.description ?? "", color, n, req.user!.id],
+      `INSERT INTO kpis (group_id, name, description, color, "order", created_by)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [groupId, body.name, body.description ?? "", color, n, req.user!.id],
     );
     return rows[0];
   });
@@ -57,6 +58,7 @@ const patchSchema = z.object({
 
 kpisRouter.patch("/:id", requireAdmin, async (req, res) => {
   const body = patchSchema.parse(req.body);
+  const groupId = req.groupId!;
   const fields: string[] = [];
   const values: unknown[] = [];
   for (const [k, v] of Object.entries(body)) {
@@ -65,14 +67,19 @@ kpisRouter.patch("/:id", requireAdmin, async (req, res) => {
     fields.push(`"${k}" = $${values.length}`);
   }
   if (!fields.length) {
-    const { rows } = await query<KpiRow>(`SELECT * FROM kpis WHERE id = $1`, [req.params.id]);
+    const { rows } = await query<KpiRow>(
+      `SELECT * FROM kpis WHERE id = $1 AND group_id = $2`,
+      [req.params.id, groupId],
+    );
     if (!rows[0]) throw new HttpError(404, "kpi not found");
     res.json(rows[0]);
     return;
   }
-  values.push(req.params.id);
+  values.push(req.params.id, groupId);
   const { rows } = await query<KpiRow>(
-    `UPDATE kpis SET ${fields.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+    `UPDATE kpis SET ${fields.join(", ")}, updated_at = NOW()
+       WHERE id = $${values.length - 1} AND group_id = $${values.length}
+       RETURNING *`,
     values,
   );
   if (!rows[0]) throw new HttpError(404, "kpi not found");
@@ -85,29 +92,31 @@ const reorderSchema = z.object({
 
 kpisRouter.post("/reorder", requireAdmin, async (req, res) => {
   const body = reorderSchema.parse(req.body);
+  const groupId = req.groupId!;
   await withTransaction(async (client) => {
     for (let i = 0; i < body.order.length; i++) {
       await client.query(
-        `UPDATE kpis SET "order" = $1, updated_at = NOW() WHERE id = $2`,
-        [i, body.order[i]],
+        `UPDATE kpis SET "order" = $1, updated_at = NOW() WHERE id = $2 AND group_id = $3`,
+        [i, body.order[i], groupId],
       );
     }
   });
-  const { rows } = await query<KpiRow>(`SELECT * FROM kpis ORDER BY "order" ASC, name ASC`);
+  const { rows } = await query<KpiRow>(
+    `SELECT * FROM kpis WHERE group_id = $1 ORDER BY "order" ASC, name ASC`,
+    [groupId],
+  );
   res.json(rows);
 });
 
 kpisRouter.delete("/:id", requireAdmin, async (req, res) => {
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
     const { rows: kpiRows } = await client.query<KpiRow>(
-      `SELECT * FROM kpis WHERE id = $1 FOR UPDATE`,
-      [req.params.id],
+      `SELECT * FROM kpis WHERE id = $1 AND group_id = $2 FOR UPDATE`,
+      [req.params.id, groupId],
     );
     const kpi = kpiRows[0];
     if (!kpi) throw new HttpError(404, "kpi not found");
-    // project_kpis cascades via FK ON DELETE CASCADE, so any project
-    // that was tracking this KPI silently drops it. No reassign option
-    // — KPIs are outcome buckets, not swappable owners.
     await client.query(`DELETE FROM kpis WHERE id = $1`, [kpi.id]);
     return { deleted: kpi.id };
   });

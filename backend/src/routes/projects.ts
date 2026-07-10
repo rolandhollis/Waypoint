@@ -4,7 +4,7 @@ import { z } from "zod";
 import { query, withTransaction } from "../db/pool.js";
 import { requireWrite } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
-import type { ProjectAuditAction, ProjectRow, SwimLaneRow, TimelineEntryRow } from "../types.js";
+import type { ProjectAuditAction, ProjectDeadlineRow, ProjectRow, SwimLaneRow, TimelineEntryRow } from "../types.js";
 
 /** Ordered phase-date fields, earliest → latest. Used by both the
  * internal-ordering validator and the forward-cascade helper. */
@@ -123,7 +123,34 @@ const PROJECT_COLUMNS = `
     (SELECT array_agg(pk.kpi_id ORDER BY pk.position ASC)
        FROM project_kpis pk WHERE pk.project_id = p.id),
     ARRAY[]::UUID[]
-  ) AS kpis
+  ) AS kpis,
+  COALESCE(
+    (SELECT jsonb_agg(
+              jsonb_build_object(
+                'id', pd.id,
+                'swim_lane_id', pd.swim_lane_id,
+                'deadline_date', to_char(pd.deadline_date, 'YYYY-MM-DD'),
+                'note', pd.note
+              )
+              ORDER BY pd.deadline_date ASC, pd.created_at ASC
+            )
+       FROM project_deadlines pd WHERE pd.project_id = p.id),
+    '[]'::jsonb
+  ) AS deadlines,
+  COALESCE(
+    (SELECT jsonb_agg(
+              jsonb_build_object(
+                'id', pdep.id,
+                'project_swim_lane_id', pdep.project_swim_lane_id,
+                'depends_on_project_id', pdep.depends_on_project_id,
+                'depends_on_swim_lane_id', pdep.depends_on_swim_lane_id,
+                'note', pdep.note
+              )
+              ORDER BY pdep.created_at ASC
+            )
+       FROM project_dependencies pdep WHERE pdep.project_id = p.id),
+    '[]'::jsonb
+  ) AS dependencies
 `;
 
 /**
@@ -212,6 +239,7 @@ async function validateHierarchy(
   selfId: string | null,
   nextType: "epic" | "subtask",
   nextParentId: string | null,
+  groupId: string,
 ) {
   if (nextType === "epic") {
     if (nextParentId != null) {
@@ -219,18 +247,19 @@ async function validateHierarchy(
     }
     return;
   }
-  // Subtask branch: must have a real, live parent that isn't itself
-  // (direct self-loop caught here so error message is nice; the DB
-  // CHECK is a redundant safety net).
   if (!nextParentId) {
     throw new HttpError(400, "subtasks require a parent_id");
   }
   if (nextParentId === selfId) {
     throw new HttpError(400, "a project cannot be its own parent");
   }
+  // Parent must live in the SAME tenant. Filtering by group_id also
+  // makes the "does not exist" branch fire for cross-tenant probes —
+  // an attacker can't detect whether a UUID belongs to another
+  // group's project vs is truly unknown.
   const { rows: parentRows } = await client.query<{ id: string; deleted_at: Date | null }>(
-    `SELECT id, deleted_at FROM projects WHERE id = $1`,
-    [nextParentId],
+    `SELECT id, deleted_at FROM projects WHERE id = $1 AND group_id = $2`,
+    [nextParentId, groupId],
   );
   const parent = parentRows[0];
   if (!parent) throw new HttpError(400, "parent project does not exist");
@@ -494,26 +523,28 @@ const HIDDEN_LANE_CLAUSE = `
 projectsRouter.get("/", async (req, res) => {
   const q = listSchema.parse(req.query);
   const includeDeleted = q.include_deleted === "true";
-  const isAdmin = req.user?.role === "admin";
-  const clauses: string[] = [];
+  const isAdmin = req.userGroupRole === "admin";
+  // group_id filter is always first so the query planner picks the
+  // (group_id, position) composite index without extra hinting.
+  const clauses: string[] = ["p.group_id = $1"];
   if (!includeDeleted) clauses.push("p.deleted_at IS NULL");
   if (!isAdmin) clauses.push(HIDDEN_LANE_CLAUSE);
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const { rows } = await query<ProjectRow>(
     `SELECT ${PROJECT_COLUMNS} FROM projects p
-       ${where}
+       WHERE ${clauses.join(" AND ")}
        ORDER BY p.position ASC, p.created_at ASC`,
+    [req.groupId!],
   );
   res.json(rows);
 });
 
 projectsRouter.get("/:id", async (req, res) => {
-  const isAdmin = req.user?.role === "admin";
-  const clauses = ["p.id = $1"];
+  const isAdmin = req.userGroupRole === "admin";
+  const clauses = ["p.id = $1", "p.group_id = $2"];
   if (!isAdmin) clauses.push(HIDDEN_LANE_CLAUSE);
   const { rows } = await query<ProjectRow>(
     `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE ${clauses.join(" AND ")}`,
-    [req.params.id],
+    [req.params.id, req.groupId!],
   );
   if (!rows[0]) throw new HttpError(404, "project not found");
   res.json(rows[0]);
@@ -524,29 +555,36 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
   validatePhaseDates(body);
   const nextType = body.type ?? "epic";
   const nextParentId = body.parent_id ?? null;
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
-    // Every project must live in a lane (migration 010 enforces this
-    // at the DB level). If the client didn't pick one, fall back to
-    // the admin-designated default_new lane; if no default is set
-    // either, use the first non-terminal lane. Fail with a clear
-    // 400 when the workspace has no lanes at all.
+    // Every project must live in a lane in THIS tenant. Filter by
+    // group_id when resolving both the caller-supplied lane (defensive
+    // — client shouldn't be able to sneak a cross-tenant id in) and
+    // the fallback default lane.
     let laneId = body.swim_lane_id ?? null;
-    if (!laneId) {
+    if (laneId) {
+      const { rows: check } = await client.query<{ id: string }>(
+        `SELECT id FROM swim_lanes WHERE id = $1 AND group_id = $2`,
+        [laneId, groupId],
+      );
+      if (!check[0]) throw new HttpError(400, "swim_lane_id does not belong to the current group");
+    } else {
       const { rows: laneRows } = await client.query<{ id: string }>(
         `SELECT id FROM swim_lanes
+          WHERE group_id = $1
           ORDER BY is_default_new DESC,
                    is_terminal ASC,
                    "order" ASC
           LIMIT 1`,
+        [groupId],
       );
       laneId = laneRows[0]?.id ?? null;
       if (!laneId) throw new HttpError(400, "cannot create a project: no swim lanes exist yet");
     }
 
-    // Verify (type, parent_id) is legal — subtask needs a real parent,
-    // epic must not carry one. Runs before the INSERT so the DB CHECK
-    // isn't the one surfacing errors to the user.
-    await validateHierarchy(client, null, nextType, nextParentId);
+    // Verify (type, parent_id) is legal — subtask needs a real parent
+    // IN THE SAME GROUP, epic must not carry one.
+    await validateHierarchy(client, null, nextType, nextParentId, groupId);
 
     const { rows: maxRows } = await client.query<{ next: number }>(
       `SELECT COALESCE(MAX(position), -1) + 1 AS next
@@ -556,12 +594,13 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
     const position = maxRows[0]?.next ?? 0;
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO projects
-         (title, description, swim_lane_id, position, owner_id, tags,
+         (group_id, title, description, swim_lane_id, position, owner_id, tags,
           type, parent_id,
           start_date, target_date, dev_start_date, dev_end_date,
           optimization_start_date, optimization_end_date, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
       [
+        groupId,
         body.title,
         body.description ?? "",
         laneId,
@@ -621,16 +660,15 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
 
 projectsRouter.patch("/:id", requireWrite, async (req, res) => {
   const body = projectBaseSchema.partial().parse(req.body);
-  // Movement is a separate endpoint that also writes status_history;
-  // reject swim_lane_id changes here to keep the audit trail single-source.
   if (body.swim_lane_id !== undefined) {
     throw new HttpError(400, "use POST /projects/:id/move to change swim_lane_id");
   }
   const projectId = String(req.params.id);
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
     const { rows: existingRows } = await client.query<ProjectRow>(
-      `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1 FOR UPDATE`,
-      [projectId],
+      `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1 AND p.group_id = $2 FOR UPDATE`,
+      [projectId, groupId],
     );
     const existing = existingRows[0];
     if (!existing) throw new HttpError(404, "project not found");
@@ -659,7 +697,7 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
       body.type !== undefined ||
       body.parent_id !== undefined
     ) {
-      await validateHierarchy(client, projectId, effectiveType, effectiveParent);
+      await validateHierarchy(client, projectId, effectiveType, effectiveParent, groupId);
     }
 
     // If any phase-date is being changed, revalidate the whole chain using
@@ -808,17 +846,27 @@ async function moveProjectImpl(
     toLaneId: string;
     position?: number;
     userId: string;
+    groupId: string;
   },
 ): Promise<ProjectRow> {
   const { rows: existingRows } = await client.query<ProjectRow>(
-    `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1 AND p.deleted_at IS NULL FOR UPDATE`,
-    [args.projectId],
+    `SELECT ${PROJECT_COLUMNS} FROM projects p
+       WHERE p.id = $1 AND p.group_id = $2 AND p.deleted_at IS NULL FOR UPDATE`,
+    [args.projectId, args.groupId],
   );
   const existing = existingRows[0];
   if (!existing) throw new HttpError(404, "project not found");
 
   const from = existing.swim_lane_id;
   const to = args.toLaneId;
+
+  // Destination lane must be in the same tenant. Prevents a client
+  // from cross-tenant-moving a card by feeding a foreign lane id.
+  const { rows: destCheck } = await client.query<{ id: string }>(
+    `SELECT id FROM swim_lanes WHERE id = $1 AND group_id = $2`,
+    [to, args.groupId],
+  );
+  if (!destCheck[0]) throw new HttpError(400, "destination swim lane is not in this group");
 
   // Terminal-lane side effect on `actual_completion_date`: auto-stamp on
   // entry into a terminal lane, auto-clear on exit. Only when the lane
@@ -916,12 +964,14 @@ async function moveProjectImpl(
 
 projectsRouter.post("/:id/move", requireWrite, async (req, res) => {
   const body = moveSchema.parse(req.body);
+  const groupId = req.groupId!;
   const result = await withTransaction((client) =>
     moveProjectImpl(client, {
       projectId: String(req.params.id),
       toLaneId: body.swim_lane_id,
       position: body.position,
       userId: req.user!.id,
+      groupId,
     }),
   );
   res.json(result);
@@ -933,10 +983,13 @@ projectsRouter.post("/:id/move", requireWrite, async (req, res) => {
  * swim-lanes response) can still archive their own work with one click.
  */
 projectsRouter.post("/:id/archive", requireWrite, async (req, res) => {
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
     const projectId = String(req.params.id);
+    // Archive lane is per-tenant; find the one for THIS group.
     const { rows: laneRows } = await client.query<{ id: string }>(
-      `SELECT id FROM swim_lanes WHERE is_archive = TRUE LIMIT 1`,
+      `SELECT id FROM swim_lanes WHERE is_archive = TRUE AND group_id = $1 LIMIT 1`,
+      [groupId],
     );
     const archiveLaneId = laneRows[0]?.id;
     if (!archiveLaneId) {
@@ -971,6 +1024,7 @@ projectsRouter.post("/:id/archive", requireWrite, async (req, res) => {
       projectId,
       toLaneId: archiveLaneId,
       userId: req.user!.id,
+      groupId,
     });
   });
   res.json(result);
@@ -978,15 +1032,13 @@ projectsRouter.post("/:id/archive", requireWrite, async (req, res) => {
 
 projectsRouter.delete("/:id", requireWrite, async (req, res) => {
   const projectId = String(req.params.id);
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
-    // Block hard-delete of a parent that still has any live subtasks
-    // — deleting the parent would either orphan or cascade, both of
-    // which surprise. Force the caller to walk the tree bottom-up.
     await assertNoLiveSubtasks(client, projectId, "delete");
     const { rows: updated } = await client.query<{ id: string }>(
       `UPDATE projects SET deleted_at = NOW(), updated_at = NOW()
-         WHERE id = $1 AND deleted_at IS NULL RETURNING id`,
-      [projectId],
+         WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL RETURNING id`,
+      [projectId, groupId],
     );
     if (!updated[0]) throw new HttpError(404, "project not found or already deleted");
     await recordAudit(client, {
@@ -1005,10 +1057,11 @@ projectsRouter.delete("/:id", requireWrite, async (req, res) => {
 
 projectsRouter.post("/:id/restore", requireWrite, async (req, res) => {
   const projectId = String(req.params.id);
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
     const { rows: updated } = await client.query<{ id: string }>(
-      `UPDATE projects SET deleted_at = NULL, updated_at = NOW() WHERE id = $1 RETURNING id`,
-      [projectId],
+      `UPDATE projects SET deleted_at = NULL, updated_at = NOW() WHERE id = $1 AND group_id = $2 RETURNING id`,
+      [projectId, groupId],
     );
     if (!updated[0]) throw new HttpError(404, "project not found");
     await recordAudit(client, {
@@ -1033,6 +1086,14 @@ projectsRouter.post("/:id/restore", requireWrite, async (req, res) => {
  * trail without caring which underlying table it came from.
  */
 projectsRouter.get("/:id/history", async (req, res) => {
+  // Verify the project actually belongs to this tenant BEFORE
+  // dumping its timeline; without this check a stray UUID guess
+  // would leak audit rows from another group.
+  const { rows: ownership } = await query<{ id: string }>(
+    `SELECT id FROM projects WHERE id = $1 AND group_id = $2`,
+    [req.params.id, req.groupId!],
+  );
+  if (!ownership[0]) throw new HttpError(404, "project not found");
   const { rows } = await query<TimelineEntryRow>(
     `SELECT id, project_id, moved_by_user_id AS user_id, "timestamp",
             'move'::text AS kind,

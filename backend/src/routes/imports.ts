@@ -141,8 +141,15 @@ importsRouter.post("/csv/preview", requireAdmin, async (req, res) => {
   }
 
   // Load lookup tables once and index for fast per-row resolution.
+  // Teams are per-tenant; users are global (a user can own projects
+  // in any group they're a member of, and we don't enforce
+  // per-group ownership at CSV time to keep the tool operational
+  // for one-brand imports where the owner might just be an admin).
   const users = (await query<UserRow>(`SELECT * FROM users`)).rows;
-  const teams = (await query<TeamRow>(`SELECT * FROM teams`)).rows;
+  const teams = (await query<TeamRow>(
+    `SELECT * FROM teams WHERE group_id = $1`,
+    [req.groupId!],
+  )).rows;
   const usersByEmail = new Map(users.map((u) => [u.email.trim().toLowerCase(), u]));
   const teamsByName = new Map(teams.map((t) => [t.name.trim().toLowerCase(), t]));
 
@@ -201,16 +208,20 @@ const commitSchema = z.object({
 
 importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
   const { rows } = commitSchema.parse(req.body);
+  const groupId = req.groupId!;
 
-  // Resolve default lane once, up-front. Same policy as POST /projects:
-  // is_default_new → first non-terminal → anything.
+  // Default lane must belong to the caller's tenant. Same lookup
+  // policy as POST /projects — is_default_new → first non-terminal
+  // → anything — but scoped to the group.
   const laneRow = (
     await query<{ id: string; name: string }>(
       `SELECT id, name FROM swim_lanes
+        WHERE group_id = $1
         ORDER BY is_default_new DESC,
                  is_terminal ASC,
                  "order" ASC
         LIMIT 1`,
+      [groupId],
     )
   ).rows[0];
   if (!laneRow) {
@@ -237,13 +248,14 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
         const position = maxRows[0]?.next ?? 0;
         const { rows: insRows } = await client.query<{ id: string }>(
           `INSERT INTO projects
-             (title, description, swim_lane_id, position, owner_id, tags,
+             (group_id, title, description, swim_lane_id, position, owner_id, tags,
               type, parent_id,
               start_date, target_date, dev_start_date, dev_end_date,
               optimization_start_date, optimization_end_date, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,'epic',NULL,$7,$8,$9,$10,$11,$12,$13)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'epic',NULL,$8,$9,$10,$11,$12,$13,$14)
            RETURNING id`,
           [
+            groupId,
             row.title,
             row.description ?? "",
             laneRow.id,

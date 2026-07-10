@@ -4,6 +4,13 @@ export type UserRow = {
   id: string;
   email: string;
   name: string;
+  /**
+   * @deprecated Per-group role lives in `user_groups.role`; this
+   * column is preserved for backwards compat + as the seed source
+   * for the RMN backfill migration (017). New code should never
+   * read this — use `req.userGroupRole` populated by
+   * middleware/auth.ts.
+   */
   role: Role;
   avatar_url: string | null;
   color: string;
@@ -22,8 +29,42 @@ export type UserRow = {
    */
   password_hash: string | null;
   password_updated_at: Date | null;
+  /**
+   * Multi-tenancy flags added by migration 017.
+   *   * is_super_user  — global "manage tenants" capability; the
+   *     only account that should ever hold it is the one
+   *     bootstrapped from SUPER_ADMIN_EMAIL. Regular admins can't
+   *     grant it via the UI.
+   *   * current_group_id — which tenant workspace the user is
+   *     "in" right now. Persists across sessions/devices; changed
+   *     by PATCH /users/me/current-group when they pick a
+   *     different one from the navbar dropdown.
+   */
+  is_super_user: boolean;
+  current_group_id: string | null;
   created_at: Date;
   updated_at: Date;
+};
+
+export type GroupRow = {
+  id: string;
+  name: string;
+  color: string | null;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+/**
+ * One row per (user, group) pair. `role` is the user's role in that
+ * specific tenant — a user can be admin in RMN and viewer in VC.
+ * See migration 017 for the schema.
+ */
+export type UserGroupRow = {
+  user_id: string;
+  group_id: string;
+  role: Role;
+  created_at: Date;
 };
 
 /**
@@ -48,6 +89,8 @@ export function scrubUsers(rows: UserRow[]): SafeUserRow[] {
 
 export type SwimLaneRow = {
   id: string;
+  /** Tenant scope; every list/create/update filters by this. */
+  group_id: string;
   name: string;
   description: string;
   order: number;
@@ -93,6 +136,8 @@ export type PhaseDateKey =
 
 export type TeamRow = {
   id: string;
+  /** Tenant scope; every list/create/update filters by this. */
+  group_id: string;
   name: string;
   color: string;
   order: number;
@@ -105,6 +150,8 @@ export type TeamRow = {
 
 export type KpiRow = {
   id: string;
+  /** Tenant scope; every list/create/update filters by this. */
+  group_id: string;
   name: string;
   /** Free-form description surfaced in the KPI report view header. */
   description: string;
@@ -124,6 +171,8 @@ export type ProjectType = "epic" | "subtask";
  */
 export type ProjectRow = {
   id: string;
+  /** Tenant scope; every list/create/update filters by this. */
+  group_id: string;
   title: string;
   description: string;
   swim_lane_id: string | null;
@@ -177,6 +226,54 @@ export type ProjectCommentRow = {
 };
 
 export type ProjectAuditAction = "create" | "edit" | "move" | "archive" | "restore";
+
+/**
+ * One deadline row per (project, swim_lane) pair. See
+ * migration 018 for the schema.
+ *
+ * Deadline semantics: the project's phase-date field bound to
+ * this swim lane (swim_lanes.phase_date_key) must be on or before
+ * `deadline_date`. If phase_date_key is null (admin unset the
+ * binding after the deadline was created), the deadline still
+ * exists but violations aren't computed against it.
+ */
+export type ProjectDeadlineRow = {
+  id: string;
+  project_id: string;
+  swim_lane_id: string;
+  deadline_date: string; // ISO date (YYYY-MM-DD)
+  note: string;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+/**
+ * One dependency row per (dependent project's phase → upstream
+ * project's phase). See migration 019.
+ *
+ * Semantics: `project_id`'s `project_swim_lane_id` phase START
+ * cannot begin until `depends_on_project_id`'s
+ * `depends_on_swim_lane_id` phase END has completed.
+ *
+ * The two lanes needn't be the same; e.g. X's In-Dev can depend on
+ * Y's Complete. Both lanes must have `phase_date_key` bound so the
+ * client-side violation calculator has both dates to compare.
+ *
+ * Cross-tenant deps are rejected at the route layer — all four ids
+ * must resolve inside the caller's current group.
+ */
+export type ProjectDependencyRow = {
+  id: string;
+  project_id: string;
+  project_swim_lane_id: string;
+  depends_on_project_id: string;
+  depends_on_swim_lane_id: string;
+  note: string;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
 
 export type ProjectAuditRow = {
   id: string;

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
-import { useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { useCanWrite, useCurrentGroupRole, useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { computePhases } from "../lib/phaseCompute";
 import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
 import { ancestors, childrenByParent, descendants, indexById } from "../lib/hierarchy";
@@ -15,6 +15,8 @@ import { KpiPicker } from "./KpiPicker";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 import { PairedDates } from "./PairedDates";
 import { ProjectComments } from "./ProjectComments";
+import { ProjectDeadlines } from "./ProjectDeadlines";
+import { ProjectDependencies } from "./ProjectDependencies";
 import { ProjectPicker } from "./ProjectPicker";
 import { StatusPill } from "./StatusPill";
 import { StatusUpdateForm } from "./StatusUpdateForm";
@@ -38,7 +40,11 @@ export function ProjectDetailPanel({
   onOpenProject?: (nextId: string) => void;
 }) {
   const me = useMe();
-  const canWrite = me.data?.role !== "viewer";
+  // Write / role checks go through the per-group hooks so a user
+  // who's owner in RMN but viewer in VC sees the read-only version
+  // of the panel while browsing VC's cards, and vice versa.
+  const canWrite = useCanWrite();
+  const currentRole = useCurrentGroupRole();
   const lanes = useSwimLanes();
   const users = useUsers();
   const teams = useTeams();
@@ -353,6 +359,10 @@ export function ProjectDetailPanel({
               )}
             </section>
 
+            <ProjectDeadlines project={project} />
+
+            <ProjectDependencies project={project} />
+
             {myChildren.length ? (
               <section className="mt-6">
                 <h3 className="text-sm font-semibold text-wp-ink">
@@ -410,7 +420,13 @@ export function ProjectDetailPanel({
               <h3 className="text-sm font-semibold text-wp-ink">Audit trail</h3>
               {history.data && history.data.length ? (
                 <ol className="mt-2 space-y-1 text-xs text-wp-slate">
-                  {history.data.map((h) => <HistoryRow key={h.id} h={h} allProjectsById={byId} />)}
+                  {/* Backend returns oldest-first (chronological). PMs
+                      read the panel like a changelog and want the newest
+                      event on top; reverse a shallow copy so the source
+                      array stays untouched for any other consumer. */}
+                  {history.data.slice().reverse().map((h) => (
+                    <HistoryRow key={h.id} h={h} allProjectsById={byId} />
+                  ))}
                 </ol>
               ) : (
                 <p className="mt-1.5 text-xs text-wp-slate">No activity yet.</p>
@@ -661,10 +677,109 @@ function HistoryRowBody({
     return <>moved from {strong(fromName ?? "—")} to {strong(toName ?? "—")}.</>;
   }
 
+  // Hard-deadline events. field is `deadline:<lane_id>`; from/to are
+  // {deadline_date, note} objects (or null on create/delete). We look
+  // up the lane name for a friendlier read; falls back to "(deleted
+  // lane)" if the lane is gone.
+  if (field.startsWith("deadline:")) {
+    const laneId = field.slice("deadline:".length);
+    const laneName = lanes.find((l) => l.id === laneId)?.name ?? "(deleted lane)";
+    const fromD = deadlineValue(from);
+    const toD = deadlineValue(to);
+    if (!fromD && toD) return <>added {strong(laneName)} deadline on {strong(toD.deadline_date)}.</>;
+    if (fromD && !toD) return <>removed the {strong(laneName)} deadline (was {strong(fromD.deadline_date)}).</>;
+    if (fromD && toD) {
+      const parts: React.ReactNode[] = [];
+      if (fromD.deadline_date !== toD.deadline_date) {
+        parts.push(<span key="d">date from {strong(fromD.deadline_date)} to {strong(toD.deadline_date)}</span>);
+      }
+      if ((fromD.note ?? "") !== (toD.note ?? "")) {
+        parts.push(<span key="n">updated the note</span>);
+      }
+      if (!parts.length) return <>touched the {strong(laneName)} deadline.</>;
+      return (
+        <>
+          {strong(laneName)} deadline: {parts.map((p, i) => (
+            <span key={i}>{i > 0 ? "; " : ""}{p}</span>
+          ))}.
+        </>
+      );
+    }
+    return <>touched a deadline.</>;
+  }
+
+  // Dependency events. `field = "dependency:<id>"`; from/to are
+  // {project_swim_lane_id, depends_on_project_id,
+  // depends_on_swim_lane_id, note} on create/delete, or {note} for
+  // note-only patches. Uses the projectsById map for readable
+  // upstream titles and the lanes list for phase names.
+  if (field.startsWith("dependency:")) {
+    const fromD = dependencyValue(from);
+    const toD = dependencyValue(to);
+    const summarize = (d: NonNullable<ReturnType<typeof dependencyValue>>) => {
+      const thisLane = d.project_swim_lane_id
+        ? lanes.find((l) => l.id === d.project_swim_lane_id)?.name ?? "(deleted lane)"
+        : null;
+      const otherName = d.depends_on_project_id
+        ? projectsById?.get(d.depends_on_project_id)?.title ?? "(deleted project)"
+        : null;
+      const otherLane = d.depends_on_swim_lane_id
+        ? lanes.find((l) => l.id === d.depends_on_swim_lane_id)?.name ?? "(deleted lane)"
+        : null;
+      if (!thisLane || !otherName || !otherLane) return null;
+      return { thisLane, otherName, otherLane };
+    };
+    const summarizedTo = toD ? summarize(toD) : null;
+    const summarizedFrom = fromD ? summarize(fromD) : null;
+
+    if (!fromD && summarizedTo) {
+      return (
+        <>added dependency: {strong(summarizedTo.thisLane)} blocked by {strong(summarizedTo.otherName)}&rsquo;s {strong(summarizedTo.otherLane)}.</>
+      );
+    }
+    if (summarizedFrom && !toD) {
+      return (
+        <>removed dependency: {strong(summarizedFrom.thisLane)} blocked by {strong(summarizedFrom.otherName)}&rsquo;s {strong(summarizedFrom.otherLane)}.</>
+      );
+    }
+    // Note-only patch: from/to carry only `note`.
+    if (fromD && toD && "note" in fromD && "note" in toD && (fromD.note ?? "") !== (toD.note ?? "")) {
+      return <>updated a dependency note.</>;
+    }
+    return <>touched a dependency.</>;
+  }
+
   // Generic scalar (dates, title, etc.).
   if (isBlank(to)) return <>cleared {label}.</>;
   if (isBlank(from)) return <>set {label} to {strong(String(to))}.</>;
   return <>changed {label} from {strong(String(from))} to {strong(String(to))}.</>;
+}
+
+function dependencyValue(v: unknown):
+  | {
+      project_swim_lane_id?: string;
+      depends_on_project_id?: string;
+      depends_on_swim_lane_id?: string;
+      note?: string;
+    }
+  | null {
+  if (!v || typeof v !== "object") return null;
+  const obj = v as Record<string, unknown>;
+  const asStr = (k: string) => (typeof obj[k] === "string" ? (obj[k] as string) : undefined);
+  return {
+    project_swim_lane_id: asStr("project_swim_lane_id"),
+    depends_on_project_id: asStr("depends_on_project_id"),
+    depends_on_swim_lane_id: asStr("depends_on_swim_lane_id"),
+    note: asStr("note"),
+  };
+}
+
+function deadlineValue(v: unknown): { deadline_date: string; note: string } | null {
+  if (!v || typeof v !== "object") return null;
+  const obj = v as Record<string, unknown>;
+  const d = obj.deadline_date;
+  if (typeof d !== "string") return null;
+  return { deadline_date: d, note: typeof obj.note === "string" ? obj.note : "" };
 }
 
 const FIELD_LABELS: Record<string, string> = {

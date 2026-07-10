@@ -4,7 +4,7 @@ import { MoreHorizontal } from "lucide-react";
 import { useState } from "react";
 import { ApiError, api } from "../lib/api";
 import type { Project, SwimLane } from "../lib/types";
-import { useMe, useProjects } from "../lib/queries";
+import { useCanWrite, useProjects } from "../lib/queries";
 import { PhaseDatePromptModal } from "./PhaseDatePromptModal";
 
 // Dropdowns close immediately on click so we can't render an inline
@@ -27,10 +27,9 @@ export function LaneMoveMenu({
   currentLaneId: string | null;
   lanes: SwimLane[];
 }) {
-  const me = useMe();
   const qc = useQueryClient();
   const projects = useProjects();
-  const canWrite = me.data?.role !== "viewer";
+  const canWrite = useCanWrite();
   // When the move lands in a phase-bound lane, open the same
   // update-date modal the board drag-drop flow uses.
   const [phasePromptLaneId, setPhasePromptLaneId] = useState<string | null>(null);

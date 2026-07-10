@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { format } from "date-fns";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useMe, useProjects, useStatusReport } from "../lib/queries";
+import { useCanWrite, useProjects, useStatusReport } from "../lib/queries";
 import { useViewStore } from "../lib/viewState";
 import { applyFilters } from "../lib/filtering";
 import { FilterBar } from "../components/FilterBar";
@@ -13,7 +13,6 @@ import { StatusUpdateModal } from "../components/StatusUpdateModal";
 const UNASSIGNED_LANE_KEY = "__unassigned__";
 
 export function StatusReportView() {
-  const me = useMe();
   const [weekOf, setWeekOf] = useState<string | undefined>(undefined);
   const report = useStatusReport(weekOf);
   const projects = useProjects();
@@ -21,7 +20,11 @@ export function StatusReportView() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [statusModalId, setStatusModalId] = useState<string | null>(null);
-  const canWrite = me.data?.role !== "viewer";
+  // Row-click behaviour splits on write access: owners/admins land
+  // in the inline status modal, viewers get the read-only detail
+  // panel. The hook returns the per-group role, so switching tenants
+  // via the navbar flips this immediately.
+  const canWrite = useCanWrite();
 
   const filteredIds = useMemo(() => {
     if (!projects.data) return null;

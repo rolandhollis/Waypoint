@@ -9,7 +9,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { api } from "../lib/api";
-import { useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { useCanWrite, useIsAdmin, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore } from "../lib/viewState";
 import { applyFilters } from "../lib/filtering";
@@ -21,7 +21,10 @@ import { PhaseDatePromptModal } from "../components/PhaseDatePromptModal";
 import { InfoTooltip } from "../components/InfoTooltip";
 
 export function BoardView() {
-  const me = useMe();
+  // Both admin-only nav ("Go to Admin Settings" cta) and write
+  // gating (drag-to-move, add-item) flow through the per-group
+  // hooks so RMN admin ↔ VC viewer swaps propagate immediately.
+  const isAdmin = useIsAdmin();
   const lanes = useSwimLanes();
   const projects = useProjects();
   const users = useUsers();
@@ -105,7 +108,7 @@ export function BoardView() {
   }, [filters, searchParams, setSearchParams]);
 
   const qc = useQueryClient();
-  const canWrite = me.data?.role !== "viewer";
+  const canWrite = useCanWrite();
 
   const filtered = useMemo(() => (projects.data ? applyFilters(projects.data, filters) : []), [projects.data, filters]);
 
@@ -355,7 +358,7 @@ export function BoardView() {
           <p className="mt-1 text-sm text-wp-slate">
             An admin needs to create a swim lane before cards can be organized on the board.
           </p>
-          {me.data?.role === "admin" ? (
+          {isAdmin ? (
             <a href="/admin" className="btn-primary mt-4 inline-flex">Go to Admin Settings</a>
           ) : null}
         </div>

@@ -9,8 +9,19 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
-import { useHealth, useKpis, useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
-import type { Kpi, PhaseDateKey, Project, SwimLane, Team, User } from "../lib/types";
+import {
+  useGroupMembers,
+  useGroups,
+  useHealth,
+  useIsAdmin,
+  useIsSuperUser,
+  useKpis,
+  useProjects,
+  useSwimLanes,
+  useTeams,
+  useUsers,
+} from "../lib/queries";
+import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, User } from "../lib/types";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
@@ -19,32 +30,49 @@ import { passwordIsValid } from "../lib/password";
 import { RevealPasswordCard } from "../components/RevealPasswordCard";
 import { X } from "lucide-react";
 
-type TabKey = "lanes" | "teams" | "kpis" | "users" | "import" | "export" | "archived";
+type TabKey = "lanes" | "teams" | "kpis" | "users" | "groups" | "import" | "export" | "archived";
+
+type TabDef = {
+  key: TabKey;
+  label: string;
+  render: () => JSX.Element;
+  /** SuperUser-only tabs are filtered out of the tablist for
+   *  everyone else (i.e. hidden, not just disabled). */
+  superUserOnly?: boolean;
+};
 
 // Note: the tab key stays "archived" for URL back-compat with older
 // bookmarks, but the label reads "Deleted cards" now that we have a
 // distinct Archive swim-lane concept — this tab is only about the
 // hard-delete (soft-delete via deleted_at) flow.
-const TABS: { key: TabKey; label: string; render: () => JSX.Element }[] = [
+const ALL_TABS: TabDef[] = [
   { key: "lanes",    label: "Swim lanes",    render: () => <SwimLanesAdmin /> },
   { key: "teams",    label: "Teams",         render: () => <TeamsAdmin /> },
   { key: "kpis",     label: "KPIs",          render: () => <KpisAdmin /> },
   { key: "users",    label: "Users",         render: () => <UsersAdmin /> },
+  { key: "groups",   label: "Groups",        render: () => <GroupsAdmin />, superUserOnly: true },
   { key: "import",   label: "Import CSV",    render: () => <CsvImportAdmin /> },
   { key: "export",   label: "Export CSV",    render: () => <CsvExportAdmin /> },
   { key: "archived", label: "Deleted cards", render: () => <ArchivedProjectsAdmin /> },
 ];
 
 export function AdminSettingsView() {
-  const me = useMe();
+  const isAdmin = useIsAdmin();
+  const isSuperUser = useIsSuperUser();
   const [params, setParams] = useSearchParams();
+  // Filter out super-user-only tabs for regular admins; the Groups
+  // tab is only useful to the platform super-user.
+  const tabs = ALL_TABS.filter((t) => !t.superUserOnly || isSuperUser);
   // ?tab= persists the active section across reloads and is deep-linkable
   // (e.g. Slack messages like "check /admin?tab=users"). Falls back to
   // the first tab whenever the URL contains an unknown value.
   const rawTab = params.get("tab") ?? "";
-  const active: TabKey = (TABS.find((t) => t.key === rawTab)?.key ?? TABS[0]!.key);
+  const active: TabKey = (tabs.find((t) => t.key === rawTab)?.key ?? tabs[0]!.key);
 
-  if (me.data?.role !== "admin") {
+  // Admin access is per-group; a user who's viewer in the current
+  // group but admin in another tenant sees "Admin access required"
+  // here until they switch groups via the navbar dropdown.
+  if (!isAdmin && !isSuperUser) {
     return <div className="p-6 text-sm text-wp-slate">Admin access required.</div>;
   }
 
@@ -63,7 +91,7 @@ export function AdminSettingsView() {
         aria-label="Admin sections"
         className="mt-4 flex gap-1 border-b border-wp-stone"
       >
-        {TABS.map((t) => {
+        {tabs.map((t) => {
           const isActive = t.key === active;
           return (
             <button
@@ -94,7 +122,7 @@ export function AdminSettingsView() {
         aria-labelledby={`admin-tab-${active}`}
         className="mt-6"
       >
-        {TABS.find((t) => t.key === active)!.render()}
+        {tabs.find((t) => t.key === active)!.render()}
       </div>
     </div>
   );
@@ -1064,6 +1092,362 @@ function ResetPasswordDialog({
           </button>
           <button type="submit" className="btn-primary" disabled={!canSubmit}>
             {reset.isPending ? "Resetting…" : "Reset password"}
+          </button>
+        </div>
+      </form>
+    </DialogFrame>
+  );
+}
+
+// -----------------------------------------------------------------
+// Groups (multi-tenancy) — super-user only
+// -----------------------------------------------------------------
+
+/**
+ * CRUD for the tenants themselves, plus per-group membership
+ * assignments. Only rendered inside the Admin panel when the caller
+ * is a super-user (the tab is filtered out otherwise). See
+ * migration 017 and backend/src/routes/groups.ts for the wire
+ * shape.
+ */
+function GroupsAdmin() {
+  const groups = useGroups();
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-wp-ink">Groups</h2>
+          <p className="text-xs text-wp-slate">
+            One tenant workspace per group. Projects, swim lanes,
+            teams, and KPIs are isolated within each. Only super-users
+            can create or delete groups.
+          </p>
+        </div>
+        <button type="button" className="btn-primary" onClick={() => setShowCreate(true)}>
+          Add group
+        </button>
+      </div>
+
+      <div className="card-surface divide-y divide-wp-stone">
+        {groups.data?.length === 0 ? (
+          <div className="p-4 text-sm text-wp-slate">No groups yet.</div>
+        ) : null}
+        {groups.data?.map((g) => (
+          <GroupRow
+            key={g.id}
+            group={g}
+            expanded={expandedId === g.id}
+            onToggle={() => setExpandedId((cur) => (cur === g.id ? null : g.id))}
+          />
+        ))}
+      </div>
+
+      {showCreate ? <CreateGroupDialog onClose={() => setShowCreate(false)} /> : null}
+    </div>
+  );
+}
+
+/**
+ * One row per group. Collapsed: name + color + delete. Expanded:
+ * inline member table with add-member + role-change + remove
+ * controls. Kept as a single component because the state is small
+ * and lifting it doesn't buy readability.
+ */
+function GroupRow({
+  group,
+  expanded,
+  onToggle,
+}: {
+  group: Group;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState(group.name);
+  const [color, setColor] = useState<string>(group.color ?? "#64748B");
+
+  const rename = useMutation({
+    mutationFn: (patch: { name?: string; color?: string }) =>
+      api<Group>(`/groups/${group.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["groups"] }),
+  });
+
+  const remove = useMutation({
+    mutationFn: () =>
+      api(`/groups/${group.id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["groups"] }),
+  });
+
+  const commitRename = () => {
+    if (name.trim() && name.trim() !== group.name) {
+      rename.mutate({ name: name.trim() });
+    }
+  };
+  const commitColor = (next: string) => {
+    setColor(next);
+    if (next !== (group.color ?? "#64748B")) rename.mutate({ color: next });
+  };
+
+  return (
+    <div className="p-3">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onToggle}
+          className="text-wp-slate hover:text-wp-ink"
+          aria-label={expanded ? "Collapse" : "Expand"}
+        >
+          <svg viewBox="0 0 12 12" className={`h-3 w-3 transition ${expanded ? "rotate-90" : ""}`}>
+            <path d="M4 2l4 4-4 4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <input
+          type="color"
+          value={color}
+          onChange={(e) => commitColor(e.target.value)}
+          className="h-6 w-8 cursor-pointer rounded border border-wp-stone"
+          aria-label={`Color for ${group.name}`}
+        />
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Escape") setName(group.name);
+          }}
+          className="flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-medium text-wp-ink hover:border-wp-stone focus:border-wp-red focus:outline-none"
+        />
+        <button
+          type="button"
+          onClick={() => {
+            if (confirm(`Delete group "${group.name}"? This is only allowed if it has no active projects.`)) {
+              remove.mutate();
+            }
+          }}
+          className="rounded p-1 text-wp-slate hover:bg-wp-stone/30 hover:text-red-600"
+          aria-label={`Delete ${group.name}`}
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+      {remove.isError ? (
+        <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-700">
+          {(remove.error as Error).message}
+        </div>
+      ) : null}
+
+      {expanded ? <GroupMembersPanel groupId={group.id} /> : null}
+    </div>
+  );
+}
+
+/**
+ * Members table for a single group. Each row shows the user, their
+ * role in this group, and a remove control. Adding uses a
+ * dropdown-driven form at the bottom so the "unassigned" users are
+ * discoverable without opening a modal.
+ */
+function GroupMembersPanel({ groupId }: { groupId: string }) {
+  const users = useUsers();
+  const members = useGroupMembers(groupId);
+  const qc = useQueryClient();
+
+  const setRole = useMutation({
+    mutationFn: (args: { userId: string; role: Role }) =>
+      api(`/groups/${groupId}/members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: args.userId, role: args.role }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["groupMembers", groupId] });
+      // Someone might have just changed their OWN role — refetch me
+      // so the navbar/admin gates re-evaluate.
+      qc.invalidateQueries({ queryKey: ["me"] });
+    },
+  });
+
+  const removeMember = useMutation({
+    mutationFn: (userId: string) =>
+      api(`/groups/${groupId}/members/${userId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["groupMembers", groupId] });
+      qc.invalidateQueries({ queryKey: ["me"] });
+    },
+  });
+
+  const [addUserId, setAddUserId] = useState<string>("");
+  const [addRole, setAddRole] = useState<Role>("owner");
+
+  const memberIds = new Set(members.data?.map((m) => m.user_id) ?? []);
+  const eligible = (users.data ?? []).filter((u) => !memberIds.has(u.id));
+
+  return (
+    <div className="mt-3 rounded-md border border-wp-stone bg-wp-stone/20 p-3">
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-wp-slate">
+        Members ({members.data?.length ?? 0})
+      </div>
+
+      {members.isLoading ? (
+        <div className="text-xs text-wp-slate">Loading…</div>
+      ) : (
+        <ul className="space-y-1">
+          {members.data?.map((m) => (
+            <li key={m.user_id} className="flex items-center gap-2 rounded-md bg-white px-2 py-1.5">
+              <span className="flex-1 truncate text-sm text-wp-ink">
+                {m.name} <span className="text-xs text-wp-slate">({m.email})</span>
+              </span>
+              <select
+                value={m.role}
+                onChange={(e) => setRole.mutate({ userId: m.user_id, role: e.target.value as Role })}
+                disabled={setRole.isPending}
+                className="rounded-md border border-wp-stone bg-white px-2 py-1 text-xs"
+                aria-label={`Role for ${m.name}`}
+              >
+                <option value="admin">admin</option>
+                <option value="owner">owner</option>
+                <option value="viewer">viewer</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => removeMember.mutate(m.user_id)}
+                className="rounded p-1 text-wp-slate hover:bg-wp-stone/30 hover:text-red-600"
+                aria-label={`Remove ${m.name}`}
+                title="Remove from group"
+              >
+                <Trash2 size={12} />
+              </button>
+            </li>
+          ))}
+          {members.data?.length === 0 ? (
+            <li className="text-xs text-wp-slate">No members yet.</li>
+          ) : null}
+        </ul>
+      )}
+
+      {removeMember.isError ? (
+        <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-700">
+          {(removeMember.error as Error).message}
+        </div>
+      ) : null}
+
+      {/* Add-member row — hidden entirely when every user is already a
+          member of this group. */}
+      {eligible.length > 0 ? (
+        <div className="mt-3 flex items-center gap-2 border-t border-wp-stone pt-3">
+          <select
+            value={addUserId}
+            onChange={(e) => setAddUserId(e.target.value)}
+            className="flex-1 rounded-md border border-wp-stone bg-white px-2 py-1 text-xs"
+          >
+            <option value="">Add a user…</option>
+            {eligible.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name} ({u.email})
+              </option>
+            ))}
+          </select>
+          <select
+            value={addRole}
+            onChange={(e) => setAddRole(e.target.value as Role)}
+            className="rounded-md border border-wp-stone bg-white px-2 py-1 text-xs"
+          >
+            <option value="admin">admin</option>
+            <option value="owner">owner</option>
+            <option value="viewer">viewer</option>
+          </select>
+          <button
+            type="button"
+            disabled={!addUserId || setRole.isPending}
+            onClick={() => {
+              setRole.mutate(
+                { userId: addUserId, role: addRole },
+                { onSuccess: () => setAddUserId("") },
+              );
+            }}
+            className="btn-secondary text-xs"
+          >
+            Add
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CreateGroupDialog({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [color, setColor] = useState("#6366F1");
+
+  const create = useMutation({
+    mutationFn: () =>
+      api<Group>("/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), color }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["groups"] });
+      // The new group auto-enrolls every super-user, so /me's
+      // memberships list may have grown — refetch so the navbar
+      // switcher immediately shows the new tenant.
+      qc.invalidateQueries({ queryKey: ["me"] });
+      onClose();
+    },
+  });
+
+  return (
+    <DialogFrame title="New group" onClose={onClose}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim()) create.mutate();
+        }}
+        className="space-y-3"
+      >
+        <div>
+          <label className="mb-1 block text-xs font-medium text-wp-slate">Name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="w-full rounded-md border border-wp-stone px-2.5 py-1.5 text-sm"
+            placeholder="e.g. ShopAtHome"
+            autoFocus
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-wp-slate">Color</label>
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            className="h-8 w-14 cursor-pointer rounded border border-wp-stone"
+          />
+        </div>
+        <p className="rounded-md border border-wp-stone bg-wp-stone/20 px-3 py-2 text-xs text-wp-slate">
+          The new group is seeded with default swim lanes (Backlog,
+          Ready for Dev, In Dev, Complete, Archive) and every current
+          super-user is auto-enrolled as admin. Add per-tenant users
+          from the expanded row after it's created.
+        </p>
+        <MutationErrorBanner mutation={create} />
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn-primary" disabled={!name.trim() || create.isPending}>
+            {create.isPending ? "Creating…" : "Create group"}
           </button>
         </div>
       </form>

@@ -108,6 +108,10 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
       teams: teamIds,
       tags: [],
       kpis: [],
+      // New project has no deadlines or dependencies yet; they're
+      // added post-create via the project detail panel.
+      deadlines: [],
+      dependencies: [],
       type,
       parent_id: type === "subtask" ? parentId : null,
       start_date: merged.start_date,

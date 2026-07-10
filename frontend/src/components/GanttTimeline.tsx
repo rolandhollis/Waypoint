@@ -2,13 +2,20 @@ import type React from "react";
 import type { ReactNode } from "react";
 import { useMemo, useRef, useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { addDays, addMonths, differenceInCalendarDays, endOfMonth, format, min, max, startOfMonth } from "date-fns";
+import { addDays, addMonths, differenceInCalendarDays, endOfMonth, format, min, max, parseISO, startOfMonth } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Layers } from "lucide-react";
 import { api } from "../lib/api";
 import { computeOverloads, overloadsForProject, projectSpan, type OverloadInterval } from "../lib/capacity";
+import { computeDeadlineStatuses, type DeadlineStatus } from "../lib/deadlines";
+import {
+  computeDependencyStatuses,
+  groupDependenciesByPhase,
+  type DependencyStatus,
+  type PhaseKey,
+} from "../lib/dependencies";
 import { computePhases } from "../lib/phaseCompute";
-import { useMe, useProjects } from "../lib/queries";
+import { useCanWrite, useProjects } from "../lib/queries";
 import { childrenByParent, indexById, rootEpic } from "../lib/hierarchy";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore, type ColorBy, type GroupBy } from "../lib/viewState";
@@ -24,6 +31,21 @@ type Props = {
   groupBy: GroupBy;
   zoom: Zoom;
   onOpen: (id: string) => void;
+  /**
+   * When true, disables drag-to-edit and swallows all mutation
+   * attempts. Used by the auto-schedule proposal preview which
+   * wants to render bars but not actually change the DB.
+   */
+  readOnly?: boolean;
+  /**
+   * Optional replacement for the workspace-wide project list used
+   * to resolve dependency arrows and capacity overloads. Defaults
+   * to `useProjects()`. The proposal preview supplies a merged
+   * list where batch items are substituted with their proposed
+   * dates so violations reflect the hypothetical schedule rather
+   * than the persisted one.
+   */
+  contextProjects?: Project[];
 };
 
 const TIMEFRAME_MONTHS: Record<Zoom, number> = { "6mo": 6, "1yr": 12 };
@@ -38,7 +60,15 @@ const GROUP_HEADER_HEIGHT = 28;
 const GROUP_GAP = 12;
 const LEFT_LABEL_WIDTH = 260;
 const BAR_PADDING = 6;
-const CLICK_THRESHOLD_PX = 3;
+/**
+ * Pointer travel (in CSS px) before we treat a bar interaction as a
+ * drag instead of a click-to-open. Kept intentionally forgiving —
+ * trackpad + tap-to-click surfaces routinely register 2–4px of
+ * incidental movement between pointerdown and pointerup, and losing
+ * click-to-open to noise is worse than snapping a drag with an extra
+ * 2px of slop.
+ */
+const CLICK_THRESHOLD_PX = 6;
 const HANDLE_HITBOX_PX = 8;
 // Per-depth indentation for the tree label column. Epics sit at depth 0
 // against the left edge; each subtask level nudges inward so the tree
@@ -78,9 +108,13 @@ type DragState = {
 };
 
 export function GanttTimeline(props: Props) {
-  const { projects, lanes, teams, users, colorBy, groupBy, zoom, onOpen } = props;
-  const me = useMe();
-  const canEdit = me.data?.role !== "viewer";
+  const { projects, lanes, teams, users, colorBy, groupBy, zoom, onOpen, readOnly, contextProjects } = props;
+  // Per-tenant write gate: a user who's owner in RMN but viewer in
+  // VC loses drag-to-edit as soon as they switch groups.
+  // `readOnly` short-circuits that so the auto-schedule preview
+  // stays inert even for admins.
+  const canEditRaw = useCanWrite();
+  const canEdit = readOnly ? false : canEditRaw;
   const expandedEpicIds = useViewStore((s) => s.expandedEpicIds);
   const toggleEpicExpanded = useViewStore((s) => s.toggleEpicExpanded);
   const expandAllEpics = useViewStore((s) => s.expandAllEpics);
@@ -123,16 +157,64 @@ export function GanttTimeline(props: Props) {
     [projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams],
   );
 
+  const lanesById = useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
+
+  // Row positions map — projectId → top Y of that row on the SVG.
+  // Kept in sync with the render-loop cursor math below (both derive
+  // from the same `groups` layout). The dependency-arrow layer walks
+  // this to draw dotted links between visible pairs.
+  const rowPositions = useMemo(() => {
+    const out = new Map<string, { rowY: number; project: Project }>();
+    let cursorY = HEADER_HEIGHT;
+    groups.forEach((g, gi) => {
+      if (gi > 0 && g.label) cursorY += GROUP_GAP;
+      if (g.label) cursorY += GROUP_HEADER_HEIGHT;
+      g.rows.forEach((row, idx) => {
+        out.set(row.project.id, { rowY: cursorY + idx * ROW_HEIGHT, project: row.project });
+      });
+      cursorY += g.rows.length * ROW_HEIGHT;
+    });
+    return out;
+  }, [groups]);
+
   // Capacity overloads are a workspace-level truth, not a filtered one:
   // Alice is still overloaded on Aug 12 even if the current filter
   // hides half her projects. Read the full project list from the
   // query cache directly so filters on the Roadmap page don't distort
   // the picture.
-  const allProjects = useProjects();
+  // When the caller supplies `contextProjects` (auto-schedule
+  // preview), skip the workspace query entirely and use the passed
+  // list — otherwise fall back to the live cache. The union type
+  // means downstream memos treat the two paths identically.
+  const allProjectsQuery = useProjects();
+  const allProjectsList = contextProjects ?? allProjectsQuery.data ?? [];
   const overloads = useMemo(
-    () => computeOverloads(allProjects.data ?? [], users, teams),
-    [allProjects.data, users, teams],
+    () => computeOverloads(allProjectsList, users, teams),
+    [allProjectsList, users, teams],
   );
+
+  // Dependencies compute against the WHOLE workspace, not the
+  // filtered `projects` — an upstream project may be off-screen
+  // (filtered / archived) but its dates still determine violations.
+  // Same rationale as `overloads`. Deadlines are self-contained per
+  // project but memoized here too so the render pass doesn't
+  // recompute for every row on every drag frame.
+  const allProjectsById = useMemo(
+    () => new Map(allProjectsList.map((p) => [p.id, p])),
+    [allProjectsList],
+  );
+  const deadlineStatusByProject = useMemo(() => {
+    const out = new Map<string, DeadlineStatus[]>();
+    for (const p of projects) out.set(p.id, computeDeadlineStatuses(p, lanesById));
+    return out;
+  }, [projects, lanesById]);
+  const dependencyStatusByProject = useMemo(() => {
+    const out = new Map<string, DependencyStatus[]>();
+    for (const p of projects) {
+      out.set(p.id, computeDependencyStatuses(p, lanesById, allProjectsById));
+    }
+    return out;
+  }, [projects, lanesById, allProjectsById]);
   // Group overloads by entity id so the group-render loop below can
   // do an O(1) lookup instead of scanning the full list per group.
   const overloadsByOwner = useMemo(() => bucketOverloads(overloads, "owner"), [overloads]);
@@ -182,13 +264,22 @@ export function GanttTimeline(props: Props) {
   });
 
   function startDrag(e: React.PointerEvent, projectId: string, mode: DragMode) {
-    if (!canEdit) return;
+    // Note: we enter this branch for BOTH editors and viewers. Viewers
+    // can't actually edit dates (see onPointerMove below), but we still
+    // need the pointer-capture + release plumbing so that a
+    // pointerdown/pointerup with no movement in-between fires
+    // onOpen(projectId). Early-returning here would silently swallow
+    // click-to-open for viewers.
     const proj = projects.find((p) => p.id === projectId);
     if (!proj) return;
+    // For viewers, only the whole-bar "move" gesture is meaningful as a
+    // click target. Resize handles are hidden from them anyway, but
+    // guard so a stray handle still can't wedge state.
+    if (!canEdit && mode !== "move") return;
     e.stopPropagation();
     const el = e.currentTarget as SVGElement;
     el.setPointerCapture(e.pointerId);
-    setDrag({
+    const next: DragState = {
       projectId,
       mode,
       pointerId: e.pointerId,
@@ -204,12 +295,22 @@ export function GanttTimeline(props: Props) {
       },
       deltaDays: 0,
       moved: false,
-    });
+    };
+    // Sync ref immediately so a fast pointerdown → pointerup (a
+    // click, ~1 frame) can find the drag state in endDrag before
+    // React has committed the render from setDrag. Without this the
+    // click-to-open path silently drops onOpen on fast clicks.
+    dragRef.current = next;
+    setDrag(next);
   }
 
   function onPointerMove(e: React.PointerEvent) {
     const d = dragRef.current;
     if (!d) return;
+    // Viewers only use the pointerdown/up bookends for click-to-open;
+    // never mutate delta so the bar stays visually still while they
+    // wiggle over it and endDrag's !moved branch still fires.
+    if (!canEdit) return;
     const dx = e.clientX - d.startClientX;
     // Every drag mode snaps to whole days now that phase lengths are
     // stored as explicit dates rather than integer week counts.
@@ -217,7 +318,10 @@ export function GanttTimeline(props: Props) {
     const snapped = Math.round(raw);
     const clamped = clampDelta(d, snapped);
     if (clamped !== d.deltaDays || (!d.moved && Math.abs(dx) > CLICK_THRESHOLD_PX)) {
-      setDrag({ ...d, deltaDays: clamped, moved: d.moved || Math.abs(dx) > CLICK_THRESHOLD_PX });
+      const next = { ...d, deltaDays: clamped, moved: d.moved || Math.abs(dx) > CLICK_THRESHOLD_PX };
+      // Keep ref + state in lockstep — same rationale as startDrag.
+      dragRef.current = next;
+      setDrag(next);
     }
   }
 
@@ -225,9 +329,20 @@ export function GanttTimeline(props: Props) {
     const d = dragRef.current;
     if (!d) return;
     try { d.captureEl.releasePointerCapture(d.pointerId); } catch { /* ignore */ }
+    // Clear ref before doing anything else so a synthetic click event
+    // that fires later (React emits one after pointerup on the same
+    // element) can't accidentally re-enter this handler with stale
+    // state.
+    dragRef.current = null;
     if (!d.moved) {
-      // Treat as a click.
       onOpen(d.projectId);
+      setDrag(null);
+      return;
+    }
+    // Belt-and-suspenders: onPointerMove already returns early for
+    // viewers, but if a viewer somehow ended up with moved=true (e.g.
+    // future changes flip the guard), refuse to mutate.
+    if (!canEdit) {
       setDrag(null);
       return;
     }
@@ -438,6 +553,9 @@ export function GanttTimeline(props: Props) {
                         canEdit={canEdit}
                         activeDrag={activeDrag}
                         onStartDrag={startDrag}
+                        onOpen={onOpen}
+                        deadlineStatuses={deadlineStatusByProject.get(p.id) ?? []}
+                        dependencyStatuses={dependencyStatusByProject.get(p.id) ?? []}
                         isSubtask={row.depth > 0}
                       />
                     );
@@ -568,6 +686,49 @@ export function GanttTimeline(props: Props) {
                 </g>
               ) : null}
 
+              {/* Dependency arrows between visible pairs. Drawn AFTER
+                  bars so they sit on top of hatched phase fills, but
+                  before the today-line so today stays the most
+                  prominent vertical marker. Arrows only render when
+                  BOTH endpoints are in the current rowset (per product
+                  decision — off-chart arrows to nowhere are noisy). */}
+              <g pointerEvents="none">
+                {(() => {
+                  const arrows: React.ReactNode[] = [];
+                  const rowMid = ROW_HEIGHT / 2;
+                  for (const p of projects) {
+                    const from = rowPositions.get(p.id);
+                    if (!from) continue;
+                    const statuses = dependencyStatusByProject.get(p.id) ?? [];
+                    for (const s of statuses) {
+                      if (!s.otherProject || !s.thisStart || !s.otherEnd) continue;
+                      const other = rowPositions.get(s.otherProject.id);
+                      if (!other) continue;
+                      // Bar geometry: bar goes from dayX(phase.start) to
+                      // dayX(phase.end). NO +dayPx on the end — the bar's
+                      // right edge lands at the left edge of the end-date
+                      // day. Adding dayPx put the arrow's source one full
+                      // day past the visible bar, hence the misalignment.
+                      const x1 = dayX(dateOnly(s.otherEnd), start, dayPx);
+                      const y1 = other.rowY + rowMid;
+                      const x2 = dayX(dateOnly(s.thisStart), start, dayPx);
+                      const y2 = from.rowY + rowMid;
+                      arrows.push(
+                        <DependencyArrow
+                          key={`arrow-${s.dep.id}`}
+                          x1={x1}
+                          y1={y1}
+                          x2={x2}
+                          y2={y2}
+                          violated={s.severity === "violated"}
+                        />,
+                      );
+                    }
+                  }
+                  return arrows;
+                })()}
+              </g>
+
               {showToday ? (
                 <g>
                   <line x1={todayX} y1={0} x2={todayX} y2={9999} stroke="#DC2626" strokeWidth={1.5} strokeDasharray="4 4" />
@@ -594,9 +755,16 @@ function Bar(props: {
   canEdit: boolean;
   activeDrag: DragState | null;
   onStartDrag: (e: React.PointerEvent, projectId: string, mode: DragMode) => void;
+  onOpen: (projectId: string) => void;
+  deadlineStatuses: DeadlineStatus[];
+  dependencyStatuses: DependencyStatus[];
   isSubtask?: boolean;
 }) {
-  const { project: p, y, chartStart, dayPx, lanes, teams, users, colorBy, canEdit, activeDrag, onStartDrag, isSubtask } = props;
+  const {
+    project: p, y, chartStart, dayPx, lanes, teams, users, colorBy,
+    canEdit, activeDrag, onStartDrag, onOpen,
+    deadlineStatuses, dependencyStatuses, isSubtask,
+  } = props;
   const phases = computePhases(p);
   if (!phases.scheduled) return null;
   const lane = lanes.find((l) => l.id === p.swim_lane_id);
@@ -726,8 +894,266 @@ Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.e
           </text>
         </g>
       ) : null}
+
+      {/* Hard-deadline tick marks + row-level alert icons.
+          Deadline and dependency violations each get their own
+          icon — a triangle for deadlines, a broken chain for
+          dependencies — so PMs can tell at a glance which class
+          of issue a row has just by scanning the right margin.
+          Both icons render side-by-side when both are violated. */}
+      {(() => {
+        const anyDeadlineViolated = deadlineStatuses.some((s) => s.severity !== "ok");
+        const anyDepViolated = dependencyStatuses.some((s) => s.severity === "violated");
+        const nothingToRender = deadlineStatuses.length === 0 && !anyDeadlineViolated && !anyDepViolated;
+        if (nothingToRender) return null;
+        // Icon slot positions past the bar's right edge. Deadline
+        // sits closer to the bar; dep alert sits further out so it
+        // doesn't overlap when both are firing. Both clamp so they
+        // don't render off-chart in an extreme case.
+        const deadlineIconX = Math.min(optEndX + 6, chartStart ? 999999 : 0);
+        const depIconX = Math.min(optEndX + 26, chartStart ? 999999 : 0);
+        return (
+          <g pointerEvents="none">
+            {deadlineStatuses.map((s) => {
+              const tickX = dayX(s.deadline.deadline_date, chartStart, dayPx) + dayPx / 2;
+              const violated = s.severity !== "ok";
+              const color = violated ? "#DC2626" : "#94A3B8";
+              const laneName = s.lane?.name ?? "(deleted lane)";
+              const dl = format(parseISO(s.deadline.deadline_date), "MMM d, yyyy");
+              return (
+                <g key={s.deadline.id} pointerEvents="auto">
+                  <title>
+                    {`Deadline: ${laneName} by ${dl}${
+                      violated
+                        ? s.phaseDate
+                          ? ` — currently ${format(parseISO(s.phaseDate), "MMM d, yyyy")}`
+                          : " — phase not scheduled yet"
+                        : ""
+                    }${s.deadline.note ? `\n${s.deadline.note}` : ""}`}
+                  </title>
+                  <line
+                    x1={tickX}
+                    y1={barY - 3}
+                    x2={tickX}
+                    y2={barY + barH + 3}
+                    stroke={color}
+                    strokeWidth={2}
+                  />
+                  {/* Small flag marker at the top so the tick reads as a
+                      deadline (rather than a today-line or gridline). */}
+                  <polygon
+                    points={`${tickX},${barY - 6} ${tickX + 6},${barY - 3} ${tickX},${barY}`}
+                    fill={color}
+                  />
+                </g>
+              );
+            })}
+            {anyDeadlineViolated ? (
+              <DeadlineAlertTooltip statuses={deadlineStatuses}>
+                {/* pointerEvents="auto" overrides the parent group's
+                    "none" so Radix hover detection actually fires; the
+                    transparent 18×18 rect gives the tiny 12px triangle
+                    a forgiving hit target. Clicking the icon opens the
+                    project detail panel — same target as the bar. */}
+                <g
+                  transform={`translate(${deadlineIconX}, ${barY + barH / 2 - 6})`}
+                  style={{ pointerEvents: "auto", cursor: "pointer" }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); onOpen(p.id); }}
+                >
+                  <rect x={-3} y={-3} width={18} height={18} fill="transparent" />
+                  {/* Inline triangle-with-! matches lucide's AlertTriangle. */}
+                  <path
+                    d="M12 2 L22 20 L2 20 Z"
+                    transform="scale(0.55)"
+                    fill="#DC2626"
+                    stroke="#7F1D1D"
+                    strokeWidth={1.5}
+                    strokeLinejoin="round"
+                  />
+                  <text
+                    x={3.6}
+                    y={8.5}
+                    fontSize={7}
+                    fontWeight={700}
+                    fill="#fff"
+                    textAnchor="middle"
+                  >!</text>
+                </g>
+              </DeadlineAlertTooltip>
+            ) : null}
+            {anyDepViolated ? (
+              <DependencyAlertTooltip statuses={dependencyStatuses}>
+                {/* Broken-chain glyph — distinct silhouette so PMs can
+                    tell dependency alerts apart from deadline
+                    triangles when both fire on the same row. */}
+                <g
+                  transform={`translate(${depIconX}, ${barY + barH / 2 - 6})`}
+                  style={{ pointerEvents: "auto", cursor: "pointer" }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); onOpen(p.id); }}
+                >
+                  <rect x={-3} y={-3} width={18} height={18} fill="transparent" />
+                  {/* Two link circles with a red diagonal slash across
+                      them — reads clearly at 12px. Fill is red so it
+                      matches the deadline triangle's severity weight. */}
+                  <circle cx={2.5} cy={6} r={3.5} fill="#DC2626" stroke="#7F1D1D" strokeWidth={1} />
+                  <circle cx={9.5} cy={6} r={3.5} fill="#DC2626" stroke="#7F1D1D" strokeWidth={1} />
+                  <line x1={-1} y1={12.5} x2={13} y2={-0.5} stroke="#7F1D1D" strokeWidth={1.75} strokeLinecap="round" />
+                  <line x1={-1} y1={12.5} x2={13} y2={-0.5} stroke="#fff" strokeWidth={0.9} strokeLinecap="round" />
+                </g>
+              </DependencyAlertTooltip>
+            ) : null}
+          </g>
+        );
+      })()}
+
+      {/* Dependency link icons — one per phase-of-this-project that
+          has at least one incoming dep. Placed just BELOW the bar at
+          the phase's start X so it doesn't collide with the deadline
+          flag markers above. Red when any dep on that phase is
+          violated, slate otherwise. */}
+      {(() => {
+        if (dependencyStatuses.length === 0) return null;
+        const byPhase = groupDependenciesByPhase(dependencyStatuses);
+        if (byPhase.size === 0) return null;
+        // Phase-start x positions on this bar. Matches the phase
+        // segment origins computed above; keeping the mapping local so
+        // future segment tweaks don't drift the icons.
+        const phaseStartX: Record<PhaseKey, number> = {
+          discovery: discX,
+          development: devX,
+          optimization: optX,
+        };
+        const phaseName: Record<PhaseKey, string> = {
+          discovery: "Discovery",
+          development: "Development",
+          optimization: "Optimization",
+        };
+        const iconYOffset = barH + 3;
+        return (
+          <g>
+            {Array.from(byPhase.entries()).map(([phase, ss]) => {
+              const cx = phaseStartX[phase];
+              const violated = ss.some((s) => s.severity === "violated");
+              const color = violated ? "#DC2626" : "#64748B";
+              return (
+                <DependencyPhaseTooltip
+                  key={`dep-${p.id}-${phase}`}
+                  phaseName={phaseName[phase]}
+                  statuses={ss}
+                >
+                  <g
+                    transform={`translate(${cx}, ${barY + iconYOffset})`}
+                    style={{ pointerEvents: "auto", cursor: "pointer" }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => { e.stopPropagation(); onOpen(p.id); }}
+                  >
+                    {/* Larger transparent hit-target than the visible
+                        glyph — the chain glyph is tiny. */}
+                    <rect x={-6} y={-2} width={16} height={14} fill="transparent" />
+                    {/* Chain-link glyph inspired by lucide's Link2.
+                        Drawn small (~10px) so it doesn't crowd short
+                        phase segments. */}
+                    <circle cx={2} cy={5} r={4.5} fill="white" stroke={color} strokeWidth={1.6} />
+                    <path
+                      d="M-0.5 5 L4.5 5"
+                      stroke={color}
+                      strokeWidth={1.6}
+                      strokeLinecap="round"
+                    />
+                    {ss.length > 1 ? (
+                      <text
+                        x={9.5}
+                        y={7.5}
+                        fontSize={8}
+                        fontWeight={700}
+                        fill={color}
+                      >
+                        {ss.length}
+                      </text>
+                    ) : null}
+                  </g>
+                </DependencyPhaseTooltip>
+              );
+            })}
+          </g>
+        );
+      })()}
     </g>
   );
+}
+
+/**
+ * Dotted arrow between an upstream row's phase-end and a
+ * dependent row's phase-start.
+ *
+ * Layout: two right-angle "elbow" segments — go out to the right
+ * from the source, drop vertically to the target row, then come
+ * back in from the left. Simple + readable, doesn't need path
+ * math, and handles same-direction / reverse-direction / same-row
+ * cases uniformly.
+ *
+ * Edge cases:
+ *   * Source right of target (arrow goes "back in time") — still
+ *     valid; the elbow just wraps around instead of continuing
+ *     forward. This is exactly the visual we want for a violation
+ *     where the dep's end is LATER than the dependent's start.
+ *   * Same row — the vertical middle segment collapses to a
+ *     zero-height line; still renders as a curved bow-tie via the
+ *     small vertical offset we add.
+ */
+function DependencyArrow({
+  x1, y1, x2, y2, violated,
+}: {
+  x1: number; y1: number; x2: number; y2: number; violated: boolean;
+}) {
+  // On-track arrows use slate-600 (not the older slate-400) with
+  // the same stroke width as violated ones. Product decision: the
+  // arrow's ORIENTATION is what tells the PM which direction the
+  // dependency flows; the color only communicates whether it's a
+  // problem. Making the on-track arrow near-invisible defeated
+  // the "always show me the wiring" ask.
+  const color = violated ? "#DC2626" : "#475569";
+  const strokeWidth = 1.5;
+  // Elbow x — halfway between the two endpoints. Clamped to a
+  // minimum offset so short-horizontal-span arrows don't collapse
+  // into a straight vertical line right on top of the bars.
+  const midX = (x1 + x2) / 2;
+  const path = `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`;
+  // Arrowhead — small triangle pointing right at (x2, y2), rotated
+  // via the segment coming in. Because the last segment is always
+  // horizontal (elbow layout), we can hard-code a right-pointing
+  // arrowhead without atan2 math.
+  const ahSize = 4;
+  return (
+    <g>
+      <path
+        d={path}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        fill="none"
+        strokeDasharray="3 3"
+      />
+      <polygon
+        points={`${x2},${y2} ${x2 - ahSize},${y2 - ahSize} ${x2 - ahSize},${y2 + ahSize}`}
+        fill={color}
+      />
+    </g>
+  );
+}
+
+/**
+ * Format a Date back to YYYY-MM-DD (local calendar day) for
+ * feeding into `dayX`. We avoid `toISOString().slice(0,10)`
+ * because that shifts to UTC and can jump a day for dates near
+ * midnight on the "wrong" side of the TZ.
+ */
+function dateOnly(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function ResizeHandle({ x, y, h, onDown, label }: {
@@ -1082,6 +1508,188 @@ function bucketOverloads(
  * handles refs transparently through `asChild`. Delay is short so
  * hovering a red band feels responsive but not twitchy.
  */
+/**
+ * Focused tooltip for the row-level DEADLINE alert triangle. Lists
+ * every missed deadline on the project. On-track ones filter out
+ * because the trigger icon only renders when there IS a miss.
+ */
+function DeadlineAlertTooltip({
+  children,
+  statuses,
+}: {
+  children: ReactNode;
+  statuses: DeadlineStatus[];
+}) {
+  const misses = statuses.filter((s) => s.severity !== "ok");
+  return (
+    <Tooltip.Root delayDuration={100}>
+      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          side="top"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-50 max-w-sm rounded-md border border-wp-stone bg-white px-3 py-2 text-xs leading-relaxed text-wp-ink shadow-lg"
+        >
+          <div className="flex items-center gap-1.5 font-semibold text-red-700">
+            <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white">!</span>
+            {misses.length === 1 ? "Deadline missed" : `${misses.length} deadlines missed`}
+          </div>
+          <ul className="mt-1.5 space-y-1.5">
+            {misses.map((s) => {
+              const laneName = s.lane?.name ?? "(deleted lane)";
+              const dl = format(parseISO(s.deadline.deadline_date), "MMM d, yyyy");
+              const cur = s.phaseDate ? format(parseISO(s.phaseDate), "MMM d, yyyy") : null;
+              return (
+                <li key={s.deadline.id}>
+                  <div>
+                    <span className="font-medium">{laneName}</span> due <span className="tabular-nums">{dl}</span>
+                  </div>
+                  {cur ? (
+                    <div className="text-wp-slate">Currently landing <span className="tabular-nums">{cur}</span></div>
+                  ) : null}
+                  {s.deadline.note ? (
+                    <div className="italic text-wp-slate">&ldquo;{s.deadline.note}&rdquo;</div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          <div className="mt-2 border-t border-wp-stone pt-1.5 text-[10px] text-wp-slate">
+            Click the row to open the item and adjust dates.
+          </div>
+          <Tooltip.Arrow className="fill-white" />
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
+
+/**
+ * Focused tooltip for the row-level DEPENDENCY alert (broken chain
+ * glyph). Mirrors the deadline tooltip's structure so PMs get a
+ * consistent read of "here's what's broken and how."
+ */
+function DependencyAlertTooltip({
+  children,
+  statuses,
+}: {
+  children: ReactNode;
+  statuses: DependencyStatus[];
+}) {
+  const misses = statuses.filter((s) => s.severity === "violated");
+  return (
+    <Tooltip.Root delayDuration={100}>
+      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          side="top"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-50 max-w-sm rounded-md border border-wp-stone bg-white px-3 py-2 text-xs leading-relaxed text-wp-ink shadow-lg"
+        >
+          <div className="flex items-center gap-1.5 font-semibold text-red-700">
+            <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white">!</span>
+            {misses.length === 1 ? "Dependency violated" : `${misses.length} dependencies violated`}
+          </div>
+          <ul className="mt-1.5 space-y-1.5">
+            {misses.map((s) => (
+              <li key={s.dep.id}>
+                <div>
+                  <span className="font-medium">{s.thisLane?.name ?? "(deleted lane)"}</span>
+                  {" starts before "}
+                  <span className="italic">{s.otherProject?.title ?? "(deleted project)"}</span>&rsquo;s{" "}
+                  <span className="font-medium">{s.otherLane?.name ?? "(deleted lane)"}</span> ends
+                </div>
+                <div className="text-wp-slate">
+                  Starts <span className="tabular-nums">{s.thisStart ? format(s.thisStart, "MMM d, yyyy") : "—"}</span>
+                  {" · upstream ends "}
+                  <span className="tabular-nums">{s.otherEnd ? format(s.otherEnd, "MMM d, yyyy") : "—"}</span>
+                </div>
+                {s.dep.note ? (
+                  <div className="italic text-wp-slate">&ldquo;{s.dep.note}&rdquo;</div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 border-t border-wp-stone pt-1.5 text-[10px] text-wp-slate">
+            Click the row to open the item and adjust dates.
+          </div>
+          <Tooltip.Arrow className="fill-white" />
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
+
+/**
+ * Small hover-card that surfaces the deps on a single phase.
+ * Attached to the little link icon we drop at each phase start
+ * with deps. Includes both violated and on-track deps because the
+ * icon renders whenever ANY dep exists, not just violations.
+ */
+function DependencyPhaseTooltip({
+  children,
+  phaseName,
+  statuses,
+}: {
+  children: ReactNode;
+  phaseName: string;
+  statuses: DependencyStatus[];
+}) {
+  const anyViolated = statuses.some((s) => s.severity === "violated");
+  return (
+    <Tooltip.Root delayDuration={100}>
+      <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          side="top"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-50 max-w-sm rounded-md border border-wp-stone bg-white px-3 py-2 text-xs leading-relaxed text-wp-ink shadow-lg"
+        >
+          <div className={"flex items-center gap-1.5 font-semibold " + (anyViolated ? "text-red-700" : "text-wp-ink")}>
+            {anyViolated ? (
+              <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white">!</span>
+            ) : (
+              <span className="inline-block h-3.5 w-3.5 rounded-full border-2 border-slate-400" aria-hidden />
+            )}
+            {statuses.length === 1
+              ? `${phaseName} depends on 1 upstream phase`
+              : `${phaseName} depends on ${statuses.length} upstream phases`}
+          </div>
+          <ul className="mt-1.5 space-y-1.5">
+            {statuses.map((s) => (
+              <li key={s.dep.id} className={s.severity === "violated" ? "text-red-800" : ""}>
+                <div>
+                  <span className="italic">{s.otherProject?.title ?? "(deleted project)"}</span>
+                  &rsquo;s{" "}
+                  <span className="font-medium">{s.otherLane?.name ?? "(deleted lane)"}</span>{" "}
+                  ends{" "}
+                  <span className="tabular-nums">
+                    {s.otherEnd ? format(s.otherEnd, "MMM d, yyyy") : "not scheduled"}
+                  </span>
+                </div>
+                <div className={s.severity === "violated" ? "text-red-700" : "text-wp-slate"}>
+                  This phase starts{" "}
+                  <span className="tabular-nums">
+                    {s.thisStart ? format(s.thisStart, "MMM d, yyyy") : "not scheduled"}
+                  </span>
+                  {s.severity === "violated" ? " — starts too early" : ""}
+                </div>
+                {s.dep.note ? (
+                  <div className="italic text-wp-slate">&ldquo;{s.dep.note}&rdquo;</div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          <Tooltip.Arrow className="fill-white" />
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
+
 function OverloadTooltip({ children, content }: { children: ReactNode; content: ReactNode }) {
   return (
     <Tooltip.Root delayDuration={100}>

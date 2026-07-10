@@ -6,9 +6,9 @@ import { HttpError } from "../middleware/error.js";
 import type { TeamRow } from "../types.js";
 
 /**
- * Team CRUD. Renamed from `productAreas` in migration 006 — a project
- * can now belong to any number of teams via the `project_teams` join
- * table, and single-select assignments were migrated across.
+ * Team CRUD, scoped to the caller's current tenant. Teams are
+ * per-group in the multi-tenant model — RMN's "Martech pod" is
+ * unrelated to VC's "Growth" team.
  */
 export const teamsRouter = Router();
 
@@ -17,9 +17,10 @@ const DEFAULT_PALETTE = [
   "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
 ];
 
-teamsRouter.get("/", async (_req, res) => {
+teamsRouter.get("/", async (req, res) => {
   const { rows } = await query<TeamRow>(
-    `SELECT * FROM teams ORDER BY "order" ASC, name ASC`,
+    `SELECT * FROM teams WHERE group_id = $1 ORDER BY "order" ASC, name ASC`,
+    [req.groupId!],
   );
   res.json(rows);
 });
@@ -32,16 +33,19 @@ const createSchema = z.object({
 
 teamsRouter.post("/", requireAdmin, async (req, res) => {
   const body = createSchema.parse(req.body);
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
-    const { rows: countRows } = await client.query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM teams`);
+    const { rows: countRows } = await client.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM teams WHERE group_id = $1`,
+      [groupId],
+    );
     const n = countRows[0]?.n ?? 0;
     const color = body.color ?? DEFAULT_PALETTE[n % DEFAULT_PALETTE.length]!;
-    // Explicit null = "no cap"; undefined falls through to the column
-    // default (3) set in migration 015.
     const capacity = body.capacity === undefined ? 3 : body.capacity;
     const { rows } = await client.query<TeamRow>(
-      `INSERT INTO teams (name, color, capacity, "order", created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [body.name, color, capacity, n, req.user!.id],
+      `INSERT INTO teams (group_id, name, color, capacity, "order", created_by)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [groupId, body.name, color, capacity, n, req.user!.id],
     );
     return rows[0];
   });
@@ -56,6 +60,7 @@ const patchSchema = z.object({
 
 teamsRouter.patch("/:id", requireAdmin, async (req, res) => {
   const body = patchSchema.parse(req.body);
+  const groupId = req.groupId!;
   const fields: string[] = [];
   const values: unknown[] = [];
   for (const [k, v] of Object.entries(body)) {
@@ -64,14 +69,19 @@ teamsRouter.patch("/:id", requireAdmin, async (req, res) => {
     fields.push(`"${k}" = $${values.length}`);
   }
   if (!fields.length) {
-    const { rows } = await query<TeamRow>(`SELECT * FROM teams WHERE id = $1`, [req.params.id]);
+    const { rows } = await query<TeamRow>(
+      `SELECT * FROM teams WHERE id = $1 AND group_id = $2`,
+      [req.params.id, groupId],
+    );
     if (!rows[0]) throw new HttpError(404, "team not found");
     res.json(rows[0]);
     return;
   }
-  values.push(req.params.id);
+  values.push(req.params.id, groupId);
   const { rows } = await query<TeamRow>(
-    `UPDATE teams SET ${fields.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+    `UPDATE teams SET ${fields.join(", ")}, updated_at = NOW()
+       WHERE id = $${values.length - 1} AND group_id = $${values.length}
+       RETURNING *`,
     values,
   );
   if (!rows[0]) throw new HttpError(404, "team not found");
@@ -84,15 +94,19 @@ const reorderSchema = z.object({
 
 teamsRouter.post("/reorder", requireAdmin, async (req, res) => {
   const body = reorderSchema.parse(req.body);
+  const groupId = req.groupId!;
   await withTransaction(async (client) => {
     for (let i = 0; i < body.order.length; i++) {
       await client.query(
-        `UPDATE teams SET "order" = $1, updated_at = NOW() WHERE id = $2`,
-        [i, body.order[i]],
+        `UPDATE teams SET "order" = $1, updated_at = NOW() WHERE id = $2 AND group_id = $3`,
+        [i, body.order[i], groupId],
       );
     }
   });
-  const { rows } = await query<TeamRow>(`SELECT * FROM teams ORDER BY "order" ASC, name ASC`);
+  const { rows } = await query<TeamRow>(
+    `SELECT * FROM teams WHERE group_id = $1 ORDER BY "order" ASC, name ASC`,
+    [groupId],
+  );
   res.json(rows);
 });
 
@@ -102,18 +116,22 @@ const deleteSchema = z.object({
 
 teamsRouter.delete("/:id", requireAdmin, async (req, res) => {
   const body = deleteSchema.parse(req.body ?? {});
+  const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {
     const { rows: teamRows } = await client.query<TeamRow>(
-      `SELECT * FROM teams WHERE id = $1 FOR UPDATE`,
-      [req.params.id],
+      `SELECT * FROM teams WHERE id = $1 AND group_id = $2 FOR UPDATE`,
+      [req.params.id, groupId],
     );
     const team = teamRows[0];
     if (!team) throw new HttpError(404, "team not found");
 
     if (body.reassign_to) {
-      // Move each project currently assigned to this team over to the
-      // replacement team. ON CONFLICT DO NOTHING covers projects that
-      // already belong to both.
+      // Reassignment target must live in the same tenant.
+      const { rows: check } = await client.query<{ id: string }>(
+        `SELECT id FROM teams WHERE id = $1 AND group_id = $2`,
+        [body.reassign_to, groupId],
+      );
+      if (!check[0]) throw new HttpError(400, "reassign_to must be a team in this group");
       await client.query(
         `INSERT INTO project_teams (project_id, team_id)
            SELECT project_id, $1 FROM project_teams WHERE team_id = $2
@@ -122,8 +140,6 @@ teamsRouter.delete("/:id", requireAdmin, async (req, res) => {
       );
     }
 
-    // ON DELETE CASCADE on the join table cleans up the memberships,
-    // whether or not we reassigned.
     await client.query(`DELETE FROM teams WHERE id = $1`, [team.id]);
     return { deleted: team.id };
   });
