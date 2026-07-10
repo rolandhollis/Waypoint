@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   DndContext, PointerSensor, closestCenter, useSensor, useSensors,
@@ -21,6 +21,7 @@ import {
   useSwimLanes,
   useTeams,
   useUnassignedUsers,
+  useUserGroups,
   useUsers,
 } from "../lib/queries";
 import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, User } from "../lib/types";
@@ -743,6 +744,7 @@ function UsersAdmin() {
   const isPasswordMode = health.data?.auth === "password";
   const [creating, setCreating] = useState(false);
   const [resettingUser, setResettingUser] = useState<User | null>(null);
+  const [viewingUser, setViewingUser] = useState<User | null>(null);
   const patchRole = useMutation({
     mutationFn: (v: { id: string; role: User["role"] }) => api<User>(`/users/${v.id}/role`, { method: "PATCH", body: JSON.stringify({ role: v.role }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
@@ -791,26 +793,45 @@ function UsersAdmin() {
       <ul className="mt-3 divide-y divide-wp-stone">
         {users.data?.map((u) => (
           <li key={u.id} className="flex items-center gap-3 py-2">
-            <span
-              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold text-white"
-              style={{ background: u.color }}
+            {/* Identity region — click opens the detail modal. Right-side
+                controls (capacity, role, reset, delete) stay independent
+                so a stray click on a dropdown doesn't also open the
+                dialog. */}
+            <button
+              type="button"
+              onClick={() => setViewingUser(u)}
+              className="-m-1 flex min-w-0 flex-1 items-center gap-3 rounded p-1 text-left transition hover:bg-wp-stone/40 focus:bg-wp-stone/40 focus:outline-none"
+              title="View details and manage group memberships"
             >
-              {u.name.split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("")}
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 text-sm font-medium text-wp-ink">
-                {u.name}
-                {isPasswordMode && !u.password_updated_at ? (
-                  <span
-                    className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
-                    title="This user has no password set and cannot sign in until one is created."
-                  >
-                    No password
-                  </span>
-                ) : null}
+              <span
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+                style={{ background: u.color }}
+              >
+                {u.name.split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("")}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-sm font-medium text-wp-ink">
+                  {u.name}
+                  {u.is_super_user ? (
+                    <span
+                      className="rounded bg-wp-red/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-wp-red"
+                      title="Super-admin — implicit member of every group"
+                    >
+                      Super
+                    </span>
+                  ) : null}
+                  {isPasswordMode && !u.password_updated_at ? (
+                    <span
+                      className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
+                      title="This user has no password set and cannot sign in until one is created."
+                    >
+                      No password
+                    </span>
+                  ) : null}
+                </div>
+                <div className="text-xs text-wp-slate">{u.email}</div>
               </div>
-              <div className="text-xs text-wp-slate">{u.email}</div>
-            </div>
+            </button>
             <label className="flex items-center gap-1 text-xs text-wp-slate">
               Cap
               <input
@@ -893,7 +914,191 @@ function UsersAdmin() {
           onReset={() => qc.invalidateQueries({ queryKey: ["users"] })}
         />
       ) : null}
+      {viewingUser ? (
+        <UserDetailDialog user={viewingUser} onClose={() => setViewingUser(null)} />
+      ) : null}
     </section>
+  );
+}
+
+// -----------------------------------------------------------------
+// User detail modal — opens on click of a user row's identity
+// region on the Users tab. Shows the basics (email, role,
+// capacity, super-admin status) plus a checkbox editor for the
+// user's group memberships. Toggling checkboxes maps to the
+// existing super-user membership endpoints on the groups router;
+// regular admins see the checkboxes disabled with a tooltip
+// explaining why (managing tenants is a platform-level concern).
+// -----------------------------------------------------------------
+
+function UserDetailDialog({ user, onClose }: { user: User; onClose: () => void }) {
+  const me = useMe();
+  const groups = useGroups();
+  const memberships = useUserGroups(user.id);
+  const isSuperUser = useIsSuperUser();
+  const qc = useQueryClient();
+
+  const isSelf = me.data?.id === user.id;
+  const currentGroupId = me.data?.current_group_id ?? null;
+
+  const membershipSet = useMemo(
+    () => new Set((memberships.data ?? []).map((m) => m.group_id)),
+    [memberships.data],
+  );
+
+  const invalidateAll = () => {
+    // Every list that renders "who is in group X" or "which
+    // groups user Y is in" needs to refresh after a toggle. Cast
+    // wide rather than pick surgical keys — user-group edits are
+    // rare, refetches are cheap.
+    qc.invalidateQueries({ queryKey: ["userGroups", user.id] });
+    qc.invalidateQueries({ queryKey: ["users"] });
+    qc.invalidateQueries({ queryKey: ["unassignedUsers"] });
+    qc.invalidateQueries({ queryKey: ["groupMembers"] });
+  };
+
+  const addMembership = useMutation({
+    mutationFn: (groupId: string) =>
+      api(`/groups/${groupId}/members`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: user.id, role: "owner" }),
+      }),
+    onSuccess: invalidateAll,
+  });
+  const removeMembership = useMutation({
+    mutationFn: (groupId: string) =>
+      api(`/groups/${groupId}/members/${user.id}`, { method: "DELETE" }),
+    onSuccess: invalidateAll,
+  });
+
+  const busy = addMembership.isPending || removeMembership.isPending;
+  const canManage = isSuperUser;
+
+  const initials = user.name.split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("");
+
+  return (
+    <DialogFrame title="User details" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <span
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full text-sm font-semibold text-white"
+            style={{ background: user.color }}
+          >
+            {initials}
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-base font-semibold text-wp-ink">
+              {user.name}
+              {user.is_super_user ? (
+                <span className="rounded bg-wp-red/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-wp-red">
+                  Super-admin
+                </span>
+              ) : null}
+              {isSelf ? (
+                <span className="rounded bg-wp-stone px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-wp-slate">
+                  You
+                </span>
+              ) : null}
+            </div>
+            <div className="truncate text-xs text-wp-slate">{user.email}</div>
+          </div>
+        </div>
+
+        <dl className="grid grid-cols-3 gap-3 rounded-md border border-wp-stone bg-wp-stone/10 p-3 text-xs">
+          <div>
+            <dt className="font-medium text-wp-slate">Role</dt>
+            <dd className="mt-0.5 text-wp-ink">{user.role}</dd>
+          </div>
+          <div>
+            <dt className="font-medium text-wp-slate">Capacity</dt>
+            <dd className="mt-0.5 text-wp-ink">{user.capacity ?? "—"}</dd>
+          </div>
+          <div>
+            <dt className="font-medium text-wp-slate">Password set</dt>
+            <dd className="mt-0.5 text-wp-ink">
+              {user.password_updated_at
+                ? new Date(user.password_updated_at).toLocaleDateString()
+                : <span className="text-amber-700">never</span>}
+            </dd>
+          </div>
+        </dl>
+
+        <div>
+          <div className="flex items-center justify-between">
+            <div>
+              <h4 className="text-sm font-semibold text-wp-ink">Groups</h4>
+              <p className="mt-0.5 text-xs text-wp-slate">
+                {canManage
+                  ? "Toggle to add or remove this user from a tenant."
+                  : "Managing tenant memberships requires super-admin. This is a read-only view."}
+                {user.is_super_user
+                  ? " Super-admins are implicit members of every group."
+                  : ""}
+              </p>
+            </div>
+          </div>
+
+          <MutationErrorBanner mutation={addMembership} className="mt-2" />
+          <MutationErrorBanner mutation={removeMembership} className="mt-2" />
+
+          {memberships.isLoading || groups.isLoading ? (
+            <div className="mt-3 text-xs text-wp-slate">Loading…</div>
+          ) : (
+            <ul className="mt-3 space-y-1.5">
+              {(groups.data ?? []).map((g) => {
+                const isMember = membershipSet.has(g.id);
+                const isImplicit = user.is_super_user;
+                const wouldLockOutSelf = isSelf && isMember && g.id === currentGroupId;
+                const disabledReason = !canManage
+                  ? "Requires super-admin"
+                  : isImplicit
+                  ? "Super-admins are implicit members and can't be removed"
+                  : wouldLockOutSelf
+                  ? "You can't remove yourself from the group you're currently viewing"
+                  : busy
+                  ? "Please wait…"
+                  : null;
+                return (
+                  <li key={g.id} className="flex items-center gap-2 rounded border border-wp-stone bg-white p-2">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-wp-red"
+                      checked={isMember || isImplicit}
+                      disabled={disabledReason !== null}
+                      onChange={(e) => {
+                        if (disabledReason) return;
+                        if (e.target.checked) addMembership.mutate(g.id);
+                        else removeMembership.mutate(g.id);
+                      }}
+                      title={disabledReason ?? (isMember ? "Remove from group" : "Add to group")}
+                    />
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      style={{ background: g.color ?? "#94a3b8" }}
+                    />
+                    <span className="flex-1 text-sm text-wp-ink">{g.name}</span>
+                    {disabledReason ? (
+                      <span className="text-[11px] text-wp-slate" title={disabledReason}>
+                        {isImplicit ? "implicit" : wouldLockOutSelf ? "current" : "locked"}
+                      </span>
+                    ) : null}
+                  </li>
+                );
+              })}
+              {(groups.data ?? []).length === 0 ? (
+                <li className="text-xs text-wp-slate">No groups visible.</li>
+              ) : null}
+            </ul>
+          )}
+        </div>
+
+        <div className="flex justify-end pt-2">
+          <button type="button" className="btn-primary" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </div>
+    </DialogFrame>
   );
 }
 

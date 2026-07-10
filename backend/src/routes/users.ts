@@ -12,7 +12,7 @@ import {
   validatePassword,
 } from "../auth/password.js";
 import { deleteSessionsForUser } from "../auth/session.js";
-import type { UserRow } from "../types.js";
+import type { Role, UserRow } from "../types.js";
 import { scrubUser, scrubUsers } from "../types.js";
 
 export const usersRouter = Router();
@@ -201,6 +201,49 @@ usersRouter.get("/unassigned", requireAdmin, async (_req, res) => {
       ORDER BY u.name ASC`,
   );
   res.json(scrubUsers(rows));
+});
+
+// List the groups a user belongs to. Powers the "Groups" section
+// of the user-detail modal on the admin tab.
+//
+// Deliberately just requires admin (any tenant) rather than
+// scoping to the caller's current group: the response is
+// metadata-only (group names + roles), and if we scoped it the
+// modal would 404 on itself the moment an admin removes the
+// target from the group they're viewing from. Super-users are
+// treated as implicit members of every group and appear with
+// `implicit: true` so the UI can render them as disabled-but-
+// checked without having to know the rule.
+usersRouter.get("/:id/groups", requireAdmin, async (req, res) => {
+  const userId = String(req.params.id);
+
+  const { rows: existingRows } = await query<UserRow>(
+    `SELECT * FROM users WHERE id = $1`,
+    [userId],
+  );
+  const existing = existingRows[0];
+  if (!existing) throw new HttpError(404, "user not found");
+
+  if (existing.is_super_user) {
+    // Super-users are implicit members of every group — enumerate
+    // all groups and flag them accordingly.
+    const { rows } = await query<{ group_id: string; group_name: string; group_color: string | null }>(
+      `SELECT id AS group_id, name AS group_name, color AS group_color
+         FROM groups ORDER BY name ASC`,
+    );
+    res.json(rows.map((r) => ({ ...r, role: "admin" as const, implicit: true })));
+    return;
+  }
+
+  const { rows } = await query<{ group_id: string; group_name: string; group_color: string | null; role: Role }>(
+    `SELECT g.id AS group_id, g.name AS group_name, g.color AS group_color, ug.role
+       FROM user_groups ug
+       JOIN groups g ON g.id = ug.group_id
+      WHERE ug.user_id = $1
+      ORDER BY g.name ASC`,
+    [userId],
+  );
+  res.json(rows.map((r) => ({ ...r, implicit: false })));
 });
 
 // Add a user to the caller's current group. Used by the

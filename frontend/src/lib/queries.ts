@@ -93,6 +93,28 @@ export function useUsers(enabled = true) {
 }
 
 /**
+ * The set of groups a specific user belongs to, one row per
+ * membership with the per-group role and group metadata. Used by
+ * the user-detail modal to render the checkbox editor.
+ * Super-users come back as implicit members of every group
+ * (`implicit: true`), which the UI renders as disabled-and-checked.
+ */
+export type UserGroupMembership = {
+  group_id: string;
+  group_name: string;
+  group_color: string | null;
+  role: Role;
+  implicit: boolean;
+};
+export function useUserGroups(userId: string | null) {
+  return useQuery({
+    queryKey: ["userGroups", userId],
+    queryFn: () => api<UserGroupMembership[]>(`/users/${userId}/groups`),
+    enabled: !!userId,
+  });
+}
+
+/**
  * Users who exist in the DB but have zero group memberships. Used
  * by the "Unassigned users" section on the Users admin tab so a
  * PM can rescue an orphaned account that would otherwise be
