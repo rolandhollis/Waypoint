@@ -1,7 +1,9 @@
+import { useEffect } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useHealth, useMe, useMockRoster } from "./lib/queries";
 import { useMockUserStore } from "./lib/mockUser";
+import { setUnauthorizedHandler } from "./lib/api";
 import { cn } from "./lib/cn";
 import { BoardView } from "./views/BoardView";
 import { RoadmapView } from "./views/RoadmapView";
@@ -9,17 +11,55 @@ import { StatusReportView } from "./views/StatusReportView";
 import { KpiReportView } from "./views/KpiReportView";
 import { AdminSettingsView } from "./views/AdminSettingsView";
 import { PhasesView } from "./views/PhasesView";
+import { LoginView } from "./views/LoginView";
 import { ReminderBanner } from "./components/ReminderBanner";
 import { UserSwitcher } from "./components/UserSwitcher";
 
 export function App() {
   const health = useHealth();
   const mockUserId = useMockUserStore((s) => s.mockUserId);
-  const me = useMe();
   const isMockMode = health.data?.auth === "mock";
+  const isPasswordMode = health.data?.auth === "password";
+  // In password mode we haven't proven authentication yet, so skip
+  // the /users/me probe until either health resolves to mock (where
+  // the mock user id gates it) or password mode is confirmed and
+  // the login screen owns the auth flow.
+  const me = useMe(!!health.data);
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // Wire a single global 401 handler that flips the shell back to
+  // /login (password mode) or the mock picker (mock mode). Runs once
+  // per mount because the handler ref is deps-invariant.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      qc.setQueryData(["me"], null);
+      if (isPasswordMode) {
+        navigate("/login", { replace: true });
+      }
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [qc, navigate, isPasswordMode]);
 
   if (health.isLoading || !health.data) {
     return <FullscreenMessage title="Loading…" />;
+  }
+
+  // Password mode: dedicated /login route. Everything else redirects
+  // to it until /users/me returns a user.
+  if (isPasswordMode) {
+    if (me.isLoading) {
+      return <FullscreenMessage title="Signing in…" />;
+    }
+    if (!me.data) {
+      return (
+        <Routes>
+          <Route path="/login" element={<LoginView />} />
+          <Route path="*" element={<Navigate to="/login" replace state={{ from: location }} />} />
+        </Routes>
+      );
+    }
   }
 
   // Mock mode: pick a mock user before entering the app.
@@ -27,18 +67,18 @@ export function App() {
     return (
       <>
         <MockAuthBanner />
-        <LoginScreen />
+        <MockLoginScreen />
       </>
     );
   }
 
-  // Prod modes (Okta / Cloudflare Access): the IdP has already
+  // Legacy prod modes (Okta / Cloudflare Access): IdP has already
   // authenticated the browser session; /users/me is the source of
-  // truth. Loading = wait; error = show a helpful failure page.
-  if (!isMockMode && me.isLoading) {
+  // truth.
+  if (!isMockMode && !isPasswordMode && me.isLoading) {
     return <FullscreenMessage title="Signing in…" />;
   }
-  if (!isMockMode && !me.data) {
+  if (!isMockMode && !isPasswordMode && !me.data) {
     return (
       <FullscreenMessage
         title="You're not authorized"
@@ -66,6 +106,9 @@ export function App() {
           <Route path="/kpis" element={<KpiReportView />} />
           <Route path="/phases" element={<PhasesView />} />
           <Route path="/admin" element={<AdminSettingsView />} />
+          {/* /login is only meaningful when unauthenticated; if we
+              reach it while signed in just bounce home. */}
+          <Route path="/login" element={<Navigate to="/board" replace />} />
           <Route path="*" element={<Navigate to="/board" replace />} />
         </Routes>
       </main>
@@ -93,7 +136,7 @@ function FullscreenMessage({ title, body }: { title: string; body?: React.ReactN
   );
 }
 
-function LoginScreen() {
+function MockLoginScreen() {
   const roster = useMockRoster();
   const setMockUserId = useMockUserStore((s) => s.setMockUserId);
   const qc = useQueryClient();
@@ -140,7 +183,6 @@ function TopBar() {
       <div className="flex items-center gap-6">
         <div className="flex items-baseline gap-2">
           <span className="text-lg font-bold text-wp-red">Waypoint</span>
-          <span className="text-sm font-medium text-wp-slate">Backlog &amp; Roadmap</span>
         </div>
         <nav className="flex items-center gap-1">
           <NavItem to="/board" active={location.pathname.startsWith("/board")}>Board</NavItem>

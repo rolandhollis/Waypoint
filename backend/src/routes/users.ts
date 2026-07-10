@@ -1,14 +1,27 @@
 import { Router } from "express";
 import { z } from "zod";
+import { config } from "../config.js";
 import { query } from "../db/pool.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
+import {
+  formatPasswordErrors,
+  generatePassword,
+  hashPassword,
+  validatePassword,
+} from "../auth/password.js";
+import { deleteSessionsForUser } from "../auth/session.js";
 import type { UserRow } from "../types.js";
+import { scrubUser, scrubUsers } from "../types.js";
 
 export const usersRouter = Router();
 
+// -----------------------------------------------------------------
+// Self endpoints
+// -----------------------------------------------------------------
+
 usersRouter.get("/me", (req, res) => {
-  res.json(req.user);
+  res.json(scrubUser(req.user!));
 });
 
 usersRouter.patch("/me/prefs", async (req, res) => {
@@ -18,39 +31,116 @@ usersRouter.patch("/me/prefs", async (req, res) => {
     `UPDATE users SET prefs = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
     [JSON.stringify(merged), req.user!.id],
   );
-  res.json(rows[0]);
+  res.json(scrubUser(rows[0]!));
 });
+
+// -----------------------------------------------------------------
+// Admin roster
+// -----------------------------------------------------------------
 
 usersRouter.get("/", requireAdmin, async (_req, res) => {
   const { rows } = await query<UserRow>(`SELECT * FROM users ORDER BY name ASC`);
-  res.json(rows);
+  res.json(scrubUsers(rows));
 });
 
 // Mock-mode roster for the dev user switcher — no auth required so the
-// frontend can populate the picker on first paint.
+// frontend can populate the picker on first paint. Password-mode
+// installs should NOT expose this (index.ts already gates the mount).
 usersRouter.get("/mock-roster", async (_req, res) => {
   const { rows } = await query<UserRow>(`SELECT * FROM users ORDER BY role, name ASC`);
-  res.json(rows);
+  res.json(scrubUsers(rows));
 });
 
-usersRouter.patch("/:id/role", requireAdmin, async (req, res) => {
-  const body = z.object({ role: z.enum(["admin", "owner", "viewer"]) }).parse(req.body);
-  const { rows } = await query<UserRow>(
-    `UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
-    [body.role, req.params.id],
-  );
-  if (!rows[0]) throw new HttpError(404, "user not found");
-  res.json(rows[0]);
+// -----------------------------------------------------------------
+// Password preview — server-side generator so the client doesn't
+// have to reinvent the crypto/policy dance
+// -----------------------------------------------------------------
+
+usersRouter.post("/password/generate", requireAdmin, (_req, res) => {
+  res.json({ password: generatePassword() });
 });
 
-/**
- * General-purpose admin edit for a user: currently role + capacity.
- * Kept separate from /me/prefs (which any user can call for their own
- * settings). Capacity of `null` means "no cap"; a positive integer is
- * the soft max-concurrent-projects for the client-side warning.
- */
+// -----------------------------------------------------------------
+// Create user (admin) — optionally with a password. In password
+// mode without a password the account is created "locked" (can't
+// log in until admin sets one).
+// -----------------------------------------------------------------
+
+const roleEnum = z.enum(["admin", "owner", "viewer"]);
+
+const createUserSchema = z
+  .object({
+    email: z.string().email().max(254),
+    name: z.string().min(1).max(120),
+    role: roleEnum,
+    color: z.string().max(32).optional(),
+    capacity: z.number().int().min(1).max(1000).nullable().optional(),
+    password: z.string().min(1).max(256).optional(),
+    generate_password: z.boolean().optional(),
+  })
+  .refine((v) => !(v.password && v.generate_password), {
+    message: "provide either `password` or `generate_password`, not both",
+  });
+
+usersRouter.post("/", requireAdmin, async (req, res) => {
+  const body = createUserSchema.parse(req.body);
+
+  // Resolve the password up-front so we can validate before the
+  // INSERT — the response echoes the plaintext exactly once when
+  // requested by generate_password OR when the admin typed one; the
+  // UI relies on this to show the RevealPasswordCard.
+  let plaintext: string | null = null;
+  let echo = false;
+  if (body.generate_password) {
+    plaintext = generatePassword();
+    echo = true;
+  } else if (body.password) {
+    plaintext = body.password;
+    echo = true;
+  }
+
+  if (plaintext) {
+    const errs = validatePassword(plaintext, body.email);
+    if (errs.length) {
+      throw new HttpError(400, `password ${formatPasswordErrors(errs).join("; ")}`);
+    }
+  }
+
+  const password_hash = plaintext ? await hashPassword(plaintext) : null;
+  const capacity = body.capacity === undefined ? 3 : body.capacity;
+  const color = body.color ?? "#64748B";
+
+  let created: UserRow;
+  try {
+    const { rows } = await query<UserRow>(
+      `INSERT INTO users (email, name, role, color, capacity, password_hash, password_updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
+       RETURNING *`,
+      [body.email, body.name, body.role, color, capacity, password_hash],
+    );
+    created = rows[0]!;
+  } catch (err: unknown) {
+    if (isUniqueViolation(err)) {
+      throw new HttpError(409, "a user with that email already exists");
+    }
+    throw err;
+  }
+
+  res.status(201).json({
+    user: scrubUser(created),
+    // Present only on the create-response so the admin gets one
+    // last chance to copy the plaintext before it disappears
+    // forever. Absent otherwise.
+    ...(echo && plaintext ? { generated_password: plaintext } : {}),
+  });
+});
+
+// -----------------------------------------------------------------
+// Update user (admin)
+// -----------------------------------------------------------------
+
 const patchUserSchema = z.object({
-  role: z.enum(["admin", "owner", "viewer"]).optional(),
+  role: roleEnum.optional(),
   capacity: z.number().int().min(1).max(1000).nullable().optional(),
 });
 
@@ -66,7 +156,7 @@ usersRouter.patch("/:id", requireAdmin, async (req, res) => {
   if (!sets.length) {
     const { rows } = await query<UserRow>(`SELECT * FROM users WHERE id = $1`, [req.params.id]);
     if (!rows[0]) throw new HttpError(404, "user not found");
-    res.json(rows[0]);
+    res.json(scrubUser(rows[0]));
     return;
   }
   values.push(req.params.id);
@@ -75,5 +165,78 @@ usersRouter.patch("/:id", requireAdmin, async (req, res) => {
     values,
   );
   if (!rows[0]) throw new HttpError(404, "user not found");
-  res.json(rows[0]);
+  res.json(scrubUser(rows[0]));
 });
+
+// Back-compat wrapper: /users/:id/role → /users/:id { role }.
+usersRouter.patch("/:id/role", requireAdmin, async (req, res) => {
+  const body = z.object({ role: roleEnum }).parse(req.body);
+  const { rows } = await query<UserRow>(
+    `UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
+    [body.role, req.params.id],
+  );
+  if (!rows[0]) throw new HttpError(404, "user not found");
+  res.json(scrubUser(rows[0]));
+});
+
+// -----------------------------------------------------------------
+// Reset password (admin) — accepts a typed password or asks the
+// server to generate one. In either case the plaintext is echoed
+// exactly once. Invalidates every active session for the user so
+// they get bounced back to the login screen everywhere.
+// -----------------------------------------------------------------
+
+const resetPasswordSchema = z
+  .object({
+    password: z.string().min(1).max(256).optional(),
+    generate_password: z.boolean().optional(),
+  })
+  .refine((v) => !!v.password !== !!v.generate_password, {
+    message: "provide exactly one of `password` or `generate_password`",
+  });
+
+usersRouter.post("/:id/password", requireAdmin, async (req, res) => {
+  if (config.authMode !== "password") {
+    throw new HttpError(400, "auth mode does not use passwords");
+  }
+  const body = resetPasswordSchema.parse(req.body);
+  const userId = req.params.id!;
+
+  const { rows: existingRows } = await query<UserRow>(`SELECT * FROM users WHERE id = $1`, [userId]);
+  const existing = existingRows[0];
+  if (!existing) throw new HttpError(404, "user not found");
+
+  const plaintext = body.generate_password ? generatePassword() : body.password!;
+  const errs = validatePassword(plaintext, existing.email);
+  if (errs.length) {
+    throw new HttpError(400, `password ${formatPasswordErrors(errs).join("; ")}`);
+  }
+
+  const password_hash = await hashPassword(plaintext);
+  const { rows } = await query<UserRow>(
+    `UPDATE users
+        SET password_hash = $1,
+            password_updated_at = NOW(),
+            updated_at = NOW()
+      WHERE id = $2
+      RETURNING *`,
+    [password_hash, userId],
+  );
+
+  await deleteSessionsForUser(userId);
+
+  res.json({
+    user: scrubUser(rows[0]!),
+    generated_password: plaintext,
+  });
+});
+
+// -----------------------------------------------------------------
+// helpers
+// -----------------------------------------------------------------
+
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" && err !== null && "code" in err && (err as { code: unknown }).code === "23505"
+  );
+}

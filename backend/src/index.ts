@@ -5,11 +5,15 @@ import cors from "cors";
 import express from "express";
 import { config } from "./config.js";
 import { authenticate } from "./middleware/auth.js";
+import { csrfGuard } from "./middleware/csrf.js";
 import { errorHandler, notFound } from "./middleware/error.js";
+import { bootstrapSuperAdmin } from "./auth/bootstrap.js";
+import { authRouter } from "./routes/auth.js";
 import { usersRouter } from "./routes/users.js";
 import { swimLanesRouter } from "./routes/swimLanes.js";
 import { teamsRouter } from "./routes/teams.js";
 import { kpisRouter } from "./routes/kpis.js";
+import { importsRouter } from "./routes/imports.js";
 import { projectsRouter } from "./routes/projects.js";
 import { projectCommentsRouter } from "./routes/comments.js";
 import { projectStatusUpdatesRouter, statusUpdatesRouter } from "./routes/statusUpdates.js";
@@ -20,7 +24,14 @@ const app = express();
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 
+// CSRF defense (no-op in mock/okta modes; see middleware/csrf.ts).
+app.use(csrfGuard);
+
 app.get("/api/health", (_req, res) => res.json({ ok: true, auth: config.authMode }));
+
+// Auth endpoints (login/logout) are intentionally NOT behind
+// authenticate — they run before a session exists.
+app.use("/api/auth", authRouter);
 
 // Unauthenticated: mock roster for the dev switcher. In mock mode only.
 app.use("/api/users", (req, res, next) => {
@@ -33,6 +44,7 @@ app.use("/api/users", (req, res, next) => {
 app.use("/api/swim-lanes", authenticate, swimLanesRouter);
 app.use("/api/teams", authenticate, teamsRouter);
 app.use("/api/kpis", authenticate, kpisRouter);
+app.use("/api/imports", authenticate, importsRouter);
 app.use("/api/projects", authenticate, projectsRouter);
 app.use("/api/projects/:id/comments", authenticate, projectCommentsRouter);
 app.use("/api/projects/:id/status-updates", authenticate, projectStatusUpdatesRouter);
@@ -61,4 +73,5 @@ app.use(errorHandler);
 app.listen(config.port, () => {
   console.log(`[api] listening on http://localhost:${config.port} (auth=${config.authMode})`);
   startCron();
+  bootstrapSuperAdmin().catch((err) => console.error("[auth] super-admin bootstrap failed", err));
 });

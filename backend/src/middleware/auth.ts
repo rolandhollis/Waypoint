@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { config } from "../config.js";
 import { query } from "../db/pool.js";
+import { findSessionUser, readSessionCookie, touchSession } from "../auth/session.js";
 import type { Role, UserRow } from "../types.js";
 
 declare global {
@@ -57,6 +58,28 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
         res.status(401).json({ error: "unknown mock user" });
         return;
       }
+      req.user = user;
+      next();
+      return;
+    }
+
+    if (config.authMode === "password") {
+      // Session cookie is set at POST /auth/login and touched here on
+      // every hit to slide the expiry forward — a user who's
+      // actively working never gets bounced mid-session.
+      const sessionId = readSessionCookie(req);
+      if (!sessionId) {
+        res.status(401).json({ error: "not authenticated" });
+        return;
+      }
+      const user = await findSessionUser(sessionId);
+      if (!user) {
+        res.status(401).json({ error: "session expired" });
+        return;
+      }
+      // Fire-and-forget touch so the request path stays fast. If the
+      // update fails the next request retries; no user-visible effect.
+      touchSession(sessionId).catch((err) => console.error("touchSession failed", err));
       req.user = user;
       next();
       return;

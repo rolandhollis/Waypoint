@@ -6,13 +6,26 @@ function required(name: string, fallback?: string): string {
   return v;
 }
 
-export type AuthMode = "mock" | "okta" | "cloudflare-access";
+export type AuthMode = "mock" | "password" | "okta" | "cloudflare-access";
 
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
   databaseUrl: required("DATABASE_URL", "postgres://waypoint:waypoint@localhost:5433/waypoint"),
   authMode: (process.env.AUTH_MODE ?? "mock") as AuthMode,
+  /**
+   * Password mode super-admin bootstrap. If both env vars are set at
+   * boot AND the user does not already exist, an admin row is
+   * created. If the user exists with no password on file, the
+   * password is applied; a user with an existing password is never
+   * clobbered so rotated credentials survive redeploys. Idempotent
+   * either way — safe to leave the secrets in Fly config forever.
+   */
+  superAdmin: {
+    email: process.env.SUPER_ADMIN_EMAIL ?? "",
+    password: process.env.SUPER_ADMIN_PASSWORD ?? "",
+    name: process.env.SUPER_ADMIN_NAME ?? "Super Admin",
+  },
   /** Static path served at "/" when set — used by the Docker image to
    *  serve the compiled frontend from the same origin as the API. */
   staticDir: process.env.STATIC_DIR ?? "",

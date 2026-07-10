@@ -14,9 +14,37 @@ export type UserRow = {
    * cap. Default 3, backfilled by migration 015.
    */
   capacity: number | null;
+  /**
+   * bcrypt hash of the user's login password. NULL means the user
+   * has never had a password set (mock-mode users, or a
+   * password-mode user that admin created without one yet). Never
+   * echoed to the client — see scrubUser() below.
+   */
+  password_hash: string | null;
+  password_updated_at: Date | null;
   created_at: Date;
   updated_at: Date;
 };
+
+/**
+ * Safe-to-return user shape — the exact same fields the frontend
+ * expects, minus password_hash. Use scrubUser() before every
+ * res.json() that returns a user row so a rogue endpoint can never
+ * leak the hash by accident.
+ */
+export type SafeUserRow = Omit<UserRow, "password_hash">;
+
+export function scrubUser(u: UserRow): SafeUserRow;
+export function scrubUser(u: UserRow | null | undefined): SafeUserRow | null;
+export function scrubUser(u: UserRow | null | undefined): SafeUserRow | null {
+  if (!u) return null;
+  const { password_hash: _ph, ...rest } = u;
+  return rest;
+}
+
+export function scrubUsers(rows: UserRow[]): SafeUserRow[] {
+  return rows.map((r) => scrubUser(r));
+}
 
 export type SwimLaneRow = {
   id: string;

@@ -14,6 +14,14 @@ export type User = {
    * client-side warnings — the backend never blocks a save on this.
    */
   capacity: number | null;
+  /**
+   * When the user's password was last set/reset. Null means the
+   * user has never had a password (mock-mode users, or a
+   * password-mode account admin hasn't finished provisioning). UI
+   * uses this to badge "No password" rows. The plaintext + hash
+   * are never sent to the client.
+   */
+  password_updated_at: string | null;
   created_at: string;
   updated_at: string;
 };

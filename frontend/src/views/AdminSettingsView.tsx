@@ -9,11 +9,17 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
-import { useKpis, useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { useHealth, useKpis, useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import type { Kpi, PhaseDateKey, Project, SwimLane, Team, User } from "../lib/types";
+import { CsvExportAdmin } from "../components/CsvExportAdmin";
+import { CsvImportAdmin } from "../components/CsvImportAdmin";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
+import { PasswordField } from "../components/PasswordField";
+import { passwordIsValid } from "../lib/password";
+import { RevealPasswordCard } from "../components/RevealPasswordCard";
+import { X } from "lucide-react";
 
-type TabKey = "lanes" | "teams" | "kpis" | "users" | "archived";
+type TabKey = "lanes" | "teams" | "kpis" | "users" | "import" | "export" | "archived";
 
 // Note: the tab key stays "archived" for URL back-compat with older
 // bookmarks, but the label reads "Deleted cards" now that we have a
@@ -24,6 +30,8 @@ const TABS: { key: TabKey; label: string; render: () => JSX.Element }[] = [
   { key: "teams",    label: "Teams",         render: () => <TeamsAdmin /> },
   { key: "kpis",     label: "KPIs",          render: () => <KpisAdmin /> },
   { key: "users",    label: "Users",         render: () => <UsersAdmin /> },
+  { key: "import",   label: "Import CSV",    render: () => <CsvImportAdmin /> },
+  { key: "export",   label: "Export CSV",    render: () => <CsvExportAdmin /> },
   { key: "archived", label: "Deleted cards", render: () => <ArchivedProjectsAdmin /> },
 ];
 
@@ -699,7 +707,11 @@ function SortableKpiRow(props: {
 
 function UsersAdmin() {
   const users = useUsers();
+  const health = useHealth();
   const qc = useQueryClient();
+  const isPasswordMode = health.data?.auth === "password";
+  const [creating, setCreating] = useState(false);
+  const [resettingUser, setResettingUser] = useState<User | null>(null);
   const patchRole = useMutation({
     mutationFn: (v: { id: string; role: User["role"] }) => api<User>(`/users/${v.id}/role`, { method: "PATCH", body: JSON.stringify({ role: v.role }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
@@ -711,11 +723,18 @@ function UsersAdmin() {
   });
   return (
     <section className="card-surface p-4">
-      <h2 className="text-base font-semibold">Users &amp; roles</h2>
-      <p className="mt-1 text-xs text-wp-slate">
-        Capacity is a soft cap on concurrent active (roadmap-scheduled) projects the user owns.
-        Leave blank for no cap.
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold">Users &amp; roles</h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Capacity is a soft cap on concurrent active (roadmap-scheduled) projects the user owns.
+            Leave blank for no cap.
+          </p>
+        </div>
+        <button type="button" className="btn-primary" onClick={() => setCreating(true)}>
+          Create user
+        </button>
+      </div>
       <MutationErrorBanner mutation={patchRole} className="mt-3" />
       <MutationErrorBanner mutation={patchCapacity} className="mt-3" />
       <ul className="mt-3 divide-y divide-wp-stone">
@@ -728,7 +747,17 @@ function UsersAdmin() {
               {u.name.split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("")}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-wp-ink">{u.name}</div>
+              <div className="flex items-center gap-2 text-sm font-medium text-wp-ink">
+                {u.name}
+                {isPasswordMode && !u.password_updated_at ? (
+                  <span
+                    className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
+                    title="This user has no password set and cannot sign in until one is created."
+                  >
+                    No password
+                  </span>
+                ) : null}
+              </div>
               <div className="text-xs text-wp-slate">{u.email}</div>
             </div>
             <label className="flex items-center gap-1 text-xs text-wp-slate">
@@ -759,9 +788,327 @@ function UsersAdmin() {
               <option value="owner">owner</option>
               <option value="viewer">viewer</option>
             </select>
+            {isPasswordMode ? (
+              <button
+                type="button"
+                className="btn-secondary text-xs"
+                onClick={() => setResettingUser(u)}
+              >
+                Reset password
+              </button>
+            ) : null}
           </li>
         ))}
       </ul>
+
+      {creating ? (
+        <NewUserDialog
+          isPasswordMode={isPasswordMode}
+          onClose={() => setCreating(false)}
+          onCreated={() => qc.invalidateQueries({ queryKey: ["users"] })}
+        />
+      ) : null}
+      {resettingUser ? (
+        <ResetPasswordDialog
+          user={resettingUser}
+          onClose={() => setResettingUser(null)}
+          onReset={() => qc.invalidateQueries({ queryKey: ["users"] })}
+        />
+      ) : null}
     </section>
+  );
+}
+
+// -----------------------------------------------------------------
+// Create user
+// -----------------------------------------------------------------
+
+const USER_COLORS = ["#DC2626", "#EA580C", "#D97706", "#65A30D", "#0EA5E9", "#6366F1", "#9333EA", "#64748B"];
+
+function NewUserDialog({
+  isPasswordMode,
+  onClose,
+  onCreated,
+}: {
+  isPasswordMode: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [role, setRole] = useState<User["role"]>("owner");
+  const [color, setColor] = useState(USER_COLORS[0]!);
+  const [capacity, setCapacity] = useState<string>("3");
+  const [password, setPassword] = useState("");
+  // The response includes generated_password exactly once. Cache it
+  // here so the reveal card can render before the dialog is closed.
+  const [reveal, setReveal] = useState<{ password: string; email: string } | null>(null);
+
+  const create = useMutation({
+    mutationFn: async () => {
+      const capNum = capacity.trim() === "" ? null : Math.max(1, Math.floor(Number(capacity)));
+      const body: Record<string, unknown> = {
+        email: email.trim(),
+        name: name.trim(),
+        role,
+        color,
+        capacity: Number.isFinite(capNum as number) ? capNum : 3,
+      };
+      if (isPasswordMode) {
+        body.password = password;
+      }
+      return api<{ user: User; generated_password?: string }>("/users", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    },
+    onSuccess: (res) => {
+      onCreated();
+      if (res.generated_password) {
+        setReveal({ password: res.generated_password, email: res.user.email });
+      } else {
+        // No password (mock mode) → nothing to reveal, just close.
+        onClose();
+      }
+    },
+  });
+
+  // Reveal-mode UI: same dialog frame, but showing the one-time
+  // password + a single Close action.
+  if (reveal) {
+    return (
+      <DialogFrame onClose={onClose} title="User created">
+        <RevealPasswordCard password={reveal.password} email={reveal.email} variant="created" />
+        <div className="mt-4 flex justify-end">
+          <button type="button" className="btn-primary" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </DialogFrame>
+    );
+  }
+
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const nameValid = name.trim().length > 0;
+  const passwordValid = !isPasswordMode || passwordIsValid(password, email);
+  const canSubmit = emailValid && nameValid && passwordValid && !create.isPending;
+
+  return (
+    <DialogFrame onClose={onClose} title="Create user">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!canSubmit) return;
+          create.mutate();
+        }}
+        className="space-y-4"
+      >
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="text-xs font-medium text-wp-slate">Name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+              required
+              className="input mt-1 w-full"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-wp-slate">Email</span>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="input mt-1 w-full"
+            />
+          </label>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3">
+          <label className="block">
+            <span className="text-xs font-medium text-wp-slate">Role</span>
+            <select
+              className="input mt-1 w-full"
+              value={role}
+              onChange={(e) => setRole(e.target.value as User["role"])}
+            >
+              <option value="admin">admin</option>
+              <option value="owner">owner</option>
+              <option value="viewer">viewer</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-wp-slate">Capacity</span>
+            <input
+              type="number"
+              min={1}
+              max={999}
+              placeholder="3"
+              value={capacity}
+              onChange={(e) => setCapacity(e.target.value)}
+              className="input mt-1 w-full"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-wp-slate">Color</span>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {USER_COLORS.map((c) => (
+                <button
+                  type="button"
+                  key={c}
+                  className={`h-6 w-6 rounded-full border ${color === c ? "ring-2 ring-wp-red ring-offset-1" : "border-wp-stone"}`}
+                  style={{ background: c }}
+                  onClick={() => setColor(c)}
+                  aria-label={`Pick ${c}`}
+                />
+              ))}
+            </div>
+          </label>
+        </div>
+
+        {isPasswordMode ? (
+          <div>
+            <div className="mb-1 text-xs font-medium text-wp-slate">Password</div>
+            <PasswordField value={password} onChange={setPassword} email={email} />
+          </div>
+        ) : (
+          <p className="rounded-md border border-wp-stone bg-wp-stone/20 px-3 py-2 text-xs text-wp-slate">
+            The server is running in mock auth mode, so no password is required.
+          </p>
+        )}
+
+        <MutationErrorBanner mutation={create} />
+
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn-primary" disabled={!canSubmit}>
+            {create.isPending ? "Creating…" : "Create user"}
+          </button>
+        </div>
+      </form>
+    </DialogFrame>
+  );
+}
+
+// -----------------------------------------------------------------
+// Reset password
+// -----------------------------------------------------------------
+
+function ResetPasswordDialog({
+  user,
+  onClose,
+  onReset,
+}: {
+  user: User;
+  onClose: () => void;
+  onReset: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [reveal, setReveal] = useState<string | null>(null);
+
+  const reset = useMutation({
+    mutationFn: () =>
+      api<{ user: User; generated_password: string }>(`/users/${user.id}/password`, {
+        method: "POST",
+        body: JSON.stringify({ password }),
+      }),
+    onSuccess: (res) => {
+      onReset();
+      setReveal(res.generated_password);
+    },
+  });
+
+  if (reveal) {
+    return (
+      <DialogFrame onClose={onClose} title={`Password reset for ${user.name}`}>
+        <RevealPasswordCard password={reveal} email={user.email} variant="reset" />
+        <div className="mt-4 flex justify-end">
+          <button type="button" className="btn-primary" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </DialogFrame>
+    );
+  }
+
+  const passwordValid = passwordIsValid(password, user.email);
+  const canSubmit = passwordValid && !reset.isPending;
+
+  return (
+    <DialogFrame onClose={onClose} title={`Reset password for ${user.name}`}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!canSubmit) return;
+          reset.mutate();
+        }}
+        className="space-y-4"
+      >
+        <p className="text-xs text-wp-slate">
+          Choose or generate a new password for <span className="font-mono">{user.email}</span>.
+          Any active sessions will be signed out immediately after the reset.
+        </p>
+        <div>
+          <div className="mb-1 text-xs font-medium text-wp-slate">New password</div>
+          <PasswordField value={password} onChange={setPassword} email={user.email} autoFocus />
+        </div>
+        <MutationErrorBanner mutation={reset} />
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn-primary" disabled={!canSubmit}>
+            {reset.isPending ? "Resetting…" : "Reset password"}
+          </button>
+        </div>
+      </form>
+    </DialogFrame>
+  );
+}
+
+// -----------------------------------------------------------------
+// Dialog frame — thin wrapper to avoid pulling in Radix Dialog just
+// for two admin flows. The Kanban already has its own modal system;
+// this is intentionally the "cheap self-contained" alternative.
+// -----------------------------------------------------------------
+
+function DialogFrame({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4"
+      role="dialog"
+      aria-modal="true"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="card-surface w-full max-w-lg p-5" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-wp-ink">{title}</h3>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={onClose}
+            className="rounded p-1 text-wp-slate hover:bg-wp-stone/30 hover:text-wp-ink"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
   );
 }

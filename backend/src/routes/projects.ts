@@ -55,7 +55,7 @@ type AuditedField = (typeof AUDITED_FIELDS)[number];
  * Write one audit-event row. Called from inside the same transaction
  * as the mutation so a failed mutation rolls back the audit entry too.
  */
-async function recordAudit(
+export async function recordAudit(
   client: PoolClient,
   args: {
     projectId: string;
@@ -130,7 +130,7 @@ const PROJECT_COLUMNS = `
  * Replace the full set of team memberships for a project. Used both by
  * POST (initial set) and PATCH (when the client sends a `teams` field).
  */
-async function replaceProjectTeams(client: PoolClient, projectId: string, teamIds: string[]) {
+export async function replaceProjectTeams(client: PoolClient, projectId: string, teamIds: string[]) {
   await client.query(`DELETE FROM project_teams WHERE project_id = $1`, [projectId]);
   if (teamIds.length === 0) return;
   const values = teamIds.map((_, i) => `($1, $${i + 2})`).join(", ");
@@ -164,7 +164,7 @@ async function replaceProjectKpis(client: PoolClient, projectId: string, kpiIds:
  * devEnd ≤ optStart ≤ optEnd. Missing intermediate anchors fall through
  * to whichever earlier field is available.
  */
-function validatePhaseDates(p: {
+export function validatePhaseDates(p: {
   start_date?: string | null;
   target_date?: string | null;
   dev_start_date?: string | null;

@@ -15,7 +15,8 @@ import type {
 
 const POLL_MS = 5_000;
 
-export type HealthResponse = { ok: boolean; auth: "mock" | "okta" | "cloudflare-access" };
+export type AuthMode = "mock" | "password" | "okta" | "cloudflare-access";
+export type HealthResponse = { ok: boolean; auth: AuthMode };
 
 /** Cheap unauthenticated ping so the shell can pick the right login flow. */
 export function useHealth() {
@@ -27,11 +28,19 @@ export function useHealth() {
   });
 }
 
-export function useMe() {
+export function useMe(enabled = true) {
   return useQuery({
     queryKey: ["me"],
     queryFn: () => api<User>("/users/me"),
     staleTime: 30_000,
+    // Suppress the auto-retry on 401 — the ApiError sink already
+    // handles session expiry by redirecting to the login screen, and
+    // retrying just delays that transition.
+    retry: (failureCount, error) => {
+      if (error && (error as { status?: number }).status === 401) return false;
+      return failureCount < 2;
+    },
+    enabled,
   });
 }
 
@@ -43,11 +52,12 @@ export function useUsers(enabled = true) {
   });
 }
 
-export function useMockRoster() {
+export function useMockRoster(enabled = true) {
   return useQuery({
     queryKey: ["mockRoster"],
     queryFn: () => api<User[]>("/users/mock-roster"),
     staleTime: Infinity,
+    enabled,
   });
 }
 
