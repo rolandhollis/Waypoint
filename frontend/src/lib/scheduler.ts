@@ -27,8 +27,13 @@ import type { PhaseDateKey, Project, SwimLane, Team, User } from "./types";
  * is already in the past can only be delayed further — the
  * scheduler will never rewrite history.
  *
- * PRIORITY: swim lane order ASC, then position within lane ASC.
- * Earlier == higher priority (placed first, gets the best slot).
+ * PRIORITY: the caller-provided order of `items` IS the priority
+ * signal. The Auto-schedule modal lets the user drag rows to rank
+ * them; whatever list order they hand us here is treated as
+ * "earliest == highest priority (placed first, gets the best
+ * slot)". Callers that don't care about ranking can pre-sort by
+ * swim-lane order + position and get the previous behavior for
+ * free.
  *
  * ORDERING: topological sort on intra-batch dependencies (upstream
  * before downstream) with priority breaking ties. Deps on items
@@ -290,19 +295,15 @@ export function scheduleRoadmap(input: SchedulerInput): SchedulerResult {
 
   // 2. Topological sort within the batch. Nodes are batch ids; a
   //    directed edge upstream -> downstream means downstream depends
-  //    on upstream. We process in Kahn order, breaking ties by
-  //    priority (swim lane order, then position). Cycle members
-  //    (rare) fall out at the end, sorted by priority alone.
-  const priority = (p: Project): [number, number] => {
-    const lane = p.swim_lane_id ? lanesById.get(p.swim_lane_id) : null;
-    return [lane?.order ?? Number.MAX_SAFE_INTEGER, p.position ?? Number.MAX_SAFE_INTEGER];
-  };
-  const cmpPriority = (a: Project, b: Project): number => {
-    const [al, ap] = priority(a);
-    const [bl, bp] = priority(b);
-    if (al !== bl) return al - bl;
-    return ap - bp;
-  };
+  //    on upstream. We process in Kahn order, breaking ties by the
+  //    caller-provided ranking (index in `items`). Cycle members
+  //    (rare) fall out at the end, sorted by rank alone.
+  const rankIndex = new Map<string, number>();
+  items.forEach((it, i) => rankIndex.set(it.project.id, i));
+  const priorityOf = (p: Project): number =>
+    rankIndex.get(p.id) ?? Number.MAX_SAFE_INTEGER;
+  const cmpPriority = (a: Project, b: Project): number =>
+    priorityOf(a) - priorityOf(b);
 
   const inDegree = new Map<string, number>();
   const successors = new Map<string, Set<string>>();

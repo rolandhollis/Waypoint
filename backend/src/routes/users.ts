@@ -1,8 +1,9 @@
+import type { NextFunction, Request, Response } from "express";
 import { Router } from "express";
 import { z } from "zod";
 import { config } from "../config.js";
-import { query } from "../db/pool.js";
-import { requireAdmin } from "../middleware/auth.js";
+import { query, withTransaction } from "../db/pool.js";
+import { groupScope, requireAdmin } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
 import {
   formatPasswordErrors,
@@ -119,13 +120,59 @@ usersRouter.patch("/me/prefs", async (req, res) => {
 });
 
 // -----------------------------------------------------------------
-// Admin roster
+// Admin roster — scoped to the caller's current group. Super-users
+// are treated as implicit members of every group (mirrors
+// middleware/auth.groupScope), so they always show up in every
+// tenant's roster and can be assigned as owners regardless of
+// which group is active.
 // -----------------------------------------------------------------
 
-usersRouter.get("/", requireAdmin, async (_req, res) => {
-  const { rows } = await query<UserRow>(`SELECT * FROM users ORDER BY name ASC`);
+usersRouter.get("/", groupScope, requireAdmin, async (req, res) => {
+  const { rows } = await query<UserRow>(
+    `SELECT u.*
+       FROM users u
+      WHERE u.is_super_user = TRUE
+         OR EXISTS (
+              SELECT 1 FROM user_groups ug
+               WHERE ug.user_id = u.id AND ug.group_id = $1
+            )
+      ORDER BY u.name ASC`,
+    [req.groupId!],
+  );
   res.json(scrubUsers(rows));
 });
+
+/**
+ * Guardrail used by every user-mutation endpoint under this router
+ * so an admin in group A can never poke at a user who only lives
+ * in group B. Super-users are treated as implicit members of every
+ * group (matches the roster query above and groupScope semantics).
+ * 404 (not 403) so we don't leak whether the target id exists.
+ */
+async function assertUserInCurrentGroup(userId: string, groupId: string): Promise<UserRow> {
+  const { rows } = await query<UserRow>(
+    `SELECT u.*
+       FROM users u
+      WHERE u.id = $1
+        AND (u.is_super_user = TRUE
+             OR EXISTS (
+                  SELECT 1 FROM user_groups ug
+                   WHERE ug.user_id = u.id AND ug.group_id = $2
+                ))`,
+    [userId, groupId],
+  );
+  const row = rows[0];
+  if (!row) throw new HttpError(404, "user not found");
+  return row;
+}
+
+/** Convenience middleware: run assertUserInCurrentGroup and stash
+ *  the loaded row on the request for the handler to reuse. */
+async function assertTargetInGroup(req: Request, _res: Response, next: NextFunction) {
+  const target = await assertUserInCurrentGroup(String(req.params.id), req.groupId!);
+  (req as Request & { targetUser?: UserRow }).targetUser = target;
+  next();
+}
 
 // Mock-mode roster for the dev user switcher — no auth required so the
 // frontend can populate the picker on first paint. Password-mode
@@ -166,7 +213,7 @@ const createUserSchema = z
     message: "provide either `password` or `generate_password`, not both",
   });
 
-usersRouter.post("/", requireAdmin, async (req, res) => {
+usersRouter.post("/", groupScope, requireAdmin, async (req, res) => {
   const body = createUserSchema.parse(req.body);
 
   // Resolve the password up-front so we can validate before the
@@ -196,13 +243,28 @@ usersRouter.post("/", requireAdmin, async (req, res) => {
 
   let created: UserRow;
   try {
-    const { rows } = await query<UserRow>(
-      `INSERT INTO users (email, name, role, color, capacity, password_hash, password_updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
-       RETURNING *`,
-      [body.email, body.name, body.role, color, capacity, password_hash],
-    );
-    created = rows[0]!;
+    // Wrap the insert + membership grant in a transaction so a
+    // half-created user can never exist. The user is added to the
+    // caller's current group with the same role they were assigned
+    // — otherwise the row-level filter on GET /users would hide the
+    // new account from the very admin who just created it, which
+    // is a confusing UX regression.
+    created = await withTransaction(async (client) => {
+      const { rows } = await client.query<UserRow>(
+        `INSERT INTO users (email, name, role, color, capacity, password_hash, password_updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
+         RETURNING *`,
+        [body.email, body.name, body.role, color, capacity, password_hash],
+      );
+      const user = rows[0]!;
+      await client.query(
+        `INSERT INTO user_groups (user_id, group_id, role)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, group_id) DO UPDATE SET role = EXCLUDED.role`,
+        [user.id, req.groupId!, body.role],
+      );
+      return user;
+    });
   } catch (err: unknown) {
     if (isUniqueViolation(err)) {
       throw new HttpError(409, "a user with that email already exists");
@@ -228,7 +290,7 @@ const patchUserSchema = z.object({
   capacity: z.number().int().min(1).max(1000).nullable().optional(),
 });
 
-usersRouter.patch("/:id", requireAdmin, async (req, res) => {
+usersRouter.patch("/:id", groupScope, requireAdmin, assertTargetInGroup, async (req, res) => {
   const body = patchUserSchema.parse(req.body);
   const sets: string[] = [];
   const values: unknown[] = [];
@@ -238,9 +300,8 @@ usersRouter.patch("/:id", requireAdmin, async (req, res) => {
     sets.push(`${k} = $${values.length}`);
   }
   if (!sets.length) {
-    const { rows } = await query<UserRow>(`SELECT * FROM users WHERE id = $1`, [req.params.id]);
-    if (!rows[0]) throw new HttpError(404, "user not found");
-    res.json(scrubUser(rows[0]));
+    // No changes requested — return the pre-loaded row untouched.
+    res.json(scrubUser((req as Request & { targetUser: UserRow }).targetUser));
     return;
   }
   values.push(req.params.id);
@@ -253,7 +314,7 @@ usersRouter.patch("/:id", requireAdmin, async (req, res) => {
 });
 
 // Back-compat wrapper: /users/:id/role → /users/:id { role }.
-usersRouter.patch("/:id/role", requireAdmin, async (req, res) => {
+usersRouter.patch("/:id/role", groupScope, requireAdmin, assertTargetInGroup, async (req, res) => {
   const body = z.object({ role: roleEnum }).parse(req.body);
   const { rows } = await query<UserRow>(
     `UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
@@ -261,6 +322,51 @@ usersRouter.patch("/:id/role", requireAdmin, async (req, res) => {
   );
   if (!rows[0]) throw new HttpError(404, "user not found");
   res.json(scrubUser(rows[0]));
+});
+
+// -----------------------------------------------------------------
+// Delete user (admin)
+//
+// Hard-deletes the row. FKs are set up so this is safe:
+//   * projects.owner_id / created_by, comments, deadlines,
+//     dependencies, audit events, weekly status, swim lanes, teams
+//     — all SET NULL on delete, so historical data is preserved
+//     but loses attribution.
+//   * user_sessions and user_groups — CASCADE, so the user is
+//     immediately signed out everywhere and their group
+//     memberships vanish.
+//   * kpis.created_by is NO ACTION, so we scrub it manually in
+//     the same transaction to keep the delete atomic.
+//
+// Guardrails: admins may not delete themselves (footgun; leaves a
+// dead session mid-request) and may not delete the bootstrapped
+// super-admin (would just reappear on next boot from env vars,
+// and losing it mid-session locks the tenant admin out).
+// -----------------------------------------------------------------
+
+usersRouter.delete("/:id", groupScope, requireAdmin, assertTargetInGroup, async (req, res) => {
+  const userId = req.params.id!;
+
+  if (req.user!.id === userId) {
+    throw new HttpError(400, "you can't delete your own account");
+  }
+
+  const existing = (req as Request & { targetUser: UserRow }).targetUser;
+  if (existing.is_super_user) {
+    throw new HttpError(400, "the super-admin can't be deleted");
+  }
+
+  await withTransaction(async (client) => {
+    // Scrub the one FK that doesn't have ON DELETE SET NULL so
+    // the DELETE below doesn't fail on a stray reference.
+    await client.query(
+      `UPDATE kpis SET created_by = NULL WHERE created_by = $1`,
+      [userId],
+    );
+    await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
+  });
+
+  res.status(204).end();
 });
 
 // -----------------------------------------------------------------
@@ -279,16 +385,14 @@ const resetPasswordSchema = z
     message: "provide exactly one of `password` or `generate_password`",
   });
 
-usersRouter.post("/:id/password", requireAdmin, async (req, res) => {
+usersRouter.post("/:id/password", groupScope, requireAdmin, assertTargetInGroup, async (req, res) => {
   if (config.authMode !== "password") {
     throw new HttpError(400, "auth mode does not use passwords");
   }
   const body = resetPasswordSchema.parse(req.body);
   const userId = req.params.id!;
 
-  const { rows: existingRows } = await query<UserRow>(`SELECT * FROM users WHERE id = $1`, [userId]);
-  const existing = existingRows[0];
-  if (!existing) throw new HttpError(404, "user not found");
+  const existing = (req as Request & { targetUser: UserRow }).targetUser;
 
   const plaintext = body.generate_password ? generatePassword() : body.password!;
   const errs = validatePassword(plaintext, existing.email);

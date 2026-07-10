@@ -16,6 +16,7 @@ import {
   useIsAdmin,
   useIsSuperUser,
   useKpis,
+  useMe,
   useProjects,
   useSwimLanes,
   useTeams,
@@ -736,6 +737,7 @@ function SortableKpiRow(props: {
 function UsersAdmin() {
   const users = useUsers();
   const health = useHealth();
+  const me = useMe();
   const qc = useQueryClient();
   const isPasswordMode = health.data?.auth === "password";
   const [creating, setCreating] = useState(false);
@@ -749,6 +751,25 @@ function UsersAdmin() {
       api<User>(`/users/${v.id}`, { method: "PATCH", body: JSON.stringify({ capacity: v.capacity }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   });
+  const delUser = useMutation({
+    mutationFn: (id: string) => api<void>(`/users/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      // Everything the deleted user touched loses its owner / author
+      // attribution (SET NULL) so refresh the whole shell rather than
+      // just the users list.
+      qc.invalidateQueries({ queryKey: ["users"] });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["teams"] });
+    },
+  });
+  const handleDelete = (u: User) => {
+    if (
+      !confirm(
+        `Delete ${u.name} (${u.email})?\n\nThis removes the account and signs them out everywhere. Projects, comments, and history they created are kept but lose their attribution.`,
+      )
+    ) return;
+    delUser.mutate(u.id);
+  };
   return (
     <section className="card-surface p-4">
       <div className="flex items-start justify-between gap-3">
@@ -765,6 +786,7 @@ function UsersAdmin() {
       </div>
       <MutationErrorBanner mutation={patchRole} className="mt-3" />
       <MutationErrorBanner mutation={patchCapacity} className="mt-3" />
+      <MutationErrorBanner mutation={delUser} className="mt-3" />
       <ul className="mt-3 divide-y divide-wp-stone">
         {users.data?.map((u) => (
           <li key={u.id} className="flex items-center gap-3 py-2">
@@ -825,6 +847,28 @@ function UsersAdmin() {
                 Reset password
               </button>
             ) : null}
+            {(() => {
+              const isSelf = me.data?.id === u.id;
+              const isSuper = u.is_super_user;
+              const disabled = isSelf || isSuper || delUser.isPending;
+              const title = isSelf
+                ? "You can't delete your own account"
+                : isSuper
+                ? "The super-admin can't be deleted"
+                : `Delete ${u.name}`;
+              return (
+                <button
+                  type="button"
+                  className="btn-ghost !p-1 text-wp-slate hover:text-red-600 disabled:opacity-40 disabled:hover:text-wp-slate"
+                  onClick={() => handleDelete(u)}
+                  disabled={disabled}
+                  aria-label={title}
+                  title={title}
+                >
+                  <Trash2 size={14} />
+                </button>
+              );
+            })()}
           </li>
         ))}
       </ul>

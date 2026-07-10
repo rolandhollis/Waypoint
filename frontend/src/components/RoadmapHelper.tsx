@@ -1,5 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -7,6 +7,7 @@ import {
   BarChart3,
   Calendar,
   CheckCircle2,
+  GripVertical,
   List,
   Lock,
   Unlock,
@@ -14,6 +15,21 @@ import {
   Wand2,
   X,
 } from "lucide-react";
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { Project, SwimLane, Team, User } from "../lib/types";
@@ -109,10 +125,71 @@ export function RoadmapHelper({
     setChecked(nextChecked);
   }
 
+  // User-driven priority ranking. The order of ids in this array IS
+  // the priority signal we hand to the scheduler (index 0 = highest
+  // priority). Seeded from the eligible universe on first render in
+  // the default "swim lane order, then position" order so the first
+  // time you open the modal ranking already matches the roadmap
+  // grouping you'd expect; after that, drag reorders override it.
+  //
+  // Kept at the ELIGIBLE-set level (not the filtered subset) so
+  // toggling a filter doesn't nuke a rank you already set — an id
+  // that leaves the visible list keeps its slot and reappears at
+  // the same rank when it filters back in.
+  const [rankedIds, setRankedIds] = useState<string[]>([]);
+  useEffect(() => {
+    const defaultRank = (a: Project, b: Project): number => {
+      const la = a.swim_lane_id ? lanesById.get(a.swim_lane_id) : null;
+      const lb = b.swim_lane_id ? lanesById.get(b.swim_lane_id) : null;
+      const oa = la?.order ?? Number.MAX_SAFE_INTEGER;
+      const ob = lb?.order ?? Number.MAX_SAFE_INTEGER;
+      if (oa !== ob) return oa - ob;
+      return (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER);
+    };
+    setRankedIds((prev) => {
+      const eligibleIds = new Set(eligible.map((p) => p.id));
+      const kept = prev.filter((id) => eligibleIds.has(id));
+      const known = new Set(kept);
+      // Newly-visible items land in default-priority order at the
+      // tail — better than the top so we don't shuffle work the PM
+      // has already ranked.
+      const additions = eligible
+        .filter((p) => !known.has(p.id))
+        .sort(defaultRank)
+        .map((p) => p.id);
+      const merged = [...kept, ...additions];
+      // Skip the state update if nothing actually changed — spares
+      // a re-render on every filter tweak that only reshapes the
+      // visible subset.
+      if (merged.length === prev.length && merged.every((id, i) => id === prev[i])) {
+        return prev;
+      }
+      return merged;
+    });
+  }, [eligible, lanesById]);
+
+  // Sort filtered rows so the picker draws them top-to-bottom by
+  // rank — the same order they'll feed into the scheduler.
+  const rankIndexById = useMemo(() => {
+    const m = new Map<string, number>();
+    rankedIds.forEach((id, i) => m.set(id, i));
+    return m;
+  }, [rankedIds]);
+  const ordered = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      const ia = rankIndexById.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const ib = rankIndexById.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      return ia - ib;
+    });
+  }, [filtered, rankIndexById]);
+
   const [result, setResult] = useState<SchedulerResult | null>(null);
 
   const runScheduler = () => {
-    const items = filtered
+    // Feed the batch in rank order. Anything ranked but unchecked or
+    // filtered out just isn't in `items`; the scheduler only sees
+    // the visible + checked rows in the PM's preferred sequence.
+    const items = ordered
       .filter((p) => checked.get(p.id) !== false)
       .map((p) => ({ project: p, locked: locked.get(p.id) === true }));
     const res = scheduleRoadmap({
@@ -156,8 +233,17 @@ export function RoadmapHelper({
     setPhase("done");
   };
 
-  const selectedCount = filtered.filter((p) => checked.get(p.id) !== false).length;
-  const lockedCount = filtered.filter((p) => locked.get(p.id) === true).length;
+  const selectedCount = ordered.filter((p) => checked.get(p.id) !== false).length;
+  const lockedCount = ordered.filter((p) => locked.get(p.id) === true).length;
+
+  const handleRankDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const oldIdx = rankedIds.indexOf(String(active.id));
+    const newIdx = rankedIds.indexOf(String(over.id));
+    if (oldIdx < 0 || newIdx < 0) return;
+    setRankedIds((prev) => arrayMove(prev, oldIdx, newIdx));
+  };
 
   return (
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -191,7 +277,7 @@ export function RoadmapHelper({
 
           {phase === "pick" && (
             <PickPhase
-              filtered={filtered}
+              ordered={ordered}
               eligible={eligible}
               lanesById={lanesById}
               usersById={usersById}
@@ -206,6 +292,8 @@ export function RoadmapHelper({
               setChecked={setChecked}
               locked={locked}
               setLocked={setLocked}
+              rankIndexById={rankIndexById}
+              onDragEnd={handleRankDragEnd}
               selectedCount={selectedCount}
               lockedCount={lockedCount}
               onCancel={onClose}
@@ -257,7 +345,9 @@ export function RoadmapHelper({
 /* --- Pick phase --- */
 
 function PickPhase(props: {
-  filtered: Project[];
+  /** Filtered rows in current rank order — top of list = highest
+   *  priority the scheduler will see. */
+  ordered: Project[];
   eligible: Project[];
   lanesById: Map<string, SwimLane>;
   usersById: Map<string, User>;
@@ -272,17 +362,26 @@ function PickPhase(props: {
   setChecked: (v: Map<string, boolean>) => void;
   locked: Map<string, boolean>;
   setLocked: (v: Map<string, boolean>) => void;
+  /** Rank number (1-based) shown to the user. */
+  rankIndexById: Map<string, number>;
+  onDragEnd: (e: DragEndEvent) => void;
   selectedCount: number;
   lockedCount: number;
   onCancel: () => void;
   onRun: () => void;
 }) {
   const {
-    filtered, eligible, lanesById, usersById, teamsById, users, teams,
+    ordered, eligible, lanesById, usersById, teamsById, users, teams,
     teamFilter, ownerFilter, setTeamFilter, setOwnerFilter,
     checked, setChecked, locked, setLocked,
+    rankIndexById, onDragEnd,
     selectedCount, lockedCount, onCancel, onRun,
   } = props;
+
+  // 4-px activation distance mirrors AdminSettingsView so a slight
+  // click jitter on the drag handle doesn't accidentally start a
+  // drag and hijack the checkbox / lock button below it.
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const toggleTeam = (id: string) => {
     const next = new Set(teamFilter);
@@ -297,12 +396,12 @@ function PickPhase(props: {
 
   const checkAll = () => {
     const next = new Map(checked);
-    for (const p of filtered) next.set(p.id, true);
+    for (const p of ordered) next.set(p.id, true);
     setChecked(next);
   };
   const uncheckAll = () => {
     const next = new Map(checked);
-    for (const p of filtered) next.set(p.id, false);
+    for (const p of ordered) next.set(p.id, false);
     setChecked(next);
   };
 
@@ -310,10 +409,11 @@ function PickPhase(props: {
     <>
       <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
         <p className="text-sm text-wp-slate">
-          Pick the items to include and mark any you want locked (dates won't change). The
-          algorithm respects priority order (swim lane, then position), owner and team
-          capacity, dependencies, and hard deadlines. Unlocked items may shift forward or
-          backward as a unit, but no phase duration or gap will change.
+          Pick the items to include, drag rows by the handle to rank them (top = highest
+          priority), and mark any you want locked (dates won&apos;t change). The scheduler
+          places items in your rank order and respects owner + team capacity, dependencies,
+          and hard deadlines. Unlocked items may shift forward or backward as a unit, but no
+          phase duration or gap will change.
         </p>
 
         {/* Filters */}
@@ -337,9 +437,9 @@ function PickPhase(props: {
         {/* Bulk actions */}
         <div className="flex items-center justify-between text-xs text-wp-slate">
           <div>
-            {selectedCount} of {filtered.length} selected
+            {selectedCount} of {ordered.length} selected
             {lockedCount ? ` · ${lockedCount} locked` : ""}
-            {eligible.length !== filtered.length ? ` · ${eligible.length - filtered.length} filtered out` : ""}
+            {eligible.length !== ordered.length ? ` · ${eligible.length - ordered.length} filtered out` : ""}
           </div>
           <div className="flex items-center gap-2">
             <button className="btn-ghost !py-0.5 !text-xs" onClick={checkAll}>Select all</button>
@@ -349,68 +449,44 @@ function PickPhase(props: {
         </div>
 
         {/* Item list */}
-        {filtered.length === 0 ? (
+        {ordered.length === 0 ? (
           <div className="rounded-md border border-dashed border-wp-stone p-6 text-center text-sm text-wp-slate">
             {eligible.length === 0
               ? "No scheduled items in this workspace yet — add start/target/dev/opt dates first."
               : "No items match the current filter."}
           </div>
         ) : (
-          <ul className="divide-y divide-wp-stone rounded-md border border-wp-stone">
-            {filtered.map((p) => {
-              const lane = p.swim_lane_id ? lanesById.get(p.swim_lane_id) : null;
-              const owner = p.owner_id ? usersById.get(p.owner_id) : null;
-              const teamNames = p.teams
-                .map((tid) => teamsById.get(tid)?.name)
-                .filter(Boolean)
-                .join(", ");
-              const isChecked = checked.get(p.id) !== false;
-              const isLocked = locked.get(p.id) === true;
-              return (
-                <li key={p.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    onChange={(e) => {
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+            <SortableContext items={ordered.map((p) => p.id)} strategy={verticalListSortingStrategy}>
+              <ul className="divide-y divide-wp-stone rounded-md border border-wp-stone">
+                {ordered.map((p) => (
+                  <SortablePickRow
+                    key={p.id}
+                    project={p}
+                    rank={(rankIndexById.get(p.id) ?? 0) + 1}
+                    lane={p.swim_lane_id ? lanesById.get(p.swim_lane_id) ?? null : null}
+                    owner={p.owner_id ? usersById.get(p.owner_id) ?? null : null}
+                    teamNames={p.teams
+                      .map((tid) => teamsById.get(tid)?.name)
+                      .filter(Boolean)
+                      .join(", ")}
+                    isChecked={checked.get(p.id) !== false}
+                    isLocked={locked.get(p.id) === true}
+                    onToggleChecked={(v) => {
                       const next = new Map(checked);
-                      next.set(p.id, e.target.checked);
+                      next.set(p.id, v);
                       setChecked(next);
                     }}
-                    className="h-4 w-4 accent-wp-red"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium text-wp-ink">{p.title}</div>
-                    <div className="mt-0.5 flex items-center gap-2 text-xs text-wp-slate">
-                      {lane ? <span>{lane.name}</span> : null}
-                      {owner ? <span>· {owner.name}</span> : null}
-                      {teamNames ? <span>· {teamNames}</span> : null}
-                      <span className="ml-1 inline-flex items-center gap-1 text-wp-slate/80">
-                        <Calendar size={11} />
-                        {p.start_date} → {p.optimization_end_date}
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition ${
-                      isLocked
-                        ? "border-wp-red bg-wp-red/10 text-wp-red"
-                        : "border-wp-stone bg-white text-wp-slate hover:bg-wp-stone/40"
-                    }`}
-                    onClick={() => {
+                    onToggleLocked={() => {
                       const next = new Map(locked);
-                      next.set(p.id, !isLocked);
+                      next.set(p.id, !(locked.get(p.id) === true));
                       setLocked(next);
                     }}
-                    disabled={!isChecked}
-                    title={isLocked ? "Locked — dates won't change" : "Unlocked — algorithm may shift dates"}
-                  >
-                    {isLocked ? <Lock size={12} /> : <Unlock size={12} />}
-                    {isLocked ? "Locked" : "Unlocked"}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+                  />
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
         )}
       </div>
 
@@ -426,6 +502,86 @@ function PickPhase(props: {
         </button>
       </div>
     </>
+  );
+}
+
+/* --- Sortable row for the pick list --- */
+
+function SortablePickRow(props: {
+  project: Project;
+  rank: number;
+  lane: SwimLane | null;
+  owner: User | null;
+  teamNames: string;
+  isChecked: boolean;
+  isLocked: boolean;
+  onToggleChecked: (v: boolean) => void;
+  onToggleLocked: () => void;
+}) {
+  const {
+    project: p, rank, lane, owner, teamNames,
+    isChecked, isLocked, onToggleChecked, onToggleLocked,
+  } = props;
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: p.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    // Bump the dragged row above its neighbors so the tile floats
+    // clearly during the drag without leaving artifacts behind.
+    zIndex: isDragging ? 10 : undefined,
+    opacity: isDragging ? 0.85 : undefined,
+  };
+  return (
+    <li ref={setNodeRef} style={style} className="flex items-center gap-3 bg-white px-3 py-2 text-sm">
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        aria-label="Drag to rerank"
+        title="Drag to rerank"
+        className="btn-ghost !p-1 cursor-grab touch-none text-wp-slate active:cursor-grabbing"
+      >
+        <GripVertical size={14} />
+      </button>
+      <span
+        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-wp-stone/60 text-[11px] font-semibold text-wp-slate"
+        title="Priority rank"
+      >
+        {rank}
+      </span>
+      <input
+        type="checkbox"
+        checked={isChecked}
+        onChange={(e) => onToggleChecked(e.target.checked)}
+        className="h-4 w-4 accent-wp-red"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium text-wp-ink">{p.title}</div>
+        <div className="mt-0.5 flex items-center gap-2 text-xs text-wp-slate">
+          {lane ? <span>{lane.name}</span> : null}
+          {owner ? <span>· {owner.name}</span> : null}
+          {teamNames ? <span>· {teamNames}</span> : null}
+          <span className="ml-1 inline-flex items-center gap-1 text-wp-slate/80">
+            <Calendar size={11} />
+            {p.start_date} → {p.optimization_end_date}
+          </span>
+        </div>
+      </div>
+      <button
+        className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition ${
+          isLocked
+            ? "border-wp-red bg-wp-red/10 text-wp-red"
+            : "border-wp-stone bg-white text-wp-slate hover:bg-wp-stone/40"
+        }`}
+        onClick={onToggleLocked}
+        disabled={!isChecked}
+        title={isLocked ? "Locked — dates won't change" : "Unlocked — algorithm may shift dates"}
+      >
+        {isLocked ? <Lock size={12} /> : <Unlock size={12} />}
+        {isLocked ? "Locked" : "Unlocked"}
+      </button>
+    </li>
   );
 }
 
