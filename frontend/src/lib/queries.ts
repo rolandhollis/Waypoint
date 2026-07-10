@@ -92,6 +92,21 @@ export function useUsers(enabled = true) {
   });
 }
 
+/**
+ * Users who exist in the DB but have zero group memberships. Used
+ * by the "Unassigned users" section on the Users admin tab so a
+ * PM can rescue an orphaned account that would otherwise be
+ * invisible to every group (yet still hold its email address
+ * against re-creation).
+ */
+export function useUnassignedUsers(enabled = true) {
+  return useQuery({
+    queryKey: ["unassignedUsers"],
+    queryFn: () => api<User[]>("/users/unassigned"),
+    enabled,
+  });
+}
+
 export function useMockRoster(enabled = true) {
   return useQuery({
     queryKey: ["mockRoster"],

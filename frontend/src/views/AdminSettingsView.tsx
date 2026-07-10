@@ -20,6 +20,7 @@ import {
   useProjects,
   useSwimLanes,
   useTeams,
+  useUnassignedUsers,
   useUsers,
 } from "../lib/queries";
 import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, User } from "../lib/types";
@@ -873,11 +874,16 @@ function UsersAdmin() {
         ))}
       </ul>
 
+      <UnassignedUsersPanel />
+
       {creating ? (
         <NewUserDialog
           isPasswordMode={isPasswordMode}
           onClose={() => setCreating(false)}
-          onCreated={() => qc.invalidateQueries({ queryKey: ["users"] })}
+          onCreated={() => {
+            qc.invalidateQueries({ queryKey: ["users"] });
+            qc.invalidateQueries({ queryKey: ["unassignedUsers"] });
+          }}
         />
       ) : null}
       {resettingUser ? (
@@ -888,6 +894,104 @@ function UsersAdmin() {
         />
       ) : null}
     </section>
+  );
+}
+
+// -----------------------------------------------------------------
+// Unassigned users — rescue orphaned accounts that have no
+// group memberships (would otherwise be invisible to every admin
+// yet still hold their email against re-creation). Shows up on
+// the Users tab so the discovery path is the same as the one that
+// triggered the confusion in the first place ("I tried to invite
+// someone and it said the email exists — where are they?").
+// -----------------------------------------------------------------
+
+function UnassignedUsersPanel() {
+  const unassigned = useUnassignedUsers();
+  const me = useMe();
+  const qc = useQueryClient();
+  // Per-row role selection. Defaults to "owner" — matches the
+  // default role in NewUserDialog so this feels like the same
+  // "add someone" affordance.
+  const [roleById, setRoleById] = useState<Map<string, Role>>(() => new Map());
+
+  const currentGroupName = me.data?.memberships?.find(
+    (m) => m.group_id === me.data?.current_group_id,
+  )?.name;
+
+  const add = useMutation({
+    mutationFn: (v: { id: string; role: Role }) =>
+      api<{ user: User; role: Role }>(`/users/${v.id}/groups`, {
+        method: "POST",
+        body: JSON.stringify({ role: v.role }),
+      }),
+    onSuccess: () => {
+      // Both lists move: the rescued user leaves `unassignedUsers`
+      // and joins the group-scoped `users` roster in the same tick.
+      qc.invalidateQueries({ queryKey: ["unassignedUsers"] });
+      qc.invalidateQueries({ queryKey: ["users"] });
+    },
+  });
+
+  // Nothing to show if the query hasn't loaded yet OR there are
+  // legitimately zero orphans — keep the panel out of the DOM in
+  // that case so it doesn't clutter the usual (healthy) tab.
+  if (!unassigned.data || unassigned.data.length === 0) return null;
+
+  return (
+    <div className="mt-6 rounded-md border border-amber-300 bg-amber-50/50 p-4">
+      <h3 className="text-sm font-semibold text-amber-900">
+        Unassigned users ({unassigned.data.length})
+      </h3>
+      <p className="mt-0.5 text-xs text-amber-900/80">
+        These accounts exist but aren&apos;t members of any group, so they can&apos;t sign in or be
+        assigned as owners. Add them to <strong>{currentGroupName ?? "the current group"}</strong> to
+        make them usable here.
+      </p>
+
+      <MutationErrorBanner mutation={add} className="mt-3" />
+
+      <ul className="mt-3 divide-y divide-amber-200/70">
+        {unassigned.data.map((u) => {
+          const role = roleById.get(u.id) ?? "owner";
+          return (
+            <li key={u.id} className="flex items-center gap-3 py-2">
+              <span
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+                style={{ background: u.color }}
+              >
+                {u.name.split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("")}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium text-wp-ink">{u.name}</div>
+                <div className="text-xs text-wp-slate">{u.email}</div>
+              </div>
+              <select
+                className="input w-28"
+                value={role}
+                onChange={(e) => {
+                  const next = new Map(roleById);
+                  next.set(u.id, e.target.value as Role);
+                  setRoleById(next);
+                }}
+              >
+                <option value="admin">admin</option>
+                <option value="owner">owner</option>
+                <option value="viewer">viewer</option>
+              </select>
+              <button
+                type="button"
+                className="btn-primary text-xs"
+                disabled={add.isPending}
+                onClick={() => add.mutate({ id: u.id, role })}
+              >
+                Add to {currentGroupName ?? "group"}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

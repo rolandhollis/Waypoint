@@ -174,6 +174,71 @@ async function assertTargetInGroup(req: Request, _res: Response, next: NextFunct
   next();
 }
 
+// -----------------------------------------------------------------
+// Orphaned-user rescue.
+//
+// Users can end up with zero user_groups rows through a few paths
+// (imported from a pre-multi-tenant seed, created before the
+// membership grant landed, or explicitly removed from every group
+// they were once in). The group-scoped roster hides them, but the
+// unique email constraint still blocks re-creation — so an admin
+// trying to invite someone gets "email already exists" with no way
+// to fix it. This endpoint surfaces those orphans so any admin can
+// adopt them into their current group.
+//
+// Deliberately NOT scoped to any group (there IS no group to scope
+// to — that's the whole point). Super-users are excluded from the
+// list because they're implicit members of every group and would
+// never actually be inaccessible.
+// -----------------------------------------------------------------
+
+usersRouter.get("/unassigned", requireAdmin, async (_req, res) => {
+  const { rows } = await query<UserRow>(
+    `SELECT u.*
+       FROM users u
+      WHERE u.is_super_user = FALSE
+        AND NOT EXISTS (SELECT 1 FROM user_groups WHERE user_id = u.id)
+      ORDER BY u.name ASC`,
+  );
+  res.json(scrubUsers(rows));
+});
+
+// Add a user to the caller's current group. Used by the
+// "Unassigned users" list in the admin tab, but generic enough
+// that a super-admin could also use it to adopt a user from
+// another tenant into the current one. Idempotent: if the user is
+// already a member, we just update their role (matches the
+// ON CONFLICT semantics of the create-user membership grant).
+const addToGroupSchema = z.object({
+  role: z.enum(["admin", "owner", "viewer"]).optional().default("owner"),
+});
+usersRouter.post("/:id/groups", groupScope, requireAdmin, async (req, res) => {
+  const userId = String(req.params.id);
+  const { role } = addToGroupSchema.parse(req.body);
+
+  const { rows: existingRows } = await query<UserRow>(
+    `SELECT * FROM users WHERE id = $1`,
+    [userId],
+  );
+  const existing = existingRows[0];
+  if (!existing) throw new HttpError(404, "user not found");
+
+  // Super-users are already implicit members of every group; adding
+  // an explicit row would be a no-op and misleading in the UI.
+  if (existing.is_super_user) {
+    throw new HttpError(400, "super-users are implicit members of every group");
+  }
+
+  await query(
+    `INSERT INTO user_groups (user_id, group_id, role)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, group_id) DO UPDATE SET role = EXCLUDED.role`,
+    [userId, req.groupId!, role],
+  );
+
+  res.status(201).json({ user: scrubUser(existing), role });
+});
+
 // Mock-mode roster for the dev user switcher — no auth required so the
 // frontend can populate the picker on first paint. Password-mode
 // installs should NOT expose this (index.ts already gates the mount).
@@ -267,7 +332,29 @@ usersRouter.post("/", groupScope, requireAdmin, async (req, res) => {
     });
   } catch (err: unknown) {
     if (isUniqueViolation(err)) {
-      throw new HttpError(409, "a user with that email already exists");
+      // Explain the two ways this can happen so the admin knows
+      // whether to look in another group or in the Unassigned
+      // list on this tab.
+      const { rows: existingRows } = await query<{
+        has_group_here: boolean;
+        group_count: number;
+      }>(
+        `SELECT
+           EXISTS(SELECT 1 FROM user_groups ug
+                   WHERE ug.user_id = u.id AND ug.group_id = $2) AS has_group_here,
+           (SELECT count(*)::int FROM user_groups ug2 WHERE ug2.user_id = u.id) AS group_count
+         FROM users u WHERE lower(u.email) = lower($1)`,
+        [body.email, req.groupId!],
+      );
+      const existing = existingRows[0];
+      const detail = !existing
+        ? "a user with that email already exists"
+        : existing.has_group_here
+        ? "a user with that email already exists in this group"
+        : existing.group_count === 0
+        ? "a user with that email already exists but isn't in any group — see the Unassigned users list below to add them here"
+        : "a user with that email already exists in another group";
+      throw new HttpError(409, detail);
     }
     throw err;
   }
