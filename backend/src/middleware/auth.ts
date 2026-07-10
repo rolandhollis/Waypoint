@@ -86,15 +86,19 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
         res.status(401).json({ error: "not authenticated" });
         return;
       }
-      const user = await findSessionUser(sessionId);
-      if (!user) {
+      const found = await findSessionUser(sessionId);
+      if (!found) {
         res.status(401).json({ error: "session expired" });
         return;
       }
-      // Fire-and-forget touch so the request path stays fast. If the
-      // update fails the next request retries; no user-visible effect.
-      touchSession(sessionId).catch((err) => console.error("touchSession failed", err));
-      req.user = user;
+      // Fire-and-forget touch so the request path stays fast. Passes
+      // the session's own remember_me flag through so the expiry
+      // slides forward by the correct TTL — a 30-day remember-me
+      // session shouldn't get downgraded to 7 days on every hit.
+      touchSession(sessionId, found.session.remember_me).catch((err) =>
+        console.error("touchSession failed", err),
+      );
+      req.user = found.user;
       next();
       return;
     }

@@ -9,7 +9,7 @@ import {
   deleteSession,
   readSessionCookie,
   setSessionCookie,
-  SESSION_TTL_MS,
+  ttlFor,
 } from "../auth/session.js";
 import type { UserRow } from "../types.js";
 
@@ -57,6 +57,10 @@ function clearFailures(key: string): void {
 const loginSchema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(1).max(256),
+  // Opt-in persistent session. Default false so the standard 7-day
+  // sliding session applies; true flips to the 30-day TTL for both
+  // the DB row and the cookie's Max-Age.
+  remember_me: z.boolean().optional().default(false),
 });
 
 /**
@@ -71,7 +75,7 @@ authRouter.post("/login", async (req, res) => {
     return;
   }
 
-  const { email, password } = loginSchema.parse(req.body);
+  const { email, password, remember_me: rememberMe } = loginSchema.parse(req.body);
   const key = email.toLowerCase();
 
   if (isLocked(key)) {
@@ -99,12 +103,12 @@ authRouter.post("/login", async (req, res) => {
 
   clearFailures(key);
   const ua = req.header("user-agent") ?? null;
-  const session = await createSession(user.id, ua);
-  setSessionCookie(res, session.id);
+  const session = await createSession(user.id, ua, rememberMe);
+  setSessionCookie(res, session.id, rememberMe);
 
   // Never echo the password_hash to the client.
   const { password_hash: _ph, ...safe } = user;
-  res.json({ user: safe, expiresInMs: SESSION_TTL_MS });
+  res.json({ user: safe, expiresInMs: ttlFor(rememberMe) });
 });
 
 /**

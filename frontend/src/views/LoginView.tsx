@@ -15,12 +15,16 @@ export function LoginView() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [visible, setVisible] = useState(false);
+  // Persists across page reloads so an unchecked box on the previous
+  // login doesn't secretly become checked next time. Defaults off so
+  // shared machines don't inherit a 30-day cookie by surprise.
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const qc = useQueryClient();
   const navigate = useNavigate();
 
   const login = useMutation({
-    mutationFn: (input: { email: string; password: string }) =>
+    mutationFn: (input: { email: string; password: string; remember_me: boolean }) =>
       api<{ user: User }>("/auth/login", {
         method: "POST",
         body: JSON.stringify(input),
@@ -46,7 +50,7 @@ export function LoginView() {
   function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    login.mutate({ email: email.trim(), password });
+    login.mutate({ email: email.trim(), password, remember_me: rememberMe });
   }
 
   const canSubmit = email.trim().length > 0 && password.length > 0 && !login.isPending;
@@ -103,6 +107,16 @@ export function LoginView() {
             </button>
           </div>
         </div>
+
+        <label className="flex items-center gap-2 text-xs text-wp-slate">
+          <input
+            type="checkbox"
+            checked={rememberMe}
+            onChange={(e) => setRememberMe(e.target.checked)}
+            className="h-4 w-4 accent-wp-red"
+          />
+          Remember me for 30 days
+        </label>
 
         {error ? (
           <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
