@@ -435,23 +435,47 @@ usersRouter.patch("/:id", groupScope, requireAdmin, assertTargetInGroup, async (
     return;
   }
   values.push(req.params.id);
-  const { rows } = await query<UserRow>(
-    `UPDATE users SET ${sets.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
-    values,
-  );
-  if (!rows[0]) throw new HttpError(404, "user not found");
-  res.json(scrubUser(rows[0]));
+  const updated = await withTransaction(async (client) => {
+    const { rows } = await client.query<UserRow>(
+      `UPDATE users SET ${sets.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+      values,
+    );
+    if (!rows[0]) throw new HttpError(404, "user not found");
+    // Keep the per-group role in sync with the "global" one when a
+    // role change came through: everything downstream (useIsAdmin,
+    // useCanWrite, requireAdmin) reads the per-group role, so if we
+    // only touched users.role the admin would still look like an
+    // owner in this tenant. Only touches the CURRENT group's
+    // membership — cross-tenant role management stays a super-admin
+    // concern via the groups router.
+    if (body.role !== undefined) {
+      await client.query(
+        `UPDATE user_groups SET role = $1 WHERE user_id = $2 AND group_id = $3`,
+        [body.role, req.params.id, req.groupId!],
+      );
+    }
+    return rows[0]!;
+  });
+  res.json(scrubUser(updated));
 });
 
 // Back-compat wrapper: /users/:id/role → /users/:id { role }.
 usersRouter.patch("/:id/role", groupScope, requireAdmin, assertTargetInGroup, async (req, res) => {
   const body = z.object({ role: roleEnum }).parse(req.body);
-  const { rows } = await query<UserRow>(
-    `UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
-    [body.role, req.params.id],
-  );
-  if (!rows[0]) throw new HttpError(404, "user not found");
-  res.json(scrubUser(rows[0]));
+  const updated = await withTransaction(async (client) => {
+    const { rows } = await client.query<UserRow>(
+      `UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
+      [body.role, req.params.id],
+    );
+    if (!rows[0]) throw new HttpError(404, "user not found");
+    // See PATCH /:id above for why this second write is required.
+    await client.query(
+      `UPDATE user_groups SET role = $1 WHERE user_id = $2 AND group_id = $3`,
+      [body.role, req.params.id, req.groupId!],
+    );
+    return rows[0]!;
+  });
+  res.json(scrubUser(updated));
 });
 
 // -----------------------------------------------------------------
