@@ -48,6 +48,7 @@ const AUDITED_FIELDS = [
   "dev_end_date",
   "optimization_start_date",
   "optimization_end_date",
+  "excluded_from_capacity",
 ] as const;
 type AuditedField = (typeof AUDITED_FIELDS)[number];
 
@@ -492,6 +493,13 @@ const projectBaseSchema = z.object({
   dev_end_date: z.string().nullable().optional(),
   optimization_start_date: z.string().nullable().optional(),
   optimization_end_date: z.string().nullable().optional(),
+  /**
+   * Per-item opt-out from capacity planning. When true this row is
+   * skipped in the overload sweep and in the auto-scheduler; the
+   * bar still draws on the roadmap. Default false at the DB level
+   * so omitting the field on create means "counts."
+   */
+  excluded_from_capacity: z.boolean().optional(),
 });
 
 /** Column names that live on the `projects` table itself (i.e. what the
@@ -502,6 +510,7 @@ const PROJECT_COLUMN_KEYS = [
   "type", "parent_id",
   "start_date", "target_date", "dev_start_date", "dev_end_date",
   "optimization_start_date", "optimization_end_date",
+  "excluded_from_capacity",
 ] as const;
 
 const listSchema = z.object({
@@ -597,8 +606,9 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
          (group_id, title, description, swim_lane_id, position, owner_id, tags,
           type, parent_id,
           start_date, target_date, dev_start_date, dev_end_date,
-          optimization_start_date, optimization_end_date, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+          optimization_start_date, optimization_end_date,
+          excluded_from_capacity, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
       [
         groupId,
         body.title,
@@ -615,6 +625,7 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
         body.dev_end_date ?? null,
         body.optimization_start_date ?? null,
         body.optimization_end_date ?? null,
+        body.excluded_from_capacity ?? false,
         req.user!.id,
       ],
     );

@@ -247,12 +247,12 @@ function overloadRange(
   return { from: first, to: last, peak };
 }
 
-/* --- Root-project counting rule (mirrors capacity.ts) --- */
+/* --- Capacity-counting rule (mirrors capacity.ts) --- */
 
 function countsForCapacity(p: Project): boolean {
   if (p.deleted_at) return false;
   if (!p.start_date || !p.optimization_end_date) return false;
-  if (p.parent_id) return false;
+  if (p.excluded_from_capacity) return false;
   return true;
 }
 

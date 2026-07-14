@@ -212,6 +212,14 @@ export type Project = {
   optimization_start_date: string | null;
   optimization_end_date: string | null;
   actual_completion_date: string | null;
+  /**
+   * Per-item opt-out from capacity planning. When true this row is
+   * skipped in both the roadmap overload sweep and the
+   * auto-scheduler; the bar still draws on the roadmap so viewers
+   * can still see the scheduled work. Controlled by the checkbox
+   * in the detail panel / new-item dialog.
+   */
+  excluded_from_capacity: boolean;
   deleted_at: string | null;
   created_by: string | null;
   created_at: string;

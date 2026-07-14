@@ -327,6 +327,27 @@ export function ProjectDetailPanel({
                   disabled={!canWrite || !eff.target}
                 />
               </Field>
+              <Field
+                label="Capacity planning"
+                className="col-span-2"
+                hint="On by default. Uncheck for placeholder work, tracking-only items, or subtasks that share load with a parent you're already counting."
+              >
+                <label className="flex cursor-pointer items-start gap-2 text-sm text-wp-ink">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4 accent-wp-red"
+                    disabled={!canWrite}
+                    checked={!merged.excluded_from_capacity}
+                    onChange={(e) => setDraft((d) => ({
+                      ...d,
+                      excluded_from_capacity: !e.target.checked,
+                    }))}
+                  />
+                  <span>
+                    Count this item against owner &amp; team capacity
+                  </span>
+                </label>
+              </Field>
             </div>
 
             <Field label="Description" className="mt-4">
@@ -798,6 +819,7 @@ const FIELD_LABELS: Record<string, string> = {
   optimization_start_date: "post-dev start",
   optimization_end_date: "post-dev end",
   swim_lane_id: "swim lane",
+  excluded_from_capacity: "capacity opt-out",
 };
 
 function isBlank(v: unknown): boolean {

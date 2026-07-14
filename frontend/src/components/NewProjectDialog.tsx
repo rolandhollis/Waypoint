@@ -40,6 +40,10 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
   // initiative). Flipping to "subtask" reveals the parent picker.
   const [type, setType] = useState<ProjectType>("epic");
   const [parentId, setParentId] = useState<string | null>(null);
+  // New items count toward capacity by default; PM can toggle this
+  // off pre-create when they know the item is a placeholder or a
+  // subtask whose load is already tracked on the parent.
+  const [countsForCapacity, setCountsForCapacity] = useState(true);
 
   // Resolve the landing lane the same way the backend does, so the
   // "New items land in X" hint matches reality.
@@ -77,6 +81,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
           teams: teamIds,
           type,
           parent_id: type === "subtask" ? parentId : null,
+          excluded_from_capacity: !countsForCapacity,
           ...dates,
         }),
       });
@@ -93,10 +98,11 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
     && !create.isPending;
 
   // Preview the capacity impact of this pending create. Build a fake
-  // Project row that mirrors what the backend will insert (leaf-only
-  // counting excludes it if type='epic' but we still preview since
-  // the *dates* + entities are what matters). Uses effectiveDates so
-  // implicit-default dates are treated as if they were persisted.
+  // Project row that mirrors what the backend will insert so the
+  // sweep sees the same entities, dates, and opt-out state the DB
+  // row will hold on save. Uses effectiveDates so implicit-default
+  // dates (which get filled in on submit) are treated as if they
+  // were already persisted.
   const draftOverloads = useMemo(() => {
     const preview: Project = {
       id: "__draft__",
@@ -121,6 +127,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
       optimization_start_date: eff.optStart,
       optimization_end_date: eff.optEnd,
       actual_completion_date: null,
+      excluded_from_capacity: !countsForCapacity,
       deleted_at: null,
       created_by: me.data?.id ?? null,
       created_at: new Date().toISOString(),
@@ -128,7 +135,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
     };
     const all = computeOverloads(projects.data ?? [], users.data ?? [], teams.data ?? [], preview);
     return overloadsForProject(all, preview);
-  }, [title, description, resolvedLane?.id, ownerId, teamIds, type, parentId, eff, merged.start_date, me.data?.id, projects.data, users.data, teams.data]);
+  }, [title, description, resolvedLane?.id, ownerId, teamIds, type, parentId, countsForCapacity, eff, merged.start_date, me.data?.id, projects.data, users.data, teams.data]);
 
   return (
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -282,6 +289,24 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
                   />
                 </PhaseField>
               </div>
+            </div>
+
+            <div className="border-t border-wp-stone/60 pt-3">
+              <p className="text-xs font-medium text-wp-slate">Capacity planning</p>
+              <label className="mt-1.5 flex cursor-pointer items-start gap-2 text-sm text-wp-ink">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 accent-wp-red"
+                  checked={countsForCapacity}
+                  onChange={(e) => setCountsForCapacity(e.target.checked)}
+                />
+                <span>
+                  Count this item against owner &amp; team capacity
+                  <span className="ml-1 text-xs text-wp-slate/80">
+                    (uncheck for placeholders or subtasks tracked elsewhere)
+                  </span>
+                </span>
+              </label>
             </div>
           </div>
 

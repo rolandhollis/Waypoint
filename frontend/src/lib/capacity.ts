@@ -6,20 +6,21 @@ import type { Project, Team, User } from "./types";
  * A project counts against an entity (owner user or member team) on
  * every calendar day covered by its roadmap bar — start_date through
  * optimization_end_date, matching what the Roadmap draws. Only
- * "scheduled" projects (all four phase dates set) count.
+ * "scheduled" projects (start_date + at least one end date set)
+ * count.
  *
- * COUNTING RULE — only **root** projects count (`parent_id === null`,
- * which equals `type === 'epic'` today). Rationale:
- *   • The Roadmap default view shows exactly the root rows;
- *     subtasks are hidden until an epic is expanded. So counting
- *     roots matches what a PM literally sees on screen — no more
- *     "I see 4 concurrent epics but the cap says I'm fine."
- *   • Epics own the umbrella; subtasks are usually delegated
- *     implementation work whose load is tracked elsewhere. Counting
- *     the epic against its owner captures the "on-the-hook" load
- *     that matters for capacity planning.
- *   • Avoids double-counting when an epic + its subtasks all share
- *     the same owner (common) or the same team (very common).
+ * COUNTING RULE — every scheduled item counts by default (both epics
+ * and subtasks). PMs opt individual items out by checking
+ * "exclude from capacity planning" in the detail panel; those rows
+ * are dropped from the sweep. Rationale:
+ *   • Previous rule silently excluded every subtask ("only roots
+ *     count"), which hid genuine load when a subtask had its own
+ *     owner/team distinct from the epic.
+ *   • Explicit opt-out means the PM controls the shape of the load
+ *     view instead of the model quietly deciding for them.
+ *   • Double-counting risk (epic + its subtasks share the same
+ *     owner) is now the PM's call: exclude the epic OR the
+ *     subtasks, whichever mental model fits the team.
  *
  * The result is a list of [from, to] date intervals per entity where
  * the concurrent-project count strictly exceeds the entity's cap. A
@@ -56,14 +57,14 @@ export function projectSpan(p: Project): { start: string; end: string } | null {
 
 /**
  * Returns true if project `p` should count against capacity — i.e.
- * it's a scheduled root (no parent). Deleted rows never count. See
- * the module-level doc-comment for the reasoning behind counting
- * roots rather than leaves or every node.
+ * it's a scheduled item the PM hasn't explicitly excluded. Deleted
+ * rows never count. See the module-level doc-comment for the
+ * "everything counts unless opted out" model.
  */
 export function countsForCapacity(p: Project): boolean {
   if (p.deleted_at) return false;
   if (!projectSpan(p)) return false;
-  if (p.parent_id) return false;
+  if (p.excluded_from_capacity) return false;
   return true;
 }
 

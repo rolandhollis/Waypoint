@@ -201,6 +201,14 @@ export type ProjectRow = {
   optimization_start_date: string | null;
   optimization_end_date: string | null;
   actual_completion_date: string | null;
+  /**
+   * Per-item opt-out from capacity planning. When true, this
+   * project is skipped in both the roadmap overload sweep and the
+   * auto-scheduler regardless of who owns it. Default false —
+   * everything counts by default; toggled by the checkbox in the
+   * detail panel / new-item dialog.
+   */
+  excluded_from_capacity: boolean;
   deleted_at: Date | null;
   created_by: string | null;
   created_at: Date;
