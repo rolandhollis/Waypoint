@@ -227,6 +227,14 @@ export type Project = {
    * in the detail panel / new-item dialog.
    */
   excluded_from_capacity: boolean;
+  /**
+   * PM flag: has an engineer signed off on the dev-phase estimate?
+   * Default false — new rows are provisional until dev confirms.
+   * When false, the roadmap draws the dev bar segment with a
+   * distinctive dashed outline so viewers can tell at a glance
+   * which parts of the timeline are still best-guesses.
+   */
+  dev_estimate_sourced_by_dev: boolean;
   deleted_at: string | null;
   created_by: string | null;
   created_at: string;

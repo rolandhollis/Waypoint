@@ -44,6 +44,10 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
   // off pre-create when they know the item is a placeholder or a
   // subtask whose load is already tracked on the parent.
   const [countsForCapacity, setCountsForCapacity] = useState(true);
+  // Dev estimate is unconfirmed by default — PMs opt in only when
+  // an engineer has actually sized the work. The roadmap draws the
+  // dev segment with a dashed outline while this stays false.
+  const [devEstimateConfirmed, setDevEstimateConfirmed] = useState(false);
 
   // Resolve the landing lane the same way the backend does, so the
   // "New items land in X" hint matches reality.
@@ -82,6 +86,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
           type,
           parent_id: type === "subtask" ? parentId : null,
           excluded_from_capacity: !countsForCapacity,
+          dev_estimate_sourced_by_dev: devEstimateConfirmed,
           ...dates,
         }),
       });
@@ -128,6 +133,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
       optimization_end_date: eff.optEnd,
       actual_completion_date: null,
       excluded_from_capacity: !countsForCapacity,
+      dev_estimate_sourced_by_dev: devEstimateConfirmed,
       deleted_at: null,
       created_by: me.data?.id ?? null,
       created_at: new Date().toISOString(),
@@ -270,6 +276,20 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
                     onEndChange={(v) => setDate("dev_end_date", v)}
                     disabled={!eff.target}
                   />
+                  <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-wp-ink">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-3.5 w-3.5 accent-wp-red"
+                      checked={devEstimateConfirmed}
+                      onChange={(e) => setDevEstimateConfirmed(e.target.checked)}
+                    />
+                    <span>
+                      Dev estimate confirmed by engineering
+                      <span className="ml-1 text-wp-slate/80">
+                        (unconfirmed dev segments show a dashed outline on the roadmap)
+                      </span>
+                    </span>
+                  </label>
                 </PhaseField>
 
                 <PhaseField

@@ -824,6 +824,24 @@ Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.e
         ) : null}
         <rect x={devX} y={barY} width={devW} height={barH} fill={base} fillOpacity={0.55} rx={3} />
         <rect x={devX} y={barY} width={devW} height={barH} fill="url(#phase-hatch)" rx={3} />
+        {/* Unconfirmed dev estimate — dashed amber outline signals
+            that the segment's timing is a PM best-guess pending
+            engineering sign-off. Rendered above the fill layers so
+            the dashes stay legible against the hatched color. */}
+        {!p.dev_estimate_sourced_by_dev ? (
+          <rect
+            x={devX + 0.5}
+            y={barY + 0.5}
+            width={Math.max(0, devW - 1)}
+            height={barH - 1}
+            rx={3}
+            fill="none"
+            stroke="#f59e0b"
+            strokeWidth={1.5}
+            strokeDasharray="4 3"
+            pointerEvents="none"
+          />
+        ) : null}
         {optGap ? (
           <g>
             <rect x={optGapX} y={barY + barH / 2 - 2} width={optGapW} height={4} fill="#CBD5E1" rx={2} />

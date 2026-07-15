@@ -313,6 +313,24 @@ export function ProjectDetailPanel({
                   onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, dev_end_date: v }, project))}
                   disabled={!canWrite || !eff.target}
                 />
+                <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-wp-ink">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-3.5 w-3.5 accent-wp-red"
+                    disabled={!canWrite}
+                    checked={!!merged.dev_estimate_sourced_by_dev}
+                    onChange={(e) => setDraft((d) => ({
+                      ...d,
+                      dev_estimate_sourced_by_dev: e.target.checked,
+                    }))}
+                  />
+                  <span>
+                    Dev estimate confirmed by engineering
+                    <span className="ml-1 text-wp-slate/80">
+                      (until checked, the roadmap draws this segment with a dashed outline)
+                    </span>
+                  </span>
+                </label>
               </Field>
               <Field label="Post-Dev Optimization" className="col-span-2" hint={!eff.target ? "Set Discovery ‘Ready for dev’ first — Post-Dev cascades from there." : undefined}>
                 <PairedDates
@@ -820,6 +838,7 @@ const FIELD_LABELS: Record<string, string> = {
   optimization_end_date: "post-dev end",
   swim_lane_id: "swim lane",
   excluded_from_capacity: "capacity opt-out",
+  dev_estimate_sourced_by_dev: "dev estimate confirmed",
 };
 
 function isBlank(v: unknown): boolean {

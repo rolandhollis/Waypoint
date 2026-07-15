@@ -216,6 +216,13 @@ export type ProjectRow = {
    * detail panel / new-item dialog.
    */
   excluded_from_capacity: boolean;
+  /**
+   * PM flag: has the dev-phase estimate been vetted by an engineer?
+   * Default false — old rows carry no confirmation, new rows are
+   * created as unconfirmed until a PM flips the checkbox on the
+   * detail panel.
+   */
+  dev_estimate_sourced_by_dev: boolean;
   deleted_at: Date | null;
   created_by: string | null;
   created_at: Date;

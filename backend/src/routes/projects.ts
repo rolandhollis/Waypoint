@@ -49,6 +49,7 @@ const AUDITED_FIELDS = [
   "optimization_start_date",
   "optimization_end_date",
   "excluded_from_capacity",
+  "dev_estimate_sourced_by_dev",
 ] as const;
 type AuditedField = (typeof AUDITED_FIELDS)[number];
 
@@ -500,6 +501,13 @@ const projectBaseSchema = z.object({
    * so omitting the field on create means "counts."
    */
   excluded_from_capacity: z.boolean().optional(),
+  /**
+   * PM's flag: has the dev-phase estimate been vetted by an
+   * engineer? Default false at the DB level; roadmap renders
+   * unconfirmed dev segments with a dashed outline so viewers
+   * can spot provisional timing at a glance.
+   */
+  dev_estimate_sourced_by_dev: z.boolean().optional(),
 });
 
 /** Column names that live on the `projects` table itself (i.e. what the
@@ -511,6 +519,7 @@ const PROJECT_COLUMN_KEYS = [
   "start_date", "target_date", "dev_start_date", "dev_end_date",
   "optimization_start_date", "optimization_end_date",
   "excluded_from_capacity",
+  "dev_estimate_sourced_by_dev",
 ] as const;
 
 const listSchema = z.object({
@@ -607,8 +616,8 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
           type, parent_id,
           start_date, target_date, dev_start_date, dev_end_date,
           optimization_start_date, optimization_end_date,
-          excluded_from_capacity, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+          excluded_from_capacity, dev_estimate_sourced_by_dev, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
       [
         groupId,
         body.title,
@@ -626,6 +635,7 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
         body.optimization_start_date ?? null,
         body.optimization_end_date ?? null,
         body.excluded_from_capacity ?? false,
+        body.dev_estimate_sourced_by_dev ?? false,
         req.user!.id,
       ],
     );
