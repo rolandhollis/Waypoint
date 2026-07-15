@@ -138,6 +138,24 @@ export async function deleteSessionsForUser(userId: string): Promise<void> {
   await query(`DELETE FROM user_sessions WHERE user_id = $1`, [userId]);
 }
 
+/**
+ * Revoke every session for this user EXCEPT the one whose id is
+ * `keepSessionId`. Used by the self-serve password change flow so
+ * the caller stays signed in on the device they just made the
+ * change from, but any other active session (another browser,
+ * a phone) gets bounced — matching what people expect from a
+ * password change.
+ */
+export async function deleteOtherSessionsForUser(
+  userId: string,
+  keepSessionId: string,
+): Promise<void> {
+  await query(
+    `DELETE FROM user_sessions WHERE user_id = $1 AND id <> $2`,
+    [userId, keepSessionId],
+  );
+}
+
 // -----------------------------------------------------------------
 // Cookie helpers
 // -----------------------------------------------------------------

@@ -11,7 +11,8 @@ import {
   hashPassword,
   validatePassword,
 } from "../auth/password.js";
-import { deleteSessionsForUser } from "../auth/session.js";
+import { deleteOtherSessionsForUser, deleteSessionsForUser } from "../auth/session.js";
+import { verifyPassword } from "../auth/password.js";
 import type { Role, UserRow } from "../types.js";
 import { scrubUser, scrubUsers } from "../types.js";
 
@@ -116,6 +117,114 @@ usersRouter.patch("/me/prefs", async (req, res) => {
     `UPDATE users SET prefs = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
     [JSON.stringify(merged), req.user!.id],
   );
+  res.json(scrubUser(rows[0]!));
+});
+
+/**
+ * Self-serve profile edit. Any authenticated user can update their
+ * OWN display name and avatar color — the two things they see on
+ * every page but couldn't previously change themselves. Everything
+ * more sensitive (role, capacity, group memberships, is_super_user)
+ * stays admin-controlled and lives on the admin PATCH endpoints.
+ * Password is handled by its own route below so the current-password
+ * check has a clean home.
+ */
+const patchMeSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  color: z
+    .string()
+    // Accept plain 6-digit hex with or without the leading '#' — matches
+    // the palette the admin UI emits.
+    .regex(/^#?[0-9a-fA-F]{6}$/)
+    .transform((v) => (v.startsWith("#") ? v : `#${v}`))
+    .optional(),
+});
+
+usersRouter.patch("/me", async (req, res) => {
+  const body = patchMeSchema.parse(req.body);
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  for (const [k, v] of Object.entries(body)) {
+    if (v === undefined) continue;
+    values.push(v);
+    sets.push(`${k} = $${values.length}`);
+  }
+  if (!sets.length) {
+    // No-op update — return the pre-loaded row so the client still
+    // gets a fresh envelope back and doesn't have to special-case
+    // empty saves.
+    res.json(scrubUser(req.user!));
+    return;
+  }
+  values.push(req.user!.id);
+  const { rows } = await query<UserRow>(
+    `UPDATE users SET ${sets.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+    values,
+  );
+  res.json(scrubUser(rows[0]!));
+});
+
+/**
+ * Self-serve password change. Requires the current password (so a
+ * stolen live session can't rotate the credential without at least
+ * knowing the old one) and applies the standard password policy to
+ * the new value. On success, every OTHER session for this user is
+ * revoked — the caller stays signed in on the device they made the
+ * change from, but a stray session on a phone or another browser
+ * gets bounced. Mirrors what people expect from "you changed your
+ * password everywhere else got kicked out."
+ */
+const changePasswordSchema = z.object({
+  current_password: z.string().min(1).max(256),
+  new_password: z.string().min(1).max(256),
+});
+
+usersRouter.post("/me/password", async (req, res) => {
+  if (config.authMode !== "password") {
+    throw new HttpError(400, "auth mode does not use passwords");
+  }
+  const body = changePasswordSchema.parse(req.body);
+  const user = req.user!;
+
+  const ok = await verifyPassword(body.current_password, user.password_hash);
+  if (!ok) {
+    throw new HttpError(400, "current password is incorrect");
+  }
+  // Guard against "new === old" — the policy allows the same
+  // string but there's no point paying the bcrypt cost for a no-op
+  // and it's a common user mistake we can flag helpfully.
+  if (body.current_password === body.new_password) {
+    throw new HttpError(400, "new password must be different from current password");
+  }
+
+  const errs = validatePassword(body.new_password, user.email);
+  if (errs.length) {
+    throw new HttpError(400, `password ${formatPasswordErrors(errs).join("; ")}`);
+  }
+
+  const password_hash = await hashPassword(body.new_password);
+  const { rows } = await query<UserRow>(
+    `UPDATE users
+        SET password_hash = $1,
+            password_updated_at = NOW(),
+            updated_at = NOW()
+      WHERE id = $2
+      RETURNING *`,
+    [password_hash, user.id],
+  );
+
+  // Revoke every OTHER session — this one stays live so the user
+  // doesn't get bounced from the browser tab they just made the
+  // change in. If sessionId is somehow missing (shouldn't happen in
+  // password mode) fall back to nuking every session, since being
+  // over-cautious is preferable to leaving stale ones alive after
+  // a credential rotation.
+  if (req.sessionId) {
+    await deleteOtherSessionsForUser(user.id, req.sessionId);
+  } else {
+    await deleteSessionsForUser(user.id);
+  }
+
   res.json(scrubUser(rows[0]!));
 });
 

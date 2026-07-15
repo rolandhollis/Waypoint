@@ -24,6 +24,13 @@ declare global {
        * that field is only preserved for backfill history.
        */
       userGroupRole?: Role;
+      /**
+       * Session id backing the current request in password mode.
+       * Only handlers that need to preserve or revoke *this* session
+       * specifically (e.g. self-serve password change) should read
+       * it. Undefined in mock / okta / cloudflare-access modes.
+       */
+      sessionId?: string;
     }
   }
 }
@@ -99,6 +106,7 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
         console.error("touchSession failed", err),
       );
       req.user = found.user;
+      req.sessionId = sessionId;
       next();
       return;
     }
