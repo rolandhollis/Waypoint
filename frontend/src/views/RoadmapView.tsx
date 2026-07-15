@@ -23,7 +23,7 @@ export function RoadmapView() {
 
   const canWrite = useCanWrite();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [zoom, setZoom] = useState<"6mo" | "1yr">("6mo");
+  const [zoom, setZoom] = useState<"3mo" | "6mo" | "1yr">("6mo");
   const [helperOpen, setHelperOpen] = useState(false);
 
   if (projects.isLoading) return <div className="p-6 text-sm text-wp-slate">Loading roadmap…</div>;
@@ -40,13 +40,19 @@ export function RoadmapView() {
           <span className="text-wp-slate">Timeframe</span>
           <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
             <button
-              className={`px-2 py-1 ${zoom === "6mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+              className={`px-2 py-1 ${zoom === "3mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+              onClick={() => setZoom("3mo")}
+            >
+              3 months
+            </button>
+            <button
+              className={`border-l border-wp-stone px-2 py-1 ${zoom === "6mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
               onClick={() => setZoom("6mo")}
             >
               6 months
             </button>
             <button
-              className={`px-2 py-1 ${zoom === "1yr" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+              className={`border-l border-wp-stone px-2 py-1 ${zoom === "1yr" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
               onClick={() => setZoom("1yr")}
             >
               1 year

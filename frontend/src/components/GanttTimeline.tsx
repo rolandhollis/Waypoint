@@ -1,6 +1,6 @@
 import type React from "react";
 import type { ReactNode } from "react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { addDays, addMonths, differenceInCalendarDays, endOfMonth, format, min, max, parseISO, startOfMonth } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -21,7 +21,7 @@ import { childrenByParent, descendants, indexById, rootEpic } from "../lib/hiera
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore, type ColorBy, type GroupBy } from "../lib/viewState";
 
-type Zoom = "6mo" | "1yr";
+type Zoom = "3mo" | "6mo" | "1yr";
 
 type Props = {
   projects: Project[];
@@ -49,8 +49,16 @@ type Props = {
   contextProjects?: Project[];
 };
 
-const TIMEFRAME_MONTHS: Record<Zoom, number> = { "6mo": 6, "1yr": 12 };
-const DAY_PX: Record<Zoom, number> = { "6mo": 8, "1yr": 3.5 };
+const TIMEFRAME_MONTHS: Record<Zoom, number> = { "3mo": 3, "6mo": 6, "1yr": 12 };
+const DAY_PX: Record<Zoom, number> = { "3mo": 16, "6mo": 8, "1yr": 3.5 };
+/**
+ * Approximate CSS-inch of past chart room we always keep to the left
+ * of today, both when computing the chart's left bound (so the scroll
+ * position we set on mount / zoom-change is actually reachable) and
+ * when placing "today" horizontally inside the viewport. 96px ≈ 1in
+ * because CSS defines 1in = 96px regardless of the physical display.
+ */
+const TODAY_LEFT_OFFSET_PX = 96;
 
 const ROW_HEIGHT = 34;
 const HEADER_HEIGHT = 48;
@@ -122,9 +130,12 @@ export function GanttTimeline(props: Props) {
   const collapseAllEpics = useViewStore((s) => s.collapseAllEpics);
   const expandedSet = useMemo(() => new Set(expandedEpicIds), [expandedEpicIds]);
 
-  const { start, end } = useMemo(() => computeRange(projects, TIMEFRAME_MONTHS[zoom]), [projects, zoom]);
-  const totalDays = Math.max(1, differenceInCalendarDays(end, start));
   const dayPx = DAY_PX[zoom];
+  const { start, end } = useMemo(
+    () => computeRange(projects, TIMEFRAME_MONTHS[zoom], dayPx),
+    [projects, zoom, dayPx],
+  );
+  const totalDays = Math.max(1, differenceInCalendarDays(end, start));
   const chartWidth = totalDays * dayPx;
 
   const months = useMemo(() => {
@@ -239,6 +250,24 @@ export function GanttTimeline(props: Props) {
   const today = new Date();
   const todayX = differenceInCalendarDays(today, start) * dayPx;
   const showToday = today >= start && today <= end;
+
+  // Horizontal-scroll container for the chart itself (the SVG). We
+  // imperatively snap its scrollLeft on mount and whenever zoom
+  // changes so today lands ~1in from the viewport's left edge, giving
+  // PMs a "today-first" default while still leaving chart room to
+  // scroll into past dates. Depending on `todayX` (rather than `zoom`
+  // directly) keeps the snap correct if the range recomputes for any
+  // reason — memoization already prevents needless work.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const target = Math.max(0, todayX - TODAY_LEFT_OFFSET_PX);
+    el.scrollLeft = target;
+    // Intentional: only on zoom change or first mount. The effect
+    // shouldn't fight the user's manual scrolling in-between.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom]);
 
   const [drag, setDrag] = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -435,7 +464,7 @@ export function GanttTimeline(props: Props) {
             ))}
           </div>
 
-          <div className="relative flex-1 overflow-x-auto">
+          <div ref={scrollRef} className="relative flex-1 overflow-x-auto">
             <svg
               width={chartWidth}
               height={HEADER_HEIGHT + groups.reduce((s, g, gi) => (
@@ -1295,7 +1324,7 @@ function SegmentLabel({ x, width, y, h, short, long }: {
   );
 }
 
-function computeRange(projects: Project[], timeframeMonths: number) {
+function computeRange(projects: Project[], timeframeMonths: number, dayPx: number) {
   const dates: Date[] = [];
   for (const p of projects) {
     const phases = computePhases(p);
@@ -1305,9 +1334,16 @@ function computeRange(projects: Project[], timeframeMonths: number) {
   }
   // Anchor the visible window to the selected timeframe starting today, then
   // widen if any project falls outside so bars are never clipped.
+  //
+  // We deliberately extend the left bound to at least
+  // (today − TODAY_LEFT_OFFSET_PX worth of days) so the initial-scroll
+  // effect that lands today ~1in from the viewport left always has
+  // real chart to reveal there. Without this, the 1yr zoom (dayPx=3.5)
+  // wouldn't have enough past chart room to place today at 96px in.
   const today = new Date();
-  const minStart = startOfMonth(today);
-  const minEnd = endOfMonth(addMonths(minStart, timeframeMonths - 1));
+  const pastDaysForInch = Math.ceil(TODAY_LEFT_OFFSET_PX / dayPx);
+  const minStart = startOfMonth(addDays(today, -pastDaysForInch));
+  const minEnd = endOfMonth(addMonths(startOfMonth(today), timeframeMonths - 1));
   const allDates = [minStart, minEnd, ...dates];
   const start = startOfMonth(min(allDates));
   const end = endOfMonth(max(allDates));
