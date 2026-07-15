@@ -15,8 +15,9 @@ import {
   type PhaseKey,
 } from "../lib/dependencies";
 import { computePhases } from "../lib/phaseCompute";
+import { computeEpicSubtaskSegments, type EpicSubtaskSegment } from "../lib/epicSegments";
 import { useCanWrite, useProjects } from "../lib/queries";
-import { childrenByParent, indexById, rootEpic } from "../lib/hierarchy";
+import { childrenByParent, descendants, indexById, rootEpic } from "../lib/hierarchy";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore, type ColorBy, type GroupBy } from "../lib/viewState";
 
@@ -457,6 +458,15 @@ export function GanttTimeline(props: Props) {
                   <rect width="6" height="6" fill="transparent" />
                   <rect width="1.25" height="6" fill="#94a3b8" />
                 </pattern>
+                {/* Polka dot overlay for epic bar days where subtasks
+                    span multiple phases at once. Chosen to look
+                    clearly distinct from the diagonal phase-hatch so
+                    "mixed" reads as different-from-any-single-phase at
+                    a glance. */}
+                <pattern id="mixed-polka" width="7" height="7" patternUnits="userSpaceOnUse">
+                  <rect width="7" height="7" fill="transparent" />
+                  <circle cx="3.5" cy="3.5" r="1.4" fill="rgba(255,255,255,0.8)" />
+                </pattern>
               </defs>
 
               <g>
@@ -557,6 +567,7 @@ export function GanttTimeline(props: Props) {
                         deadlineStatuses={deadlineStatusByProject.get(p.id) ?? []}
                         dependencyStatuses={dependencyStatusByProject.get(p.id) ?? []}
                         isSubtask={row.depth > 0}
+                        kids={kids}
                       />
                     );
                   });
@@ -759,11 +770,18 @@ function Bar(props: {
   deadlineStatuses: DeadlineStatus[];
   dependencyStatuses: DependencyStatus[];
   isSubtask?: boolean;
+  /**
+   * Parent → direct children map from the currently rendered project
+   * set. Bar walks it recursively (via `descendants`) to build the
+   * subtask-aggregated timeline for epics. Optional — when omitted,
+   * epic bars fall back to their own phase rendering.
+   */
+  kids?: Map<string, Project[]>;
 }) {
   const {
     project: p, y, chartStart, dayPx, lanes, teams, users, colorBy,
     canEdit, activeDrag, onStartDrag, onOpen,
-    deadlineStatuses, dependencyStatuses, isSubtask,
+    deadlineStatuses, dependencyStatuses, isSubtask, kids,
   } = props;
   const phases = computePhases(p);
   if (!phases.scheduled) return null;
@@ -771,6 +789,15 @@ function Bar(props: {
   const primaryTeam = teams.find((t) => t.id === p.teams[0]);
   const owner = users.find((u) => u.id === p.owner_id);
   const base = pickBase(colorBy, lane, primaryTeam, owner);
+
+  // Epic-with-subtasks: derive the bar's phase colouring from what its
+  // descendants are doing on each day instead of from the epic's own
+  // discovery/dev/opt breakdown. Falls back to null (→ per-phase
+  // rendering below) when there are no scheduled descendants.
+  const subtaskSegments: EpicSubtaskSegment[] | null =
+    !isSubtask && p.type === "epic" && kids
+      ? computeEpicSubtaskSegments(p, descendants(p.id, kids))
+      : null;
 
   // Subtask bars sit a bit thinner so the epic stays visually dominant.
   // Same y-anchor so the row heights are constant and drag hitboxes
@@ -801,7 +828,9 @@ function Bar(props: {
 
   return (
     <g style={{ pointerEvents: "auto" }}>
-      <title>{`${p.title}
+      <title>{`${p.title}${
+        subtaskSegments ? "\n(Bar shows the roll-up of subtask phases — dotted sections span multiple phases at once.)\n" : ""
+      }
 Phase 1 (Discovery/Definition): ${format(disc.start, "MMM d")} → ${format(disc.end, "MMM d")}${
         devGap ? `\nAwaiting Dev:                    ${format(devGap.start, "MMM d")} → ${format(devGap.end, "MMM d")}` : ""
       }
@@ -815,45 +844,95 @@ Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.e
         style={{ cursor: canEdit ? "grab" : "pointer" }}
         onPointerDown={(e) => onStartDrag(e, p.id, "move")}
       >
-        <rect x={discX} y={barY} width={discW} height={barH} fill={base} rx={3} />
-        {devGap ? (
-          <g>
-            <rect x={devGapX} y={barY + barH / 2 - 2} width={devGapW} height={4} fill="#CBD5E1" rx={2} />
-            <rect x={devGapX} y={barY + barH / 2 - 2} width={devGapW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
-          </g>
-        ) : null}
-        <rect x={devX} y={barY} width={devW} height={barH} fill={base} fillOpacity={0.55} rx={3} />
-        <rect x={devX} y={barY} width={devW} height={barH} fill="url(#phase-hatch)" rx={3} />
-        {/* Unconfirmed dev estimate — dashed amber outline signals
-            that the segment's timing is a PM best-guess pending
-            engineering sign-off. Rendered above the fill layers so
-            the dashes stay legible against the hatched color. */}
-        {!p.dev_estimate_sourced_by_dev ? (
-          <rect
-            x={devX + 0.5}
-            y={barY + 0.5}
-            width={Math.max(0, devW - 1)}
-            height={barH - 1}
-            rx={3}
-            fill="none"
-            stroke="#f59e0b"
-            strokeWidth={1.5}
-            strokeDasharray="4 3"
-            pointerEvents="none"
-          />
-        ) : null}
-        {optGap ? (
-          <g>
-            <rect x={optGapX} y={barY + barH / 2 - 2} width={optGapW} height={4} fill="#CBD5E1" rx={2} />
-            <rect x={optGapX} y={barY + barH / 2 - 2} width={optGapW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
-          </g>
-        ) : null}
-        <rect x={optX} y={barY} width={optW} height={barH} fill={base} fillOpacity={0.25} rx={3} />
+        {subtaskSegments ? (
+          // Epic with scheduled subtasks: paint the bar from the
+          // rolled-up subtask timeline. Each segment carries one of
+          // the five single-phase kinds (styled like the per-phase
+          // fallback below) or "mixed" (polka dot overlay).
+          subtaskSegments.map((seg, i) => {
+            const segX = differenceInCalendarDays(seg.start, chartStart) * dayPx;
+            const segW = Math.max(2, differenceInCalendarDays(seg.end, seg.start) * dayPx);
+            if (seg.kind === "awaitingDev" || seg.kind === "awaitingOptimization") {
+              return (
+                <g key={`seg-${i}`}>
+                  <rect x={segX} y={barY + barH / 2 - 2} width={segW} height={4} fill="#CBD5E1" rx={2} />
+                  <rect x={segX} y={barY + barH / 2 - 2} width={segW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+                </g>
+              );
+            }
+            if (seg.kind === "discovery") {
+              return <rect key={`seg-${i}`} x={segX} y={barY} width={segW} height={barH} fill={base} rx={3} />;
+            }
+            if (seg.kind === "development") {
+              return (
+                <g key={`seg-${i}`}>
+                  <rect x={segX} y={barY} width={segW} height={barH} fill={base} fillOpacity={0.55} rx={3} />
+                  <rect x={segX} y={barY} width={segW} height={barH} fill="url(#phase-hatch)" rx={3} />
+                </g>
+              );
+            }
+            if (seg.kind === "optimization") {
+              return <rect key={`seg-${i}`} x={segX} y={barY} width={segW} height={barH} fill={base} fillOpacity={0.25} rx={3} />;
+            }
+            // seg.kind === "mixed"
+            return (
+              <g key={`seg-${i}`}>
+                <rect x={segX} y={barY} width={segW} height={barH} fill={base} fillOpacity={0.5} rx={3} />
+                <rect x={segX} y={barY} width={segW} height={barH} fill="url(#mixed-polka)" rx={3} />
+              </g>
+            );
+          })
+        ) : (
+          <>
+            <rect x={discX} y={barY} width={discW} height={barH} fill={base} rx={3} />
+            {devGap ? (
+              <g>
+                <rect x={devGapX} y={barY + barH / 2 - 2} width={devGapW} height={4} fill="#CBD5E1" rx={2} />
+                <rect x={devGapX} y={barY + barH / 2 - 2} width={devGapW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+              </g>
+            ) : null}
+            <rect x={devX} y={barY} width={devW} height={barH} fill={base} fillOpacity={0.55} rx={3} />
+            <rect x={devX} y={barY} width={devW} height={barH} fill="url(#phase-hatch)" rx={3} />
+            {/* Unconfirmed dev estimate — dashed amber outline signals
+                that the segment's timing is a PM best-guess pending
+                engineering sign-off. Rendered above the fill layers so
+                the dashes stay legible against the hatched color.
+                Skipped in the subtask-rollup path because the epic's
+                own flag doesn't correspond to any single visible
+                segment there. */}
+            {!p.dev_estimate_sourced_by_dev ? (
+              <rect
+                x={devX + 0.5}
+                y={barY + 0.5}
+                width={Math.max(0, devW - 1)}
+                height={barH - 1}
+                rx={3}
+                fill="none"
+                stroke="#f59e0b"
+                strokeWidth={1.5}
+                strokeDasharray="4 3"
+                pointerEvents="none"
+              />
+            ) : null}
+            {optGap ? (
+              <g>
+                <rect x={optGapX} y={barY + barH / 2 - 2} width={optGapW} height={4} fill="#CBD5E1" rx={2} />
+                <rect x={optGapX} y={barY + barH / 2 - 2} width={optGapW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+              </g>
+            ) : null}
+            <rect x={optX} y={barY} width={optW} height={barH} fill={base} fillOpacity={0.25} rx={3} />
+          </>
+        )}
       </g>
 
       {/* Resize handles — positioned at each divider. Wider transparent hitbox for
-          easier grabbing; a thin white line shows the exact snap point. */}
-      {canEdit ? (
+          easier grabbing; a thin white line shows the exact snap point.
+          Hidden in the subtask-rollup path: the epic's own phase
+          boundaries no longer correspond to what's drawn, so exposing
+          handles at those points would let a PM "drag" a segment
+          divider that isn't visible. Move-drag on the bar body still
+          works if they need to shift the whole epic. */}
+      {canEdit && !subtaskSegments ? (
         <>
           <ResizeHandle x={discX + discW} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "target")} label="Ready for Dev" />
           {devGap ? (
