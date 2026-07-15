@@ -529,7 +529,7 @@ function DigestAdmin() {
               }
               onClick={() => { setMode("user"); setEmailError(null); }}
             >
-              From user
+              Add user
             </button>
             <button
               type="button"
