@@ -47,4 +47,32 @@ export const config = {
     audience: process.env.CF_ACCESS_AUD ?? "",
   },
   reportingTimezone: process.env.REPORTING_TIMEZONE ?? "America/Chicago",
+  /**
+   * Outbound URL the app is reachable at from the recipient's
+   * inbox — used to build "Open Waypoint" and "Unsubscribe" links
+   * in reminder emails. Falls back to the local dev URL so emails
+   * don't accidentally leak internal Fly hostnames when the env
+   * var is missing.
+   */
+  publicAppUrl: process.env.PUBLIC_APP_URL ?? "http://localhost:5173",
+  /**
+   * Resend transactional email config. When apiKey is unset the
+   * notification code short-circuits and logs instead of sending —
+   * so the app boots cleanly on local dev / preview envs without a
+   * real key. fromAddress defaults to Resend's shared verified
+   * domain so we can ship without owning a sender domain yet;
+   * point it at "Waypoint <no-reply@your-domain>" once DNS is set.
+   */
+  email: {
+    resendApiKey: process.env.RESEND_API_KEY ?? "",
+    fromAddress: process.env.EMAIL_FROM_ADDRESS ?? "Waypoint <onboarding@resend.dev>",
+    /** Signing key for one-click unsubscribe tokens. When unset we
+     *  derive one from SUPER_ADMIN_PASSWORD as a last resort so
+     *  unsubscribe links keep working in single-tenant self-hosts
+     *  that never set the dedicated secret. */
+    unsubscribeSecret:
+      process.env.EMAIL_UNSUBSCRIBE_SECRET ||
+      process.env.SUPER_ADMIN_PASSWORD ||
+      "waypoint-dev-unsubscribe-secret",
+  },
 };

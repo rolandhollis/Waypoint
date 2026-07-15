@@ -17,7 +17,7 @@ export const statusUpdatesRouter = Router();
  * Implementation uses status_history joined against lanes for the week's range,
  * union'd with projects currently sitting in a flagged lane.
  */
-async function eligibleProjects(
+export async function eligibleProjects(
   weekOf: Date,
   groupId: string,
 ): Promise<Array<{ project_id: string; owner_id: string | null }>> {

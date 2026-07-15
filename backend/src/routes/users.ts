@@ -138,6 +138,13 @@ const patchMeSchema = z.object({
     .regex(/^#?[0-9a-fA-F]{6}$/)
     .transform((v) => (v.startsWith("#") ? v : `#${v}`))
     .optional(),
+  /**
+   * Opt-in for the weekly status-report reminder email. Kept on
+   * the same self-serve endpoint as name/color so the profile
+   * dialog only needs one mutation for all "personal preference"
+   * writes.
+   */
+  email_reminders_enabled: z.boolean().optional(),
 });
 
 usersRouter.patch("/me", async (req, res) => {

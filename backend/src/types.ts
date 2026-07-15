@@ -42,6 +42,13 @@ export type UserRow = {
    */
   is_super_user: boolean;
   current_group_id: string | null;
+  /**
+   * Per-user opt-in for outbound reminder emails (weekly status
+   * report nudge today; other kinds later). Default true, toggled
+   * from the profile dialog or via the one-click unsubscribe link
+   * in the email footer.
+   */
+  email_reminders_enabled: boolean;
   created_at: Date;
   updated_at: Date;
 };

@@ -85,8 +85,12 @@ function ProfileSection({ user }: { user: User }) {
   const qc = useQueryClient();
   const [name, setName] = useState(user.name);
   const [color, setColor] = useState(user.color);
+  const [remindersEnabled, setRemindersEnabled] = useState(user.email_reminders_enabled);
 
-  const dirty = name.trim() !== user.name || color !== user.color;
+  const dirty =
+    name.trim() !== user.name ||
+    color !== user.color ||
+    remindersEnabled !== user.email_reminders_enabled;
   const canSave = dirty && name.trim().length > 0;
 
   const patch = useMutation({
@@ -96,6 +100,8 @@ function ProfileSection({ user }: { user: User }) {
         body: JSON.stringify({
           name: name.trim() !== user.name ? name.trim() : undefined,
           color: color !== user.color ? color : undefined,
+          email_reminders_enabled:
+            remindersEnabled !== user.email_reminders_enabled ? remindersEnabled : undefined,
         }),
       }),
     onSuccess: () => {
@@ -168,6 +174,20 @@ function ProfileSection({ user }: { user: User }) {
               })}
             </div>
           </div>
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-wp-ink">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-wp-red"
+              checked={remindersEnabled}
+              onChange={(e) => setRemindersEnabled(e.target.checked)}
+            />
+            <span>
+              Email me a Monday-morning reminder when I have status updates due
+              <span className="mt-0.5 block text-[11px] text-wp-slate/80">
+                One email per week, only when you actually owe an update.
+              </span>
+            </span>
+          </label>
         </div>
       </div>
 

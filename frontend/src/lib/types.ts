@@ -41,6 +41,13 @@ export type User = {
    * enrollment.
    */
   memberships?: GroupMembership[];
+  /**
+   * Personal opt-in for reminder emails (weekly status report
+   * today, other kinds later). Default true; toggled from the
+   * profile dialog or via the one-click unsubscribe link in the
+   * email footer.
+   */
+  email_reminders_enabled: boolean;
   created_at: string;
   updated_at: string;
 };

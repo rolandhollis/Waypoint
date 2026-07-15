@@ -20,6 +20,7 @@ import { projectCommentsRouter } from "./routes/comments.js";
 import { projectDeadlinesRouter } from "./routes/deadlines.js";
 import { projectDependenciesRouter } from "./routes/dependencies.js";
 import { projectStatusUpdatesRouter, statusUpdatesRouter } from "./routes/statusUpdates.js";
+import { notificationsRouter } from "./routes/notifications.js";
 import { startCron } from "./jobs/weeklyStatus.js";
 
 const app = express();
@@ -63,6 +64,12 @@ app.use("/api/projects/:id/deadlines", authenticate, groupScope, projectDeadline
 app.use("/api/projects/:id/dependencies", authenticate, groupScope, projectDependenciesRouter);
 app.use("/api/projects/:id/status-updates", authenticate, groupScope, projectStatusUpdatesRouter);
 app.use("/api/status-updates", authenticate, groupScope, statusUpdatesRouter);
+
+// Public notification endpoints — one-click unsubscribe links from
+// email bodies. Deliberately mounted WITHOUT authenticate: the
+// recipient has no session, and the HMAC-signed token in the URL
+// proves their intent.
+app.use("/api/notifications", notificationsRouter);
 
 // When STATIC_DIR is set (Docker image), serve the compiled SPA from the
 // same origin as the API and fall back to index.html for any unknown
