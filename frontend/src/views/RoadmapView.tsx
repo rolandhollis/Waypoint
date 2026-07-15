@@ -35,31 +35,33 @@ export function RoadmapView() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <FilterBar view="roadmap" showGrouping showColorBy />
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-wp-stone bg-white/60 px-4 py-2">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-wp-slate">Timeframe</span>
-          <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
-            <button
-              className={`px-2 py-1 ${zoom === "3mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
-              onClick={() => setZoom("3mo")}
-            >
-              3 months
-            </button>
-            <button
-              className={`border-l border-wp-stone px-2 py-1 ${zoom === "6mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
-              onClick={() => setZoom("6mo")}
-            >
-              6 months
-            </button>
-            <button
-              className={`border-l border-wp-stone px-2 py-1 ${zoom === "1yr" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
-              onClick={() => setZoom("1yr")}
-            >
-              1 year
-            </button>
+      <div className="flex flex-col gap-2 border-b border-wp-stone bg-white/60 px-4 py-2">
+        {/* Row 1: timeframe + action(s). Kept compact so the two
+            legends below get their own breathing room. */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-wp-slate">Timeframe</span>
+            <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
+              <button
+                className={`px-2 py-1 ${zoom === "3mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                onClick={() => setZoom("3mo")}
+              >
+                3 months
+              </button>
+              <button
+                className={`border-l border-wp-stone px-2 py-1 ${zoom === "6mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                onClick={() => setZoom("6mo")}
+              >
+                6 months
+              </button>
+              <button
+                className={`border-l border-wp-stone px-2 py-1 ${zoom === "1yr" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                onClick={() => setZoom("1yr")}
+              >
+                1 year
+              </button>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-4">
           {canWrite ? (
             <button
               className="btn-secondary !py-1 !text-xs"
@@ -70,15 +72,20 @@ export function RoadmapView() {
               Auto-schedule…
             </button>
           ) : null}
-          <PhaseLegend />
-          <ColorLegend
-            colorBy={colorBy}
-            lanes={lanes.data ?? []}
-            teams={teams.data ?? []}
-            users={users.data ?? []}
-            scopedProjects={scheduled}
-          />
         </div>
+        {/* Row 2: color legend (dynamic — depends on the current
+            colorBy dimension and which items are visible). */}
+        <ColorLegend
+          colorBy={colorBy}
+          lanes={lanes.data ?? []}
+          teams={teams.data ?? []}
+          users={users.data ?? []}
+          scopedProjects={scheduled}
+        />
+        {/* Row 3: phase legend (static reference for the bar
+            styling; separated so the two legends don't compete
+            for horizontal space). */}
+        <PhaseLegend />
       </div>
 
       <div className="flex-1 overflow-auto">
