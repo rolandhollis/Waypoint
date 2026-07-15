@@ -17,31 +17,67 @@ import { authenticate, groupScope, requireAdmin } from "../middleware/auth.js";
  */
 export const notificationsRouter = Router();
 
+/**
+ * Shared unsubscribe implementation. GET renders a friendly HTML
+ * confirmation page for humans clicking the link in an email. POST
+ * is what Gmail (and other mail clients that honor RFC 8058) hits
+ * when the recipient clicks the client-native "Unsubscribe" button;
+ * it must be idempotent, must not require the browser, and should
+ * respond with a small non-HTML payload.
+ */
+async function handleUnsubscribe(
+  token: string,
+): Promise<
+  | { kind: "invalid"; message: string }
+  | { kind: "ok"; email?: string }
+> {
+  if (!token) return { kind: "invalid", message: "This unsubscribe link is missing its token." };
+  const decoded = verifyUnsubscribeToken(token);
+  if (!decoded) return { kind: "invalid", message: "This unsubscribe link is invalid or has expired." };
+  const user = await disableRemindersForUser(decoded.userId);
+  return { kind: "ok", email: user?.email };
+}
+
 notificationsRouter.get("/unsubscribe", async (req, res) => {
   const token = typeof req.query.token === "string" ? req.query.token : "";
-  if (!token) {
-    res.status(400).type("html").send(page("Invalid link", "This unsubscribe link is missing its token."));
+  const result = await handleUnsubscribe(token);
+  if (result.kind === "invalid") {
+    res.status(400).type("html").send(page("Invalid link", result.message));
     return;
   }
-  const decoded = verifyUnsubscribeToken(token);
-  if (!decoded) {
-    res.status(400).type("html").send(page("Invalid link", "This unsubscribe link is invalid or has expired."));
-    return;
-  }
-  const user = await disableRemindersForUser(decoded.userId);
-  if (!user) {
-    // Token was valid but the user doesn't exist anymore — treat as
-    // success from the recipient's perspective, no useful info to
-    // leak by distinguishing this case.
+  if (!result.email) {
     res.type("html").send(page("Unsubscribed", "You won't receive further reminder emails from Waypoint."));
     return;
   }
   res.type("html").send(
     page(
       "Unsubscribed",
-      `You won't receive further reminder emails from Waypoint at <strong>${escapeHtml(user.email)}</strong>. You can re-enable them any time from your profile page inside the app.`,
+      `You won't receive further reminder emails from Waypoint at <strong>${escapeHtml(result.email)}</strong>. You can re-enable them any time from your profile page inside the app.`,
     ),
   );
+});
+
+/**
+ * RFC 8058 One-Click POST handler. Gmail (and others) hits this
+ * URL directly without any user interaction beyond a click of the
+ * native "Unsubscribe" button — no page render, no confirmation
+ * dialog. Response body is ignored by the client; a 2xx status
+ * is the whole contract. Token is accepted in either the query
+ * string or the form body since different clients send it in
+ * different places.
+ */
+notificationsRouter.post("/unsubscribe", async (req, res) => {
+  const bodyToken =
+    req.body && typeof req.body === "object" && typeof (req.body as { token?: unknown }).token === "string"
+      ? (req.body as { token: string }).token
+      : "";
+  const queryToken = typeof req.query.token === "string" ? req.query.token : "";
+  const result = await handleUnsubscribe(queryToken || bodyToken);
+  if (result.kind === "invalid") {
+    res.status(400).type("text/plain").send(result.message);
+    return;
+  }
+  res.status(200).type("text/plain").send("Unsubscribed");
 });
 
 /**

@@ -27,6 +27,10 @@ const app = express();
 
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
+// Form-encoded parser is only needed for the RFC 8058 One-Click
+// unsubscribe POST that mail clients send. Small limit so this
+// doesn't accidentally become an ingress path for large payloads.
+app.use(express.urlencoded({ extended: false, limit: "8kb" }));
 
 // CSRF defense (no-op in mock/okta modes; see middleware/csrf.ts).
 app.use(csrfGuard);
@@ -65,10 +69,10 @@ app.use("/api/projects/:id/dependencies", authenticate, groupScope, projectDepen
 app.use("/api/projects/:id/status-updates", authenticate, groupScope, projectStatusUpdatesRouter);
 app.use("/api/status-updates", authenticate, groupScope, statusUpdatesRouter);
 
-// Public notification endpoints — one-click unsubscribe links from
-// email bodies. Deliberately mounted WITHOUT authenticate: the
-// recipient has no session, and the HMAC-signed token in the URL
-// proves their intent.
+// Notifications router carries both public (unsubscribe) and admin
+// (ad-hoc reminder trigger) endpoints. Public endpoints inside skip
+// authenticate; admin endpoints attach it inline. CSRF is exempted
+// for the unsubscribe paths only, inside csrfGuard.
 app.use("/api/notifications", notificationsRouter);
 
 // When STATIC_DIR is set (Docker image), serve the compiled SPA from the

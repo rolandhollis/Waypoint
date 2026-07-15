@@ -152,6 +152,7 @@ function renderReminder(input: {
       : `${groupNames.slice(0, -1).join(", ")} and ${groupNames[groupNames.length - 1] ?? ""}`;
 
   const subject = `Waypoint: ${itemsLabel} due ${dueLabel}`;
+  const preheader = `${itemsLabel} pending in ${groupLabel} — due ${dueLabel}.`;
   const text = [
     `Hi ${name.split(/\s+/)[0] ?? name},`,
     "",
@@ -165,8 +166,12 @@ function renderReminder(input: {
     "",
     "— Waypoint",
   ].join("\n");
+  // The preheader span uses display:none plus a "spacer" trick so
+  // Gmail/Outlook use it as inbox preview text without letting it
+  // leak into the visible layout when the message is actually opened.
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;max-width:520px;">
+      <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}</span>
       <p>Hi ${escapeHtml(name.split(/\s+/)[0] ?? name)},</p>
       <p>You have <strong>${itemsLabel}</strong> pending for the week of <strong>${escapeHtml(weekLabel)}</strong> in ${escapeHtml(groupLabel)}.</p>
       <p>They're due by <strong>${escapeHtml(dueLabel)}</strong>.</p>
@@ -280,6 +285,14 @@ export async function runStatusReportReminders({
         subject: msg.subject,
         text: msg.text,
         html: msg.html,
+        // RFC 2369 + RFC 8058: lights up Gmail's one-click Unsubscribe
+        // button next to the sender name and lets Gmail POST to the
+        // link directly without a page load. Big trust signal against
+        // spam classification for bulk-ish transactional mail.
+        headers: {
+          "List-Unsubscribe": `<${unsubUrl}>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
       });
       // Backfill the provider id on the reserved row so a delivery
       // investigation can trace this send end-to-end.

@@ -42,6 +42,11 @@ export type SendEmailInput = {
   /** Optional plain-text reply-to; useful when the from-address
    *  is a shared verified sender that shouldn't receive replies. */
   replyTo?: string;
+  /** Optional extra headers passed straight to the provider. Used
+   *  today to attach RFC 2369 / RFC 8058 List-Unsubscribe headers
+   *  so Gmail lights up the built-in "Unsubscribe" button — a
+   *  meaningful inbox-placement signal. */
+  headers?: Record<string, string>;
 };
 
 export async function sendEmail(input: SendEmailInput): Promise<SendResult> {
@@ -62,6 +67,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendResult> {
     text: input.text,
     ...(input.html ? { html: input.html } : {}),
     ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+    ...(input.headers ? { headers: input.headers } : {}),
   });
   if (error) {
     // Bubble up as a plain Error so the caller's try/catch can log

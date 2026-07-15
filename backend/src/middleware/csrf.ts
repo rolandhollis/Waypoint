@@ -15,9 +15,17 @@ import { config } from "../config.js";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+// Paths that are authenticated by HMAC token in the URL rather than
+// by session cookie. They MUST be reachable from mail clients (Gmail,
+// Outlook, etc.) whose one-click Unsubscribe POST arrives without an
+// Origin header — CSRF has no attack surface here because a forged
+// POST can't produce a valid token without the shared secret.
+const CSRF_EXEMPT_PATHS = new Set(["/api/notifications/unsubscribe"]);
+
 export function csrfGuard(req: Request, res: Response, next: NextFunction) {
   if (config.authMode !== "password") return next();
   if (SAFE_METHODS.has(req.method)) return next();
+  if (CSRF_EXEMPT_PATHS.has(req.path)) return next();
 
   const origin = req.header("origin") ?? deriveOriginFromReferer(req.header("referer"));
 
