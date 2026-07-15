@@ -1,16 +1,19 @@
 import { Router } from "express";
-import { disableRemindersForUser } from "../notifications/statusReminders.js";
+import { z } from "zod";
+import {
+  disableRemindersForUser,
+  runStatusReportReminders,
+} from "../notifications/statusReminders.js";
 import { verifyUnsubscribeToken } from "../notifications/unsubscribe.js";
+import { authenticate, groupScope, requireAdmin } from "../middleware/auth.js";
 
 /**
- * Public-facing notification endpoints. These are the ONLY endpoints
- * mounted before the auth middleware — a recipient clicking an
- * unsubscribe link from their inbox has no live session and doesn't
- * need one (the HMAC token proves their intent).
- *
- * The unsubscribe handler serves a friendly HTML confirmation page
- * rather than raw JSON so a recipient who ends up on this URL sees a
- * sensible acknowledgement instead of `{"ok":true}`.
+ * Public-facing notification endpoints — the unsubscribe handler
+ * is deliberately mounted BEFORE authenticate (a recipient
+ * clicking a link from their inbox has no live session; the HMAC
+ * token proves their intent). Admin-only endpoints for triggering
+ * jobs on demand come further down and carry their own auth
+ * middleware inline.
  */
 export const notificationsRouter = Router();
 
@@ -40,6 +43,43 @@ notificationsRouter.get("/unsubscribe", async (req, res) => {
     ),
   );
 });
+
+/**
+ * Admin trigger for the weekly status-report reminder job. Wraps
+ * `runStatusReportReminders` with two capabilities:
+ *   - `dry_run: true` — no emails, no notification_log rows,
+ *     returns "who would be nagged." Safe to click any number of
+ *     times, useful for preview.
+ *   - Real run — sends immediately. Uses the same idempotency
+ *     guard as the cron path (notification_log unique index on
+ *     kind + user_id + week_of), so clicking it after the Monday
+ *     cron has already fired is a no-op for anyone who already
+ *     got their email.
+ *
+ * Scope: always the caller's current group. A super-admin sitting
+ * in RetailMeNot who clicks "Send" won't accidentally spam
+ * VoucherCodes owners; they can switch groups and click again if
+ * they intend to. Guarded by requireAdmin so tenant admins can
+ * nag their own tenant.
+ */
+const runReminderSchema = z.object({
+  dry_run: z.boolean().optional().default(false),
+});
+
+notificationsRouter.post(
+  "/status-reminders/run",
+  authenticate,
+  groupScope,
+  requireAdmin,
+  async (req, res) => {
+    const body = runReminderSchema.parse(req.body ?? {});
+    const result = await runStatusReportReminders({
+      dryRun: body.dry_run,
+      scopeGroupId: req.groupId!,
+    });
+    res.json(result);
+  },
+);
 
 function page(title: string, message: string): string {
   return `<!doctype html>

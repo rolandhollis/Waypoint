@@ -54,14 +54,25 @@ async function loadCandidates(): Promise<Map<string, { id: string; name: string;
 }
 
 /**
- * Walk every group and aggregate `owner → [pending project ids]`.
- * `groupNames` is collected alongside so the email body can name
- * the tenant when a multi-tenant owner has pending work in more
- * than one place ("2 items in RetailMeNot, 1 in VoucherCodes").
+ * Walk every group (or just one when `scopeGroupId` is set) and
+ * aggregate `owner → [pending project ids]`. `groupNames` is
+ * collected alongside so the email body can name the tenant when
+ * a multi-tenant owner has pending work in more than one place
+ * ("2 items in RetailMeNot, 1 in VoucherCodes").
+ *
+ * `scopeGroupId` exists so a tenant admin firing the ad-hoc
+ * "Send now" from their admin tab doesn't accidentally trigger
+ * emails to owners in OTHER tenants they can't see. The weekly
+ * cron passes undefined for global scope; the ad-hoc endpoint
+ * passes the caller's current group unless the caller is a
+ * super-admin.
  */
-async function collectPending(week: Date): Promise<PendingByOwner> {
+async function collectPending(week: Date, scopeGroupId?: string): Promise<PendingByOwner> {
   const { rows: groups } = await query<{ id: string; name: string }>(
-    `SELECT id, name FROM groups`,
+    scopeGroupId
+      ? `SELECT id, name FROM groups WHERE id = $1`
+      : `SELECT id, name FROM groups`,
+    scopeGroupId ? [scopeGroupId] : [],
   );
   const iso = week.toISOString().slice(0, 10);
   const out: PendingByOwner = new Map();
@@ -187,19 +198,27 @@ function escapeHtml(s: string): string {
  * without side-effects during local testing (backend logs the
  * would-be sends but skips the provider call and the log row).
  */
-export async function runStatusReportReminders({ dryRun = false }: { dryRun?: boolean } = {}): Promise<{
+export type ReminderRunResult = {
   candidates: number;
+  pendingOwners: number;
   sent: number;
   skippedAlreadySent: number;
   errors: number;
-}> {
+  weekOf: string;
+  dryRun: boolean;
+};
+
+export async function runStatusReportReminders({
+  dryRun = false,
+  scopeGroupId,
+}: { dryRun?: boolean; scopeGroupId?: string } = {}): Promise<ReminderRunResult> {
   const week = weekOfMonday(new Date());
   const dueAt = dueAtForWeek(week);
   const weekIso = week.toISOString().slice(0, 10);
   const appUrl = config.publicAppUrl.replace(/\/$/, "");
 
   const candidates = await loadCandidates();
-  const pending = await collectPending(week);
+  const pending = await collectPending(week, scopeGroupId);
 
   let sent = 0;
   let skipped = 0;
@@ -288,9 +307,17 @@ export async function runStatusReportReminders({ dryRun = false }: { dryRun?: bo
   }
 
   console.log(
-    `[reminders] status_report_reminder — candidates=${candidates.size} pendingOwners=${pending.size} sent=${sent} alreadySent=${skipped} errors=${errors}`,
+    `[reminders] status_report_reminder scope=${scopeGroupId ?? "global"} dryRun=${dryRun} candidates=${candidates.size} pendingOwners=${pending.size} sent=${sent} alreadySent=${skipped} errors=${errors}`,
   );
-  return { candidates: candidates.size, sent, skippedAlreadySent: skipped, errors };
+  return {
+    candidates: candidates.size,
+    pendingOwners: pending.size,
+    sent,
+    skippedAlreadySent: skipped,
+    errors,
+    weekOf: weekIso,
+    dryRun,
+  };
 }
 
 // -----------------------------------------------------------------

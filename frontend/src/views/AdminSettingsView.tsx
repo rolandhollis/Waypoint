@@ -7,7 +7,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, Trash2 } from "lucide-react";
+import { GripVertical, Mail, Send, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import {
   useGroupMembers,
@@ -33,7 +33,7 @@ import { passwordIsValid } from "../lib/password";
 import { RevealPasswordCard } from "../components/RevealPasswordCard";
 import { X } from "lucide-react";
 
-type TabKey = "lanes" | "teams" | "kpis" | "users" | "groups" | "import" | "export" | "archived";
+type TabKey = "lanes" | "teams" | "kpis" | "users" | "groups" | "import" | "export" | "notifications" | "archived";
 
 type TabDef = {
   key: TabKey;
@@ -56,6 +56,7 @@ const ALL_TABS: TabDef[] = [
   { key: "groups",   label: "Groups",        render: () => <GroupsAdmin />, superUserOnly: true },
   { key: "import",   label: "Import CSV",    render: () => <CsvImportAdmin /> },
   { key: "export",   label: "Export CSV",    render: () => <CsvExportAdmin /> },
+  { key: "notifications", label: "Notifications", render: () => <NotificationsAdmin /> },
   { key: "archived", label: "Deleted cards", render: () => <ArchivedProjectsAdmin /> },
 ];
 
@@ -128,6 +129,157 @@ export function AdminSettingsView() {
         {tabs.find((t) => t.key === active)!.render()}
       </div>
     </div>
+  );
+}
+
+// -----------------------------------------------------------------
+// Notifications admin — ad-hoc trigger for the weekly status
+// reminder job. Two buttons:
+//
+//   Preview (dry run) — asks the server "who would you email?"
+//     without sending or writing to notification_log. Safe to
+//     click any number of times; useful for confirming the
+//     roster before pulling the trigger.
+//
+//   Send now — actually sends. Uses the same notification_log
+//     idempotency guard as the Monday cron, so clicking it after
+//     the cron has already fired (or clicking it twice in quick
+//     succession) is a no-op for anyone who already got their
+//     email this week. Recipients are scoped to the caller's
+//     currently-selected group so a super-admin doesn't spam
+//     other tenants by accident.
+//
+// Result panel keeps the last run visible so an admin can see
+// what happened without hunting through logs.
+// -----------------------------------------------------------------
+
+type ReminderRunResult = {
+  candidates: number;
+  pendingOwners: number;
+  sent: number;
+  skippedAlreadySent: number;
+  errors: number;
+  weekOf: string;
+  dryRun: boolean;
+};
+
+function NotificationsAdmin() {
+  const runReminders = useMutation({
+    mutationFn: (dryRun: boolean) =>
+      api<ReminderRunResult>("/notifications/status-reminders/run", {
+        method: "POST",
+        body: JSON.stringify({ dry_run: dryRun }),
+      }),
+  });
+
+  const busy = runReminders.isPending;
+  const last = runReminders.data;
+
+  return (
+    <section className="card-surface p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-wp-red/10 text-wp-red">
+          <Mail size={16} />
+        </span>
+        <div>
+          <h2 className="text-base font-semibold text-wp-ink">
+            Weekly status-report reminder
+          </h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Sends one email per owner listing the status updates they owe this week.
+            Runs automatically every Monday morning; use these buttons to preview or
+            fire it on demand. Scoped to the group you're currently viewing.
+          </p>
+        </div>
+      </div>
+
+      <MutationErrorBanner mutation={runReminders} className="mt-4" />
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn-secondary inline-flex items-center gap-1.5"
+          disabled={busy}
+          onClick={() => runReminders.mutate(true)}
+        >
+          <Mail size={13} />
+          {busy && runReminders.variables === true ? "Previewing…" : "Preview (dry run)"}
+        </button>
+        <button
+          type="button"
+          className="btn-primary inline-flex items-center gap-1.5"
+          disabled={busy}
+          onClick={() => {
+            if (
+              !confirm(
+                "Send reminder emails now to every owner in this group who owes a status update this week?\n\nOwners who already got one this week are automatically skipped.",
+              )
+            ) return;
+            runReminders.mutate(false);
+          }}
+        >
+          <Send size={13} />
+          {busy && runReminders.variables === false ? "Sending…" : "Send now"}
+        </button>
+      </div>
+
+      {last ? (
+        <div
+          className={
+            "mt-4 rounded-md border px-3 py-2 text-xs " +
+            (last.dryRun
+              ? "border-wp-stone bg-wp-stone/20 text-wp-ink"
+              : "border-emerald-200 bg-emerald-50 text-emerald-900")
+          }
+          role="status"
+          aria-live="polite"
+        >
+          <div className="font-semibold">
+            {last.dryRun
+              ? "Preview complete — no emails sent, no log rows written."
+              : "Reminders sent."}
+          </div>
+          <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
+            <li>
+              <span className="text-wp-slate">Week of</span>
+              <span className="ml-1 font-mono">{last.weekOf}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Owners with pending</span>
+              <span className="ml-1 font-mono">{last.pendingOwners}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Opted-in candidates</span>
+              <span className="ml-1 font-mono">{last.candidates}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">
+                {last.dryRun ? "Would send" : "Sent"}
+              </span>
+              <span className="ml-1 font-mono">{last.sent}</span>
+            </li>
+            {last.skippedAlreadySent > 0 ? (
+              <li className="col-span-2">
+                <span className="text-wp-slate">Skipped (already sent this week)</span>
+                <span className="ml-1 font-mono">{last.skippedAlreadySent}</span>
+              </li>
+            ) : null}
+            {last.errors > 0 ? (
+              <li className="col-span-2 text-red-700">
+                <span>Errors</span>
+                <span className="ml-1 font-mono">{last.errors}</span>
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
+
+      <p className="mt-4 text-[11px] text-wp-slate/80">
+        Users opt out from their profile dialog (top-right nav) or by clicking the
+        unsubscribe link in any reminder email. Opt-outs stick — an admin re-triggering
+        the job never overrides an individual choice.
+      </p>
+    </section>
   );
 }
 
