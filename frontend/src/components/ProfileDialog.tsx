@@ -182,7 +182,7 @@ function ProfileSection({ user }: { user: User }) {
               onChange={(e) => setRemindersEnabled(e.target.checked)}
             />
             <span>
-              Email me a Monday-morning reminder when I have status updates due
+              Email me a Thursday-morning reminder when I have status updates due
               <span className="mt-0.5 block text-[11px] text-wp-slate/80">
                 One email per week, only when you actually owe an update.
               </span>

@@ -33,11 +33,12 @@ async function overdueJob() {
 }
 
 /**
- * Weekly status-report reminder — Monday 9:00 in reporting timezone.
- * Chosen so owners see it right as their week starts, with plenty
- * of runway before the Friday due-date. Runs on the Fly machine's
- * always-on process; the notification_log unique index guarantees
- * we never double-send if the container restarts near the trigger.
+ * Weekly status-report reminder — Thursday 10:00 in reporting timezone.
+ * Fires the morning of the Friday due-date's eve so owners get a
+ * "reminder while there's still time" nudge without blasting inboxes
+ * days in advance. Runs on the Fly machine's always-on process; the
+ * notification_log unique index guarantees we never double-send if
+ * the container restarts near the trigger.
  */
 async function reminderJob() {
   try {
@@ -51,6 +52,6 @@ export function startCron() {
   const tz = config.reportingTimezone;
   cron.schedule("5 0 * * 1", () => rolloverJob().catch(console.error), { timezone: tz });
   cron.schedule("5 0 * * 5", () => overdueJob().catch(console.error), { timezone: tz });
-  cron.schedule("0 9 * * 1", () => reminderJob(), { timezone: tz });
+  cron.schedule("0 10 * * 4", () => reminderJob(), { timezone: tz });
   console.log(`[cron] scheduled weekly jobs in ${tz}`);
 }

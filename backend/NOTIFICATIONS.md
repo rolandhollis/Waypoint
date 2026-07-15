@@ -8,10 +8,12 @@ because Fly.io blocks outbound SMTP.
 - **Sender**: `Waypoint <onboarding@resend.dev>` — Resend's shared
   verified domain. Works instantly, but recipients see "via
   resend.dev" in most inbox clients.
-- **What's sent today**: one email per opted-in owner every Monday
-  at 9:00 in `REPORTING_TIMEZONE`, listing the status updates
-  they owe that week. Only fires when they actually have pending
-  items — the query mirrors the "Pending" list in the app.
+- **What's sent today**: one email per opted-in owner every
+  Thursday at 10:00 in `REPORTING_TIMEZONE`, listing the status
+  updates they owe that week. Only fires when they actually have
+  pending items — the query mirrors the "Pending" list in the app.
+  Timed as a day-of-week nudge before the Friday due-date instead
+  of a Monday-morning blast.
 
 ## Fly.io secrets to set
 
@@ -56,7 +58,7 @@ Leave `RESEND_API_KEY` unset. `sendEmail` short-circuits with a
 `console.warn` and returns a synthetic message id, so the job's
 downstream code (log insert, per-owner aggregation) still runs.
 
-To trigger a manual pass without waiting for Monday:
+To trigger a manual pass without waiting for Thursday:
 
 ```bash
 cd backend
@@ -80,13 +82,13 @@ SELECT kind, week_of, sent_at, provider_message_id
 The `(kind, user_id, week_of)` unique index guarantees no
 double-send even if the job runs twice or the container restarts.
 Cleanup rows (for failed sends where the provider errored) drop
-themselves so the next Monday's run gets a fresh shot.
+themselves so the next Thursday's run gets a fresh shot.
 
 ## Opt-out surface
 
 Users can toggle off via:
 
-1. The "Email me a Monday-morning reminder" checkbox in their
+1. The "Email me a weekly reminder" checkbox in their
    profile dialog (top nav → click your name).
 2. The "Unsubscribe" link in every email footer — HMAC-signed
    token, no login required, flips `email_reminders_enabled=false`

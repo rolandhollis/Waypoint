@@ -142,7 +142,7 @@ export function AdminSettingsView() {
 //     roster before pulling the trigger.
 //
 //   Send now — actually sends. Uses the same notification_log
-//     idempotency guard as the Monday cron, so clicking it after
+//     idempotency guard as the Thursday cron, so clicking it after
 //     the cron has already fired (or clicking it twice in quick
 //     succession) is a no-op for anyone who already got their
 //     email this week. Recipients are scoped to the caller's
@@ -187,7 +187,7 @@ function NotificationsAdmin() {
           </h2>
           <p className="mt-1 text-xs text-wp-slate">
             Sends one email per owner listing the status updates they owe this week.
-            Runs automatically every Monday morning; use these buttons to preview or
+            Runs automatically every Thursday morning; use these buttons to preview or
             fire it on demand. Scoped to the group you're currently viewing.
           </p>
         </div>
