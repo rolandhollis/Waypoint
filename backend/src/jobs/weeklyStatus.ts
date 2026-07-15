@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { pool } from "../db/pool.js";
 import { dueAtForWeek, weekOfMonday } from "../lib/time.js";
 import { runStatusReportReminders } from "../notifications/statusReminders.js";
+import { runStatusReportDigest } from "../notifications/statusDigest.js";
 
 /**
  * Weekly rollover — Monday 00:05 in reporting timezone.
@@ -48,10 +49,27 @@ async function reminderJob() {
   }
 }
 
+/**
+ * Weekly status-report digest — Friday 17:00 in reporting timezone.
+ * Rolls up the week's completed updates and mails them to each
+ * group's digest recipient list (managed under Admin → Notifications).
+ * Fires per-group in a single pass; groups with no recipients or no
+ * completed updates for the week are silently skipped so recipients
+ * only ever see the digest when it actually has content.
+ */
+async function digestJob() {
+  try {
+    await runStatusReportDigest();
+  } catch (err) {
+    console.error("[cron] status digest job failed:", err);
+  }
+}
+
 export function startCron() {
   const tz = config.reportingTimezone;
   cron.schedule("5 0 * * 1", () => rolloverJob().catch(console.error), { timezone: tz });
   cron.schedule("5 0 * * 5", () => overdueJob().catch(console.error), { timezone: tz });
   cron.schedule("0 10 * * 4", () => reminderJob(), { timezone: tz });
+  cron.schedule("0 17 * * 5", () => digestJob(), { timezone: tz });
   console.log(`[cron] scheduled weekly jobs in ${tz}`);
 }

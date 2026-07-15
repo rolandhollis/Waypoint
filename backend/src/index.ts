@@ -21,6 +21,7 @@ import { projectDeadlinesRouter } from "./routes/deadlines.js";
 import { projectDependenciesRouter } from "./routes/dependencies.js";
 import { projectStatusUpdatesRouter, statusUpdatesRouter } from "./routes/statusUpdates.js";
 import { notificationsRouter } from "./routes/notifications.js";
+import { digestRecipientsRouter } from "./routes/digestRecipients.js";
 import { startCron } from "./jobs/weeklyStatus.js";
 
 const app = express();
@@ -69,10 +70,16 @@ app.use("/api/projects/:id/dependencies", authenticate, groupScope, projectDepen
 app.use("/api/projects/:id/status-updates", authenticate, groupScope, projectStatusUpdatesRouter);
 app.use("/api/status-updates", authenticate, groupScope, statusUpdatesRouter);
 
+// Digest recipient roster — admin-only CRUD, group-scoped. MUST
+// mount before the catch-all /api/notifications router so the more
+// specific prefix wins. Routes inside layer requireAdmin on each
+// verb; group scoping is handled here so req.groupId is set.
+app.use("/api/notifications/digest-recipients", authenticate, groupScope, digestRecipientsRouter);
+
 // Notifications router carries both public (unsubscribe) and admin
-// (ad-hoc reminder trigger) endpoints. Public endpoints inside skip
-// authenticate; admin endpoints attach it inline. CSRF is exempted
-// for the unsubscribe paths only, inside csrfGuard.
+// (ad-hoc reminder/digest triggers) endpoints. Public endpoints
+// inside skip authenticate; admin endpoints attach it inline. CSRF
+// is exempted for the unsubscribe paths only, inside csrfGuard.
 app.use("/api/notifications", notificationsRouter);
 
 // When STATIC_DIR is set (Docker image), serve the compiled SPA from the

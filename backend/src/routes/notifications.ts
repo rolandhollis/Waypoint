@@ -4,6 +4,7 @@ import {
   disableRemindersForUser,
   runStatusReportReminders,
 } from "../notifications/statusReminders.js";
+import { runStatusReportDigest } from "../notifications/statusDigest.js";
 import { verifyUnsubscribeToken } from "../notifications/unsubscribe.js";
 import { authenticate, groupScope, requireAdmin } from "../middleware/auth.js";
 
@@ -110,6 +111,28 @@ notificationsRouter.post(
   async (req, res) => {
     const body = runReminderSchema.parse(req.body ?? {});
     const result = await runStatusReportReminders({
+      dryRun: body.dry_run,
+      scopeGroupId: req.groupId!,
+    });
+    res.json(result);
+  },
+);
+
+/**
+ * Admin trigger for the Friday-afternoon status-report digest.
+ * Mirrors the reminder trigger's contract: dry_run means no
+ * provider call and no log rows, real run sends immediately. Scope
+ * is always the caller's current group so a super-admin in
+ * RetailMeNot can't spam VoucherCodes recipients by mistake.
+ */
+notificationsRouter.post(
+  "/status-digest/run",
+  authenticate,
+  groupScope,
+  requireAdmin,
+  async (req, res) => {
+    const body = runReminderSchema.parse(req.body ?? {});
+    const result = await runStatusReportDigest({
       dryRun: body.dry_run,
       scopeGroupId: req.groupId!,
     });

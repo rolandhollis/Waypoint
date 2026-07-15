@@ -164,6 +164,15 @@ type ReminderRunResult = {
 };
 
 function NotificationsAdmin() {
+  return (
+    <div className="flex flex-col gap-4">
+      <ReminderAdmin />
+      <DigestAdmin />
+    </div>
+  );
+}
+
+function ReminderAdmin() {
   const runReminders = useMutation({
     mutationFn: (dryRun: boolean) =>
       api<ReminderRunResult>("/notifications/status-reminders/run", {
@@ -279,6 +288,341 @@ function NotificationsAdmin() {
         unsubscribe link in any reminder email. Opt-outs stick — an admin re-triggering
         the job never overrides an individual choice.
       </p>
+    </section>
+  );
+}
+
+// -----------------------------------------------------------------
+// Digest admin — Friday-afternoon rollup of the week's completed
+// status updates. Two concerns:
+//
+//   1. Recipient roster (add/remove). Admins pick from registered
+//      users in this group OR type an ad-hoc email address (execs,
+//      contractors, PMs who don't need a Waypoint login).
+//   2. On-demand send (dry-run + real) that mirrors the reminder
+//      trigger's contract. Uses notification_log for idempotency so
+//      the same (group, email, week) can never double-send.
+// -----------------------------------------------------------------
+
+type DigestRecipient = {
+  id: string;
+  email: string;
+  user: { id: string; name: string; email: string } | null;
+  created_at: string;
+};
+
+type DigestRunResult = {
+  weekOf: string;
+  dryRun: boolean;
+  groups: number;
+  recipients: number;
+  updatesIncluded: number;
+  sent: number;
+  skippedAlreadySent: number;
+  skippedEmptyGroups: number;
+  errors: number;
+};
+
+function DigestAdmin() {
+  const qc = useQueryClient();
+  const recipients = useQuery({
+    queryKey: ["digestRecipients"],
+    queryFn: () => api<DigestRecipient[]>("/notifications/digest-recipients"),
+  });
+  const users = useUsers();
+
+  const addUser = useMutation({
+    mutationFn: (user_id: string) =>
+      api<{ id: string }>("/notifications/digest-recipients/user", {
+        method: "POST",
+        body: JSON.stringify({ user_id }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["digestRecipients"] }),
+  });
+  const addEmail = useMutation({
+    mutationFn: (email: string) =>
+      api<{ id: string }>("/notifications/digest-recipients/email", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["digestRecipients"] }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) =>
+      api<void>(`/notifications/digest-recipients/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["digestRecipients"] }),
+  });
+  const runDigest = useMutation({
+    mutationFn: (dryRun: boolean) =>
+      api<DigestRunResult>("/notifications/status-digest/run", {
+        method: "POST",
+        body: JSON.stringify({ dry_run: dryRun }),
+      }),
+  });
+
+  const [mode, setMode] = useState<"user" | "email">("user");
+  const [pickUserId, setPickUserId] = useState<string>("");
+  const [emailInput, setEmailInput] = useState("");
+  const [emailError, setEmailError] = useState<string | null>(null);
+
+  const recipientEmails = useMemo(
+    () => new Set((recipients.data ?? []).map((r) => r.email.toLowerCase())),
+    [recipients.data],
+  );
+
+  // Users the admin can pick from — members of this group whose
+  // email isn't already on the list. Alphabetized by name so the
+  // dropdown is stable across reloads.
+  const pickableUsers = useMemo(() => {
+    const list = users.data ?? [];
+    return list
+      .filter((u) => u.email && !recipientEmails.has(u.email.toLowerCase()))
+      .slice()
+      .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+  }, [users.data, recipientEmails]);
+
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput.trim());
+
+  function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    setEmailError(null);
+    if (mode === "user") {
+      if (!pickUserId) return;
+      addUser.mutate(pickUserId, {
+        onSuccess: () => setPickUserId(""),
+        onError: (err) => setEmailError(err instanceof Error ? err.message : "failed to add"),
+      });
+    } else {
+      const email = emailInput.trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        setEmailError("Enter a valid email address.");
+        return;
+      }
+      if (recipientEmails.has(email.toLowerCase())) {
+        setEmailError("That email is already on the list.");
+        return;
+      }
+      addEmail.mutate(email, {
+        onSuccess: () => setEmailInput(""),
+        onError: (err) => setEmailError(err instanceof Error ? err.message : "failed to add"),
+      });
+    }
+  }
+
+  const busySend = runDigest.isPending;
+  const lastRun = runDigest.data;
+
+  return (
+    <section className="card-surface p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-wp-red/10 text-wp-red">
+          <Mail size={16} />
+        </span>
+        <div>
+          <h2 className="text-base font-semibold text-wp-ink">
+            Weekly status-report digest
+          </h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Rolls up this week's completed status updates and emails the roster below.
+            Runs automatically every Friday at 5:00 PM Central. Skips silently when
+            the group has zero completed updates or zero recipients. Scoped to the
+            group you're currently viewing.
+          </p>
+        </div>
+      </div>
+
+      <MutationErrorBanner mutation={runDigest} className="mt-4" />
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn-secondary inline-flex items-center gap-1.5"
+          disabled={busySend}
+          onClick={() => runDigest.mutate(true)}
+        >
+          <Mail size={13} />
+          {busySend && runDigest.variables === true ? "Previewing…" : "Preview (dry run)"}
+        </button>
+        <button
+          type="button"
+          className="btn-primary inline-flex items-center gap-1.5"
+          disabled={busySend}
+          onClick={() => {
+            if (
+              !confirm(
+                "Send the weekly digest email now to every recipient in this group's list?\n\nRecipients who already got one this week are automatically skipped.",
+              )
+            ) return;
+            runDigest.mutate(false);
+          }}
+        >
+          <Send size={13} />
+          {busySend && runDigest.variables === false ? "Sending…" : "Send now"}
+        </button>
+      </div>
+
+      {lastRun ? (
+        <div
+          className={
+            "mt-4 rounded-md border px-3 py-2 text-xs " +
+            (lastRun.dryRun
+              ? "border-wp-stone bg-wp-stone/20 text-wp-ink"
+              : "border-emerald-200 bg-emerald-50 text-emerald-900")
+          }
+          role="status"
+          aria-live="polite"
+        >
+          <div className="font-semibold">
+            {lastRun.dryRun
+              ? "Preview complete — no emails sent, no log rows written."
+              : "Digests sent."}
+          </div>
+          <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
+            <li>
+              <span className="text-wp-slate">Week of</span>
+              <span className="ml-1 font-mono">{lastRun.weekOf}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Recipients</span>
+              <span className="ml-1 font-mono">{lastRun.recipients}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Updates included</span>
+              <span className="ml-1 font-mono">{lastRun.updatesIncluded}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">
+                {lastRun.dryRun ? "Would send" : "Sent"}
+              </span>
+              <span className="ml-1 font-mono">{lastRun.sent}</span>
+            </li>
+            {lastRun.skippedAlreadySent > 0 ? (
+              <li className="col-span-2">
+                <span className="text-wp-slate">Skipped (already sent this week)</span>
+                <span className="ml-1 font-mono">{lastRun.skippedAlreadySent}</span>
+              </li>
+            ) : null}
+            {lastRun.errors > 0 ? (
+              <li className="col-span-2 text-red-700">
+                <span>Errors</span>
+                <span className="ml-1 font-mono">{lastRun.errors}</span>
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="mt-6 border-t border-wp-stone/60 pt-4">
+        <h3 className="text-sm font-semibold text-wp-ink">Digest recipients</h3>
+        <p className="mt-0.5 text-xs text-wp-slate">
+          Add anyone who should receive the Friday email — pick a group member from
+          the dropdown or type an ad-hoc email for someone without a Waypoint account.
+        </p>
+
+        <form onSubmit={handleAdd} className="mt-3 flex flex-wrap items-start gap-2">
+          <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
+            <button
+              type="button"
+              className={
+                "px-2.5 py-1.5 text-xs " +
+                (mode === "user" ? "bg-wp-red text-white" : "bg-white text-wp-ink hover:bg-wp-stone/30")
+              }
+              onClick={() => { setMode("user"); setEmailError(null); }}
+            >
+              From user
+            </button>
+            <button
+              type="button"
+              className={
+                "px-2.5 py-1.5 text-xs " +
+                (mode === "email" ? "bg-wp-red text-white" : "bg-white text-wp-ink hover:bg-wp-stone/30")
+              }
+              onClick={() => { setMode("email"); setEmailError(null); }}
+            >
+              Ad-hoc email
+            </button>
+          </div>
+
+          {mode === "user" ? (
+            <select
+              className="input h-9 min-w-[240px]"
+              value={pickUserId}
+              onChange={(e) => setPickUserId(e.target.value)}
+            >
+              <option value="">— pick a user —</option>
+              {pickableUsers.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} ({u.email})
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              className="input h-9 min-w-[240px]"
+              type="email"
+              placeholder="alice@example.com"
+              value={emailInput}
+              onChange={(e) => { setEmailInput(e.target.value); setEmailError(null); }}
+              autoComplete="off"
+            />
+          )}
+
+          <button
+            type="submit"
+            className="btn-primary h-9"
+            disabled={
+              addUser.isPending ||
+              addEmail.isPending ||
+              (mode === "user" ? !pickUserId : !emailValid)
+            }
+          >
+            {addUser.isPending || addEmail.isPending ? "Adding…" : "Add"}
+          </button>
+        </form>
+        {emailError ? (
+          <p className="mt-2 text-xs text-red-700">{emailError}</p>
+        ) : null}
+
+        <MutationErrorBanner mutation={remove} className="mt-3" />
+
+        <div className="mt-3">
+          {recipients.isLoading ? (
+            <p className="text-xs text-wp-slate">Loading recipients…</p>
+          ) : (recipients.data ?? []).length === 0 ? (
+            <p className="rounded-md border border-dashed border-wp-stone px-3 py-2 text-xs text-wp-slate">
+              No recipients yet. The Friday digest won't send until at least one is added.
+            </p>
+          ) : (
+            <ul className="divide-y divide-wp-stone rounded-md border border-wp-stone">
+              {(recipients.data ?? []).map((r) => (
+                <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-wp-ink">
+                      {r.user ? r.user.name : r.email}
+                    </div>
+                    <div className="truncate text-xs text-wp-slate">
+                      {r.user ? r.user.email : "Ad-hoc address (no linked user)"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded text-wp-slate hover:bg-red-50 hover:text-red-700"
+                    aria-label={`Remove ${r.email}`}
+                    disabled={remove.isPending}
+                    onClick={() => {
+                      if (confirm(`Remove ${r.email} from the digest list?`)) {
+                        remove.mutate(r.id);
+                      }
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </section>
   );
 }

@@ -8,12 +8,19 @@ because Fly.io blocks outbound SMTP.
 - **Sender**: `Waypoint <onboarding@resend.dev>` — Resend's shared
   verified domain. Works instantly, but recipients see "via
   resend.dev" in most inbox clients.
-- **What's sent today**: one email per opted-in owner every
-  Thursday at 10:00 in `REPORTING_TIMEZONE`, listing the status
-  updates they owe that week. Only fires when they actually have
-  pending items — the query mirrors the "Pending" list in the app.
-  Timed as a day-of-week nudge before the Friday due-date instead
-  of a Monday-morning blast.
+- **What's sent today**: two weekly emails per tenant.
+  1. **Reminder** — one email per opted-in owner every Thursday
+     at 10:00 in `REPORTING_TIMEZONE`, listing the status updates
+     they owe that week. Only fires when they actually have
+     pending items — the query mirrors the "Pending" list in the
+     app. Timed as a day-of-week nudge before the Friday due-date.
+  2. **Digest** — one email per admin-picked recipient every
+     Friday at 17:00 in `REPORTING_TIMEZONE`, containing all of
+     that week's completed status updates grouped by swim lane.
+     Recipients are managed under Admin → Notifications (a mix
+     of registered users and ad-hoc email addresses). Groups
+     with no completed updates or no recipients skip silently
+     so the digest never sends an empty "nothing to report".
 
 ## Fly.io secrets to set
 
@@ -79,10 +86,18 @@ SELECT kind, week_of, sent_at, provider_message_id
  LIMIT 20;
 ```
 
-The `(kind, user_id, week_of)` unique index guarantees no
-double-send even if the job runs twice or the container restarts.
+Two partial-unique indexes guarantee no double-send even if the
+job runs twice or the container restarts:
+
+  * `(kind, user_id, week_of)` for the reminder (one row per
+    user per week).
+  * `(kind, group_id, LOWER(recipient_email), week_of)` for the
+    digest (one row per group + email combo per week — the
+    lowercase email is the tie-breaker because addresses are
+    case-insensitive).
+
 Cleanup rows (for failed sends where the provider errored) drop
-themselves so the next Thursday's run gets a fresh shot.
+themselves so the next scheduled run gets a fresh shot.
 
 ## Opt-out surface
 
