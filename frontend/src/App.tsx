@@ -12,6 +12,8 @@ import { KpiReportView } from "./views/KpiReportView";
 import { AdminSettingsView } from "./views/AdminSettingsView";
 import { PhasesView } from "./views/PhasesView";
 import { LoginView } from "./views/LoginView";
+import { ForgotPasswordView } from "./views/ForgotPasswordView";
+import { ResetPasswordView } from "./views/ResetPasswordView";
 import { ReminderBanner } from "./components/ReminderBanner";
 import { UserSwitcher } from "./components/UserSwitcher";
 import { GroupSwitcher } from "./components/GroupSwitcher";
@@ -57,6 +59,8 @@ export function App() {
       return (
         <Routes>
           <Route path="/login" element={<LoginView />} />
+          <Route path="/forgot-password" element={<ForgotPasswordView />} />
+          <Route path="/reset-password" element={<ResetPasswordView />} />
           <Route path="*" element={<Navigate to="/login" replace state={{ from: location }} />} />
         </Routes>
       );
@@ -107,9 +111,12 @@ export function App() {
           <Route path="/kpis" element={<KpiReportView />} />
           <Route path="/phases" element={<PhasesView />} />
           <Route path="/admin" element={<AdminSettingsView />} />
-          {/* /login is only meaningful when unauthenticated; if we
-              reach it while signed in just bounce home. */}
+          {/* /login, /forgot-password, /reset-password are only
+              meaningful when unauthenticated; if we reach any while
+              signed in just bounce home. */}
           <Route path="/login" element={<Navigate to="/board" replace />} />
+          <Route path="/forgot-password" element={<Navigate to="/board" replace />} />
+          <Route path="/reset-password" element={<Navigate to="/board" replace />} />
           <Route path="*" element={<Navigate to="/board" replace />} />
         </Routes>
       </main>

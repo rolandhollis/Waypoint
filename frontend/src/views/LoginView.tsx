@@ -1,15 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Eye, EyeOff, LogIn } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import type { User } from "../lib/types";
 
 /**
- * Password-mode login screen. Standard email + password form; no
- * "forgot password" (admin-driven resets by design), no "sign up"
- * (roster is admin-managed), no auto-lockout warnings (server
- * returns a 429 with a friendly message when the limiter kicks in).
+ * Password-mode login screen. Standard email + password form plus a
+ * self-serve "forgot password" link that kicks off an email-based
+ * reset. No "sign up" (roster stays admin-managed) and no auto
+ * lockout copy — the server returns a friendly 429 when the login
+ * limiter fires.
  */
 export function LoginView() {
   const [email, setEmail] = useState("");
@@ -134,7 +135,12 @@ export function LoginView() {
         </button>
 
         <p className="text-center text-[11px] text-wp-slate">
-          Forgot your password? Ask an admin to reset it.
+          <Link
+            to="/forgot-password"
+            className="font-medium text-wp-red hover:underline"
+          >
+            Forgot your password?
+          </Link>
         </p>
       </form>
     </div>
