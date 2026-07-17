@@ -169,6 +169,16 @@ function buildResetUrl(plaintext: string): string {
 async function sendResetEmail(user: UserRow, plaintext: string): Promise<void> {
   const url = buildResetUrl(plaintext);
   const ttlMinutes = Math.round(RESET_TOKEN_TTL_MS / 60000);
+  // Dev convenience: when we're not actually sending (no Resend key
+  // configured — typical for a local checkout) echo the redemption
+  // URL to the backend log. Safe to include here because if the
+  // email didn't leave the box, nobody but the operator watching the
+  // log is going to see the plaintext token. When a real API key
+  // IS configured we suppress this so prod logs never carry a live
+  // reset link.
+  if (!config.email.resendApiKey) {
+    console.warn(`[password-reset] dry-run link for ${user.email}: ${url}`);
+  }
   const subject = "Reset your Waypoint password";
   const text = [
     `Hi ${user.name || "there"},`,

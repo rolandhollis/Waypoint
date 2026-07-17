@@ -82,6 +82,23 @@ export function ResetPasswordView() {
   const canSubmit =
     clientValid && password === confirm && !submit.isPending && probe.data?.live;
 
+  // Small "why disabled" hint that shows the FIRST reason submit
+  // isn't clickable. The full policy checklist is right above (via
+  // PasswordField's own checklist), but a single-line summary next
+  // to the button saves people scrolling to figure out what's still
+  // missing. Kept intentionally terse.
+  const disabledReason = submit.isPending
+    ? null
+    : !password
+      ? "Enter a new password."
+      : !clientValid
+        ? "Password doesn't meet all the requirements in the checklist above."
+        : !confirm
+          ? "Confirm the new password to continue."
+          : password !== confirm
+            ? "Passwords don't match."
+            : null;
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-wp-stone/30 to-white">
       <div className="card-surface w-full max-w-md space-y-4 p-6">
@@ -134,6 +151,7 @@ export function ResetPasswordView() {
                   onChange={setPassword}
                   autoFocus
                   allowGenerate
+                  generateUrl="/auth/password/generate"
                 />
               </div>
             </div>
@@ -179,6 +197,9 @@ export function ResetPasswordView() {
               <KeyRound size={14} />
               {submit.isPending ? "Saving…" : "Save new password"}
             </button>
+            {disabledReason ? (
+              <p className="text-center text-[11px] text-wp-slate">{disabledReason}</p>
+            ) : null}
 
             <p className="text-center text-[11px] text-wp-slate">
               <Link to="/login" className="hover:underline">

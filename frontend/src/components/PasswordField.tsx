@@ -28,6 +28,7 @@ export function PasswordField({
   placeholder = "Enter or generate a password",
   showChecklist = true,
   allowGenerate = true,
+  generateUrl = "/users/password/generate",
 }: {
   id?: string;
   value: string;
@@ -39,6 +40,13 @@ export function PasswordField({
   placeholder?: string;
   showChecklist?: boolean;
   allowGenerate?: boolean;
+  /**
+   * Backend endpoint to POST to for a fresh password. Defaults to
+   * the admin-gated `/users/password/generate` since that's where
+   * the field lives for most flows. The public reset page overrides
+   * with `/auth/password/generate` because it runs unauthenticated.
+   */
+  generateUrl?: string;
 }) {
   const [visible, setVisible] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -50,7 +58,7 @@ export function PasswordField({
       setGenerating(true);
       // Generator lives on the server so the source of randomness is
       // crypto-quality and the alphabet stays in sync with the policy.
-      const { password } = await api<{ password: string }>("/users/password/generate", {
+      const { password } = await api<{ password: string }>(generateUrl, {
         method: "POST",
         body: "{}",
       });
@@ -113,17 +121,21 @@ export function PasswordField({
               key={c.label}
               className={cn(
                 "flex items-center gap-2",
-                c.passed ? "text-emerald-700" : "text-wp-slate",
+                c.passed ? "text-emerald-700" : "text-red-700",
               )}
             >
+              {/* Green ✓ for pass, red ✕ for fail. Both use a filled
+                  circle glyph so scanning the list is a color +
+                  shape signal, not just color (matters for anyone
+                  with red/green color-vision deficiency). */}
               <span
                 aria-hidden
                 className={cn(
-                  "inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border text-[10px]",
-                  c.passed ? "border-emerald-500 bg-emerald-500 text-white" : "border-wp-stone bg-white text-transparent",
+                  "inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-[10px] font-bold text-white",
+                  c.passed ? "bg-emerald-500" : "bg-red-500",
                 )}
               >
-                ✓
+                {c.passed ? "✓" : "✕"}
               </span>
               {c.label}
             </li>

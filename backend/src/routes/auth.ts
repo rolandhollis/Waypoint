@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { query } from "../db/pool.js";
 import {
   formatPasswordErrors,
+  generatePassword,
   hashPassword,
   validatePassword,
   verifyPassword,
@@ -309,6 +310,22 @@ authRouter.post("/reset-password", async (req, res) => {
  * Returns 200 {live: bool} instead of 404 so the frontend gets a
  * single easy shape to switch on.
  */
+/**
+ * POST /api/auth/password/generate
+ *
+ * Public generator so the reset page can offer the same "Generate"
+ * button as the admin flow without needing a session. Returns a
+ * single policy-compliant random string — no user data, no
+ * enumeration surface, so open access is fine. The admin variant
+ * at /users/password/generate stays gated because it's the
+ * "canonical" call from admin-only flows; keeping both endpoints
+ * makes route-permission audits easier ("if it's under /users/*,
+ * you need to be signed in").
+ */
+authRouter.post("/password/generate", (_req, res) => {
+  res.json({ password: generatePassword() });
+});
+
 authRouter.get("/reset-password/probe", async (req, res) => {
   if (config.authMode !== "password") {
     res.status(400).json({ error: "auth mode does not use password login" });

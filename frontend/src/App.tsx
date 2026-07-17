@@ -35,12 +35,23 @@ export function App() {
   // Wire a single global 401 handler that flips the shell back to
   // /login (password mode) or the mock picker (mock mode). Runs once
   // per mount because the handler ref is deps-invariant.
+  //
+  // IMPORTANT: don't force-navigate away from routes that are
+  // explicitly meaningful while unauthenticated. /reset-password
+  // carries a one-time token in the URL that IS the authorization
+  // — bouncing to /login would throw the token away and land the
+  // user on a screen that can't help them. /forgot-password is the
+  // same story (no token, but it's the entry point of the recovery
+  // flow). The unauthenticated Routes block below already renders
+  // the correct view for both paths, so we just clear the me cache
+  // and let the tree re-render.
   useEffect(() => {
     setUnauthorizedHandler(() => {
       qc.setQueryData(["me"], null);
-      if (isPasswordMode) {
-        navigate("/login", { replace: true });
-      }
+      if (!isPasswordMode) return;
+      const path = window.location.pathname;
+      if (path === "/reset-password" || path === "/forgot-password") return;
+      navigate("/login", { replace: true });
     });
     return () => setUnauthorizedHandler(null);
   }, [qc, navigate, isPasswordMode]);
@@ -111,12 +122,20 @@ export function App() {
           <Route path="/kpis" element={<KpiReportView />} />
           <Route path="/phases" element={<PhasesView />} />
           <Route path="/admin" element={<AdminSettingsView />} />
-          {/* /login, /forgot-password, /reset-password are only
-              meaningful when unauthenticated; if we reach any while
-              signed in just bounce home. */}
+          {/* /login and /forgot-password only make sense while
+              unauthenticated — bounce signed-in users home so they
+              don't see the picker copy for a state they aren't in.
+              /reset-password is different: the token in the URL is
+              the authorization, and users legitimately click these
+              links from an email while still holding a valid session
+              on a different device (or the same one, if they signed
+              in and *then* remembered they wanted to change their
+              password). Always render the view; the reset action
+              itself revokes every session on success, which cleanly
+              signs them out at the end of the flow. */}
           <Route path="/login" element={<Navigate to="/board" replace />} />
           <Route path="/forgot-password" element={<Navigate to="/board" replace />} />
-          <Route path="/reset-password" element={<Navigate to="/board" replace />} />
+          <Route path="/reset-password" element={<ResetPasswordView />} />
           <Route path="*" element={<Navigate to="/board" replace />} />
         </Routes>
       </main>
