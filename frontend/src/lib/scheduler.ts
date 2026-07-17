@@ -120,7 +120,17 @@ export type SchedulerResult = {
   clean: boolean;
 };
 
-const SEARCH_WINDOW_DAYS = 365;
+/**
+ * How far forward the algorithm looks from each item's floor offset
+ * for a slot that satisfies capacity/deadline. Made intentionally
+ * generous — a batch of 20 90-day items on a cap=3 team needs
+ * ~600 days of horizon to fully spread, and the linear scan is
+ * cheap enough that widening the window doesn't hurt (21 items ×
+ * 1095 days ≈ 23k trial evaluations, sub-100ms in practice).
+ * Prior value (365) capped placements at ~1 year, causing tail
+ * items to pile up at floor when the batch dwarfed the window.
+ */
+const SEARCH_WINDOW_DAYS = 3 * 365;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /* --- Date helpers (timezone-free, YYYY-MM-DD in / out) --- */
@@ -218,8 +228,20 @@ function bumpLoad(load: LoadMap, entityId: string, from: string, to: string, del
 
 /**
  * Walk [from, to] and record every day where the load would
- * exceed `cap` if this project were placed. Used to build the
- * ranges shown in the residual capacity warnings.
+ * exceed `cap` if this project were placed.
+ *
+ * Returns:
+ *   * `peak` — max concurrent count reached (used in the human-
+ *     readable warning: "peak 5/3").
+ *   * `area` — SUM over the span of `max(projected - cap, 0)`.
+ *     This is the "how bad" score the placement search uses to
+ *     break ties. Two offsets that both cause a peak of 4/3 no
+ *     longer look identical: an offset where only 5 days sit
+ *     over cap scores far lower than one where 90 days sit over
+ *     cap, so the scanner picks the LESS bad slot when nothing
+ *     in the window is clean.
+ *   * `from` / `to` — inclusive range of the first-to-last
+ *     over-cap day, for the warning UI.
  */
 function overloadRange(
   load: LoadMap,
@@ -227,12 +249,13 @@ function overloadRange(
   from: string,
   to: string,
   cap: number,
-): { from: string; to: string; peak: number } | null {
+): { from: string; to: string; peak: number; area: number } | null {
   const inner = load.get(entityId);
   if (!inner) return null;
   let first: string | null = null;
   let last: string | null = null;
   let peak = 0;
+  let area = 0;
   let cursor = from;
   while (cursor <= to) {
     const projected = (inner.get(cursor) ?? 0) + 1;
@@ -240,11 +263,12 @@ function overloadRange(
       if (first == null) first = cursor;
       last = cursor;
       if (projected > peak) peak = projected;
+      area += projected - cap;
     }
     cursor = addDaysIso(cursor, 1);
   }
   if (first == null || last == null) return null;
-  return { from: first, to: last, peak };
+  return { from: first, to: last, peak, area };
 }
 
 /* --- Capacity-counting rule (mirrors capacity.ts) --- */
@@ -447,7 +471,25 @@ export function scheduleRoadmap(input: SchedulerInput): SchedulerResult {
         const phaseDate = dates[phaseKey];
         if (phaseDate && phaseDate > d.deadline_date) deadlineHits++;
       }
-      // Capacity: only root scheduled items count.
+      // Capacity score: SUM of per-day excess across every entity's
+      // overlap window (not just a "did anything spill?" bit).
+      //
+      // Why area, not count: the tie-breaker in the outer scan
+      // prefers the earliest offset with the LOWEST score. When
+      // no offset is clean, a binary hit count leaves every
+      // "somebody's over cap" offset tied at 1 and items pile up
+      // at floor. Area lets the scanner distinguish "barely over
+      // for 5 days" from "way over for 90 days" and shift items
+      // toward the less-loaded end of the window.
+      //
+      // Scale: 1 unit == 1 entity-day over cap. Adding deadline
+      // hits and capacity area in the same score is intentional —
+      // both are already "worse == higher" and deadline misses
+      // dominate when they exist (1 deadline miss ≈ 1 day of
+      // capacity overlap, but deadlines usually appear one at a
+      // time whereas capacity area grows in chunks of the item's
+      // span, so capacity naturally outweighs when both are in
+      // play, which matches how a PM would triage).
       let capacityHits = 0;
       if (countsForCapacity({ ...p, ...dates })) {
         const span = overallSpan(original, offsetDays);
@@ -455,14 +497,14 @@ export function scheduleRoadmap(input: SchedulerInput): SchedulerResult {
           const u = usersById.get(p.owner_id);
           if (u?.capacity != null) {
             const ov = overloadRange(load, p.owner_id, span.start, span.end, u.capacity);
-            if (ov) capacityHits++;
+            if (ov) capacityHits += ov.area;
           }
         }
         for (const tid of p.teams ?? []) {
           const t = teamsById.get(tid);
           if (t?.capacity != null) {
             const ov = overloadRange(load, tid, span.start, span.end, t.capacity);
-            if (ov) capacityHits++;
+            if (ov) capacityHits += ov.area;
           }
         }
       }
