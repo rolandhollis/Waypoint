@@ -3,6 +3,7 @@ import { AlertTriangle, Calendar, ChevronRight, Layers, Map } from "lucide-react
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy } from "../lib/viewState";
 import { cn } from "../lib/cn";
+import { readableOn, tint } from "../lib/colors";
 import { computePhases } from "../lib/phaseCompute";
 import { StatusPill } from "./StatusPill";
 import { LaneMoveMenu } from "./LaneMoveMenu";
@@ -98,16 +99,24 @@ export function ProjectCard(props: {
             <span className="min-w-0 flex-1 truncate">{project.title}</span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-wp-slate">
-            {projectTeams.map((t) => (
-              <span
-                key={t.id}
-                className="chip"
-                style={{ borderColor: t.color, color: t.color }}
-                title={`Team: ${t.name}`}
-              >
-                {t.name}
-              </span>
-            ))}
+            {projectTeams.map((t) => {
+              // Colored text-only chips (`color: t.color` on white) ran
+              // straight into a readability wall for light team colors
+              // like yellow. Swap to tint-bg + colored border + a text
+              // color picked from the effective bg luminance so every
+              // team hex reads cleanly against the card surface.
+              const bg = tint(t.color, 0.14);
+              return (
+                <span
+                  key={t.id}
+                  className="chip"
+                  style={{ borderColor: t.color, background: bg, color: readableOn(bg) }}
+                  title={`Team: ${t.name}`}
+                >
+                  {t.name}
+                </span>
+              );
+            })}
             {project.tags.slice(0, 3).map((t) => (
               <span key={t} className="chip">#{t}</span>
             ))}
