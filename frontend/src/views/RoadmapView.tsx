@@ -188,6 +188,17 @@ export function RoadmapView() {
           lanes={lanes.data ?? []}
           users={users.data ?? []}
           teams={teams.data ?? []}
+          // Seed the modal's team/owner chip filters from the
+          // Roadmap's live filter state so the pick list matches
+          // what the user was just looking at. Only team + owner
+          // are forwarded because those are the only two filter
+          // controls the modal exposes; the modal's `useState`
+          // lazy initializer consumes these once on open, so the
+          // user can still change them inside the modal without
+          // being fought by a re-sync. The modal closes without
+          // touching this state, so nothing propagates back.
+          initialTeamIds={filters.teamIds}
+          initialOwnerIds={filters.ownerIds}
           onClose={() => setHelperOpen(false)}
         />
       ) : null}

@@ -67,12 +67,22 @@ export function RoadmapHelper({
   lanes,
   users,
   teams,
+  initialTeamIds,
+  initialOwnerIds,
   onClose,
 }: {
   projects: Project[];
   lanes: SwimLane[];
   users: User[];
   teams: Team[];
+  /** Seed for the modal's team-filter chips on open. Unknown ids
+   *  (e.g. stale from persisted zustand state) are dropped. Only
+   *  consumed by the lazy `useState` initializer — subsequent
+   *  changes to this prop while the modal is open are ignored so
+   *  the user's in-modal edits aren't overwritten. */
+  initialTeamIds?: string[];
+  /** Same contract as `initialTeamIds`, for the owner-filter chips. */
+  initialOwnerIds?: string[];
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -91,9 +101,21 @@ export function RoadmapHelper({
   const [phase, setPhase] = useState<Phase>("pick");
 
   // Filter selections — empty = "no filter" (matches the FilterBar
-  // convention elsewhere in the app).
-  const [teamFilter, setTeamFilter] = useState<Set<string>>(new Set());
-  const [ownerFilter, setOwnerFilter] = useState<Set<string>>(new Set());
+  // convention elsewhere in the app). Lazily seeded from the
+  // Roadmap's live filter state so opening the modal inherits the
+  // narrowing the user already applied; stale/unknown ids from
+  // persisted state are dropped against the current tenant's
+  // teams/users so the chip strip only renders valid options.
+  const [teamFilter, setTeamFilter] = useState<Set<string>>(() => {
+    if (!initialTeamIds?.length) return new Set();
+    const validIds = new Set(teams.map((t) => t.id));
+    return new Set(initialTeamIds.filter((id) => validIds.has(id)));
+  });
+  const [ownerFilter, setOwnerFilter] = useState<Set<string>>(() => {
+    if (!initialOwnerIds?.length) return new Set();
+    const validIds = new Set(users.map((u) => u.id));
+    return new Set(initialOwnerIds.filter((id) => validIds.has(id)));
+  });
 
   const filtered = useMemo(() => {
     return eligible.filter((p) => {
