@@ -2,7 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
 import { useCanWrite, useCurrentGroupRole, useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
@@ -30,6 +30,7 @@ export function ProjectDetailPanel({
   id,
   onClose,
   onOpenProject,
+  siblingIds,
 }: {
   id: string;
   onClose: () => void;
@@ -39,6 +40,16 @@ export function ProjectDetailPanel({
    * panel. Views that don't supply it fall back to a plain close.
    */
   onOpenProject?: (nextId: string) => void;
+  /**
+   * Optional ordered list of the surrounding items the user is
+   * browsing (Board lane+position, Roadmap chart order, KPI section
+   * order, etc.). When present the header renders prev/next chevrons
+   * and the arrow keys wire up so the user can walk the list without
+   * closing the panel back to the parent view. The current id must
+   * appear in the list; if it doesn't (stale filter change, deletion,
+   * etc.) nav collapses gracefully to disabled controls.
+   */
+  siblingIds?: string[];
 }) {
   const me = useMe();
   // Write / role checks go through the per-group hooks so a user
@@ -135,6 +146,61 @@ export function ProjectDetailPanel({
     return overloadsForProject(all, maybeMerged);
   }, [maybeMerged, projectList, users.data, teams.data]);
 
+  // Prev/next neighbours from the surrounding view's sibling list.
+  // We look at the *current* id (not the merged draft) because the
+  // sibling list is keyed off what the parent view is showing, which
+  // never reflects unsaved edits. If the current id isn't in the
+  // list (deletion, filter change) both neighbours are null and the
+  // controls disable — the user can still close and pick a new one.
+  const siblingNav = useMemo(() => {
+    if (!siblingIds || !onOpenProject) return { prev: null, next: null, pos: 0, total: 0 };
+    const idx = siblingIds.indexOf(id);
+    if (idx === -1) return { prev: null, next: null, pos: 0, total: siblingIds.length };
+    return {
+      prev: idx > 0 ? siblingIds[idx - 1]! : null,
+      next: idx < siblingIds.length - 1 ? siblingIds[idx + 1]! : null,
+      pos: idx + 1,
+      total: siblingIds.length,
+    };
+  }, [siblingIds, id, onOpenProject]);
+
+  // Arrow-key navigation across siblings. Bound to the window (not
+  // the panel root) so the shortcut works no matter where focus is
+  // inside the modal — as long as focus isn't inside a text input or
+  // contenteditable, where the arrow keys legitimately move the
+  // caret. We deliberately don't fight Radix's own Escape handling.
+  useEffect(() => {
+    if (!onOpenProject) return;
+    const open = onOpenProject;
+    function onKey(e: KeyboardEvent) {
+      if (e.defaultPrevented) return;
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      const t = e.target as HTMLElement | null;
+      // Skip when focus is somewhere the arrow keys mean "move the
+      // caret" — text inputs, textareas, selects, contenteditable
+      // surfaces. This avoids hijacking the user's edit gesture.
+      if (t) {
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (t.isContentEditable) return;
+      }
+      if (e.key === "ArrowLeft" && siblingNav.prev) {
+        e.preventDefault();
+        open(siblingNav.prev);
+      } else if (e.key === "ArrowRight" && siblingNav.next) {
+        e.preventDefault();
+        open(siblingNav.next);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onOpenProject, siblingNav.prev, siblingNav.next]);
+
+  // Neighbour titles for tooltip copy — a small "next: XYZ" hint on
+  // hover is worth the two extra map lookups.
+  const prevTitle = siblingNav.prev ? byId.get(siblingNav.prev)?.title : null;
+  const nextTitle = siblingNav.next ? byId.get(siblingNav.next)?.title : null;
+
   if (!maybeProject || !maybeMerged) return null;
   const project: Project = maybeProject;
   const merged: Project = maybeMerged;
@@ -209,9 +275,47 @@ export function ProjectDetailPanel({
                 ) : null}
               </div>
             </div>
-            <button aria-label="Close" className="btn-ghost !p-1" onClick={onClose}>
-              <X size={18} />
-            </button>
+            <div className="flex items-center gap-0.5">
+              {/* Prev/next through the surrounding view's items.
+                  Rendered only when the parent view supplied a
+                  sibling list — Board / Roadmap / Status Report /
+                  KPIs — so a modal opened out of context (nothing
+                  meaningful to page through) stays uncluttered.
+                  Arrow keys also navigate; see the effect above. */}
+              {siblingIds && onOpenProject ? (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Previous item"
+                    className="btn-ghost !p-1 disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={() => siblingNav.prev && onOpenProject(siblingNav.prev)}
+                    disabled={!siblingNav.prev}
+                    title={siblingNav.prev ? `Previous: ${prevTitle ?? ""} (\u2190)` : "No previous item"}
+                  >
+                    <ChevronLeft size={18} />
+                  </button>
+                  {siblingNav.total > 0 && siblingNav.pos > 0 ? (
+                    <span className="px-1 text-[11px] tabular-nums text-wp-slate">
+                      {siblingNav.pos} / {siblingNav.total}
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    aria-label="Next item"
+                    className="btn-ghost !p-1 disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={() => siblingNav.next && onOpenProject(siblingNav.next)}
+                    disabled={!siblingNav.next}
+                    title={siblingNav.next ? `Next: ${nextTitle ?? ""} (\u2192)` : "No next item"}
+                  >
+                    <ChevronRight size={18} />
+                  </button>
+                  <div className="mx-1 h-5 w-px bg-wp-stone" aria-hidden />
+                </>
+              ) : null}
+              <button aria-label="Close" className="btn-ghost !p-1" onClick={onClose}>
+                <X size={18} />
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto px-5 py-4">

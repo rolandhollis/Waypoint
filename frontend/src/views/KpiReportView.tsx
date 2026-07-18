@@ -48,6 +48,26 @@ export function KpiReportView() {
   const teamList = teams.data ?? [];
   const laneList = lanes.data ?? [];
 
+  // Flatten KPI sections in the same order they render on the page —
+  // KPI catalog order, projects sorted by end date within each — then
+  // dedupe by id (a project can appear under multiple KPIs; we don't
+  // want Next to loop the user back to a card they just left). This
+  // becomes the sibling list passed to the detail panel for
+  // arrow-key + button navigation.
+  const siblingIds = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const k of kpiList) {
+      const rows = (projectsByKpi.get(k.id) ?? []).slice().sort(byEndDate);
+      for (const p of rows) {
+        if (seen.has(p.id)) continue;
+        seen.add(p.id);
+        out.push(p.id);
+      }
+    }
+    return out;
+  }, [kpiList, projectsByKpi]);
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-6xl p-6">
@@ -87,7 +107,12 @@ export function KpiReportView() {
       </div>
 
       {selectedId ? (
-        <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} onOpenProject={setSelectedId} />
+        <ProjectDetailPanel
+          id={selectedId}
+          onClose={() => setSelectedId(null)}
+          onOpenProject={setSelectedId}
+          siblingIds={siblingIds}
+        />
       ) : null}
     </div>
   );

@@ -198,7 +198,16 @@ export function StatusReportView() {
         </table>
       </div>
 
-      {selectedId ? <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} onOpenProject={setSelectedId} /> : null}
+      {selectedId ? (
+        <ProjectDetailPanel
+          id={selectedId}
+          onClose={() => setSelectedId(null)}
+          onOpenProject={setSelectedId}
+          // Rows are already lane-grouped and server-sorted, so a
+          // straight map preserves the visual table order.
+          siblingIds={rows.map((r) => r.project_id)}
+        />
+      ) : null}
       {statusModalId ? <StatusUpdateModal projectId={statusModalId} onClose={() => setStatusModalId(null)} /> : null}
     </div>
   );
