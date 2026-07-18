@@ -9,8 +9,12 @@ export class HttpError extends Error {
   }
 }
 
-export function notFound(_req: Request, res: Response) {
-  res.status(404).json({ error: "not found" });
+export function notFound(req: Request, res: Response) {
+  // Include method + path so a mistyped or un-restarted route is
+  // self-diagnosing: the frontend banner surfaces this verbatim, and
+  // a bare "not found" on the wire is indistinguishable from an
+  // in-handler HttpError(404) with the same message.
+  res.status(404).json({ error: `route not found: ${req.method} ${req.originalUrl}` });
 }
 
 export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
