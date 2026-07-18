@@ -131,6 +131,28 @@ export function BoardView() {
     return byLane;
   }, [filtered]);
 
+  // Quick-action lane lookups. Kept up here (before any conditional
+  // return) so the hook order stays stable across the loading →
+  // loaded transition — React error #310 fires the moment an early
+  // return skips downstream hooks. See ProjectDetailPanel for the
+  // same pattern; the previous placement below the `if (isLoading)`
+  // guard was the root cause of the "blank white board" hotfix.
+  //
+  // Parking Lot is a case-insensitive name match (per PRD) since
+  // it's a soft convention rather than a schema flag; some tenants
+  // won't have one, and that's fine — the "Move to Parking Lot" row
+  // simply hides itself. Archive is a schema flag (`is_archive`),
+  // resolved the same way `/projects/:id/archive` resolves it
+  // server-side.
+  const parkingLotLaneId = useMemo(
+    () => (lanes.data ?? []).find((l) => l.name.trim().toLowerCase() === "parking lot")?.id ?? null,
+    [lanes.data],
+  );
+  const archiveLaneId = useMemo(
+    () => (lanes.data ?? []).find((l) => l.is_archive)?.id ?? null,
+    [lanes.data],
+  );
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const moveMutation = useMutation({
@@ -379,21 +401,6 @@ export function BoardView() {
     laneList.filter((l) => !l.is_terminal).sort((a, b) => a.order - b.order)[0] ??
     laneList[0] ??
     null;
-
-  // Quick-action lane lookups. Parking Lot is a case-insensitive name
-  // match (per PRD) since it's a soft convention rather than a schema
-  // flag; some tenants won't have one, and that's fine — the "Move to
-  // Parking Lot" row simply hides itself. Archive is a schema flag
-  // (`is_archive`), resolved the same way `/projects/:id/archive`
-  // resolves it server-side.
-  const parkingLotLaneId = useMemo(
-    () => laneList.find((l) => l.name.trim().toLowerCase() === "parking lot")?.id ?? null,
-    [laneList],
-  );
-  const archiveLaneId = useMemo(
-    () => laneList.find((l) => l.is_archive)?.id ?? null,
-    [laneList],
-  );
 
   const allProjects = projects.data ?? [];
 

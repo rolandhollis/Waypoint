@@ -40,21 +40,19 @@ export function KpiReportView() {
     return map;
   }, [scheduled]);
 
-  if (kpis.isLoading || projects.isLoading) {
-    return <div className="p-6 text-sm text-wp-slate">Loading KPI report…</div>;
-  }
-
-  const kpiList = kpis.data ?? [];
-  const teamList = teams.data ?? [];
-  const laneList = lanes.data ?? [];
-
   // Flatten KPI sections in the same order they render on the page —
   // KPI catalog order, projects sorted by end date within each — then
   // dedupe by id (a project can appear under multiple KPIs; we don't
   // want Next to loop the user back to a card they just left). This
   // becomes the sibling list passed to the detail panel for
   // arrow-key + button navigation.
+  //
+  // IMPORTANT: kept above the `if (isLoading)` early-return so the
+  // hook order stays stable across the loading → loaded transition.
+  // React error #310 fires the moment an early return skips
+  // downstream hooks — same fix as BoardView / ProjectDetailPanel.
   const siblingIds = useMemo(() => {
+    const kpiList = kpis.data ?? [];
     const seen = new Set<string>();
     const out: string[] = [];
     for (const k of kpiList) {
@@ -66,7 +64,15 @@ export function KpiReportView() {
       }
     }
     return out;
-  }, [kpiList, projectsByKpi]);
+  }, [kpis.data, projectsByKpi]);
+
+  if (kpis.isLoading || projects.isLoading) {
+    return <div className="p-6 text-sm text-wp-slate">Loading KPI report…</div>;
+  }
+
+  const kpiList = kpis.data ?? [];
+  const teamList = teams.data ?? [];
+  const laneList = lanes.data ?? [];
 
   return (
     <div className="h-full overflow-y-auto">
