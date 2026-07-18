@@ -7,7 +7,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, Mail, Send, Trash2 } from "lucide-react";
+import { ArrowDownAZ, GripVertical, Mail, Send, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import {
   useGroupMembers,
@@ -30,6 +30,8 @@ import { CsvImportAdmin } from "../components/CsvImportAdmin";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
 import { PasswordField } from "../components/PasswordField";
 import { passwordIsValid } from "../lib/password";
+import { GROUP_PALETTE, KPI_PALETTE, SWIM_LANE_PALETTE, TEAM_PALETTE, USER_PALETTE } from "../lib/colors";
+import { useAutoColor } from "../lib/useAutoColor";
 import { RevealPasswordCard } from "../components/RevealPasswordCard";
 import { X } from "lucide-react";
 
@@ -59,6 +61,30 @@ const ALL_TABS: TabDef[] = [
   { key: "notifications", label: "Notifications", render: () => <NotificationsAdmin /> },
   { key: "archived", label: "Deleted cards", render: () => <ArchivedProjectsAdmin /> },
 ];
+
+// -----------------------------------------------------------------
+// Alphabetize an id-list by display name using locale-aware,
+// case-insensitive compare with numeric awareness (so "Team 10"
+// sorts after "Team 2"). Shared by the per-list "Sort A→Z" buttons
+// on the Swim Lanes / Teams / KPIs admin tabs — one click sorts
+// the catalog and immediately persists the new order via each
+// list's existing `/reorder` endpoint.
+function alphaSortIdsByName<T extends { id: string; name: string }>(items: T[]): string[] {
+  return items
+    .slice()
+    .sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }),
+    )
+    .map((x) => x.id);
+}
+
+/** True when `items` is already ordered A→Z under the same
+ *  comparator alphaSortIdsByName uses. Lets the Sort button
+ *  render disabled once the list is a no-op away from sorted. */
+function isAlphabetical<T extends { id: string; name: string }>(items: T[]): boolean {
+  const sorted = alphaSortIdsByName(items);
+  return items.every((it, i) => it.id === sorted[i]);
+}
 
 export function AdminSettingsView() {
   const isAdmin = useIsAdmin();
@@ -674,12 +700,21 @@ function SwimLanesAdmin() {
   const projects = useProjects();
   const qc = useQueryClient();
   const [name, setName] = useState("");
-  const [color, setColor] = useState("#94a3b8");
+  const [color, setColor, resetColor] = useAutoColor(
+    SWIM_LANE_PALETTE,
+    (lanes.data ?? []).map((l) => l.color),
+  );
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const create = useMutation({
     mutationFn: () => api<SwimLane>("/swim-lanes", { method: "POST", body: JSON.stringify({ name, color }) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["swimLanes"] }); setName(""); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["swimLanes"] });
+      setName("");
+      // Clear the color override so the NEXT lane starts from a
+      // fresh autopick against the updated palette usage.
+      resetColor();
+    },
   });
   const patch = useMutation({
     mutationFn: (v: { id: string; body: Partial<SwimLane> }) => api<SwimLane>(`/swim-lanes/${v.id}`, { method: "PATCH", body: JSON.stringify(v.body) }),
@@ -727,10 +762,33 @@ function SwimLanesAdmin() {
     }
   }
 
+  const laneList = lanes.data ?? [];
+  const canSortLanes = laneList.length >= 2 && !isAlphabetical(laneList);
+
   return (
     <section className="card-surface p-4">
-      <h2 className="text-base font-semibold">Swim lanes</h2>
-      <p className="mt-1 text-xs text-wp-slate">Drag to reorder. Deleting a lane with cards will prompt to reassign them.</p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold">Swim lanes</h2>
+          <p className="mt-1 text-xs text-wp-slate">Drag to reorder. Deleting a lane with cards will prompt to reassign them.</p>
+        </div>
+        <button
+          type="button"
+          className="btn-secondary text-xs"
+          disabled={!canSortLanes || reorder.isPending}
+          title={
+            laneList.length < 2
+              ? "Add another lane to enable sorting"
+              : !canSortLanes
+              ? "Lanes are already in alphabetical order"
+              : "Reorder lanes A→Z and save"
+          }
+          onClick={() => reorder.mutate(alphaSortIdsByName(laneList))}
+        >
+          <ArrowDownAZ size={13} />
+          Sort A→Z
+        </button>
+      </div>
 
       <MutationErrorBanner mutation={create} className="mt-3" />
       <MutationErrorBanner mutation={patch} className="mt-3" />
@@ -902,12 +960,19 @@ function TeamsAdmin() {
   const projects = useProjects();
   const qc = useQueryClient();
   const [name, setName] = useState("");
-  const [color, setColor] = useState("#3b82f6");
+  const [color, setColor, resetColor] = useAutoColor(
+    TEAM_PALETTE,
+    (teams.data ?? []).map((t) => t.color),
+  );
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const create = useMutation({
     mutationFn: () => api<Team>("/teams", { method: "POST", body: JSON.stringify({ name, color }) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["teams"] }); setName(""); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["teams"] });
+      setName("");
+      resetColor();
+    },
   });
   const patch = useMutation({
     mutationFn: (v: { id: string; body: Partial<Team> }) => api<Team>(`/teams/${v.id}`, { method: "PATCH", body: JSON.stringify(v.body) }),
@@ -971,10 +1036,33 @@ function TeamsAdmin() {
     del.mutate({ id: team.id, reassign_to: reassign });
   }
 
+  const teamList = teams.data ?? [];
+  const canSortTeams = teamList.length >= 2 && !isAlphabetical(teamList);
+
   return (
     <section className="card-surface p-4">
-      <h2 className="text-base font-semibold">Teams</h2>
-      <p className="mt-1 text-xs text-wp-slate">Cross-functional pods that own or contribute to a project. Drag to reorder — this order controls how groups appear on the Roadmap.</p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold">Teams</h2>
+          <p className="mt-1 text-xs text-wp-slate">Cross-functional pods that own or contribute to a project. Drag to reorder — this order controls how groups appear on the Roadmap.</p>
+        </div>
+        <button
+          type="button"
+          className="btn-secondary text-xs"
+          disabled={!canSortTeams || reorder.isPending}
+          title={
+            teamList.length < 2
+              ? "Add another team to enable sorting"
+              : !canSortTeams
+              ? "Teams are already in alphabetical order"
+              : "Reorder teams A→Z and save"
+          }
+          onClick={() => reorder.mutate(alphaSortIdsByName(teamList))}
+        >
+          <ArrowDownAZ size={13} />
+          Sort A→Z
+        </button>
+      </div>
       <MutationErrorBanner mutation={create} className="mt-3" />
       <MutationErrorBanner mutation={patch} className="mt-3" />
       <MutationErrorBanner mutation={reorder} className="mt-3" />
@@ -1071,7 +1159,10 @@ function KpisAdmin() {
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [color, setColor] = useState("#0ea5e9");
+  const [color, setColor, resetColor] = useAutoColor(
+    KPI_PALETTE,
+    (kpis.data ?? []).map((k) => k.color),
+  );
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const create = useMutation({
@@ -1083,6 +1174,7 @@ function KpisAdmin() {
       qc.invalidateQueries({ queryKey: ["kpis"] });
       setName("");
       setDescription("");
+      resetColor();
     },
   });
   const patch = useMutation({
@@ -1140,13 +1232,36 @@ function KpisAdmin() {
     del.mutate(k.id);
   }
 
+  const kpiList = kpis.data ?? [];
+  const canSortKpis = kpiList.length >= 2 && !isAlphabetical(kpiList);
+
   return (
     <section className="card-surface p-4">
-      <h2 className="text-base font-semibold">KPIs</h2>
-      <p className="mt-1 text-xs text-wp-slate">
-        Outcome buckets projects can subscribe to. Drag to reorder — this order controls how
-        KPIs appear on the KPIs report tab.
-      </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold">KPIs</h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Outcome buckets projects can subscribe to. Drag to reorder — this order controls how
+            KPIs appear on the KPIs report tab.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn-secondary text-xs"
+          disabled={!canSortKpis || reorder.isPending}
+          title={
+            kpiList.length < 2
+              ? "Add another KPI to enable sorting"
+              : !canSortKpis
+              ? "KPIs are already in alphabetical order"
+              : "Reorder KPIs A→Z and save"
+          }
+          onClick={() => reorder.mutate(alphaSortIdsByName(kpiList))}
+        >
+          <ArrowDownAZ size={13} />
+          Sort A→Z
+        </button>
+      </div>
       <MutationErrorBanner mutation={create} className="mt-3" />
       <MutationErrorBanner mutation={patch} className="mt-3" />
       <MutationErrorBanner mutation={reorder} className="mt-3" />
@@ -1396,6 +1511,7 @@ function UsersAdmin() {
       {creating ? (
         <NewUserDialog
           isPasswordMode={isPasswordMode}
+          existingColors={(users.data ?? []).map((u) => u.color).filter((c): c is string => !!c)}
           onClose={() => setCreating(false)}
           onCreated={() => {
             qc.invalidateQueries({ queryKey: ["users"] });
@@ -1700,21 +1816,24 @@ function UnassignedUsersPanel() {
 // Create user
 // -----------------------------------------------------------------
 
-const USER_COLORS = ["#DC2626", "#EA580C", "#D97706", "#65A30D", "#0EA5E9", "#6366F1", "#9333EA", "#64748B"];
-
 function NewUserDialog({
   isPasswordMode,
+  existingColors,
   onClose,
   onCreated,
 }: {
   isPasswordMode: boolean;
+  /** Colors already used by existing users in this group — feeds the
+   *  autopicker so the default color for a new user doesn't collide
+   *  with an existing avatar. */
+  existingColors: string[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<User["role"]>("owner");
-  const [color, setColor] = useState(USER_COLORS[0]!);
+  const [color, setColor] = useAutoColor(USER_PALETTE, existingColors);
   const [capacity, setCapacity] = useState<string>("3");
   const [password, setPassword] = useState("");
   // The response includes generated_password exactly once. Cache it
@@ -1832,7 +1951,7 @@ function NewUserDialog({
           <label className="block">
             <span className="text-xs font-medium text-wp-slate">Color</span>
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
-              {USER_COLORS.map((c) => (
+              {USER_PALETTE.map((c) => (
                 <button
                   type="button"
                   key={c}
@@ -1994,7 +2113,12 @@ function GroupsAdmin() {
         ))}
       </div>
 
-      {showCreate ? <CreateGroupDialog onClose={() => setShowCreate(false)} /> : null}
+      {showCreate ? (
+        <CreateGroupDialog
+          existingColors={(groups.data ?? []).map((g) => g.color).filter((c): c is string => !!c)}
+          onClose={() => setShowCreate(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2233,10 +2357,19 @@ function GroupMembersPanel({ groupId }: { groupId: string }) {
   );
 }
 
-function CreateGroupDialog({ onClose }: { onClose: () => void }) {
+function CreateGroupDialog({
+  existingColors,
+  onClose,
+}: {
+  /** Colors already assigned to existing groups — used so the
+   *  default color for a new group doesn't collide with the sibling
+   *  tenants a super-user is looking at in the switcher. */
+  existingColors: string[];
+  onClose: () => void;
+}) {
   const qc = useQueryClient();
   const [name, setName] = useState("");
-  const [color, setColor] = useState("#6366F1");
+  const [color, setColor] = useAutoColor(GROUP_PALETTE, existingColors);
 
   const create = useMutation({
     mutationFn: () =>

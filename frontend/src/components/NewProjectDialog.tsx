@@ -1,9 +1,9 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { api } from "../lib/api";
-import { useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { useIsAdmin, useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import {
   effectiveDates,
   emptyPhaseDates,
@@ -19,14 +19,16 @@ import { ProjectPicker } from "./ProjectPicker";
 import { TeamMultiSelect } from "./TeamMultiSelect";
 
 /**
- * `defaultLaneId` is retained on the public API for now to keep the
- * board's "Add new item" wiring stable, but the dialog no longer
- * lets the user *pick* a lane — every new project lands in the
- * admin-designated default lane, with a small hint of where that is.
+ * The dialog shows a "Swim lane" picker pre-selected to either the
+ * caller-supplied `defaultLaneId` (e.g. a lane-specific "Add" button
+ * on the board) or the admin-designated default lane (the swim lane
+ * flagged `is_default_new`). Users can override the pick before
+ * submit; the chosen lane id ships in the create POST body.
  */
-export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { defaultLaneId: string | null; onClose: () => void }) {
+export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: string | null; onClose: () => void }) {
   const me = useMe();
   const lanes = useSwimLanes();
+  const isAdmin = useIsAdmin();
   const users = useUsers();
   const teams = useTeams();
   const projects = useProjects();
@@ -49,14 +51,41 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
   // dev segment with a dashed outline while this stays false.
   const [devEstimateConfirmed, setDevEstimateConfirmed] = useState(false);
 
-  // Resolve the landing lane the same way the backend does, so the
-  // "New items land in X" hint matches reality.
+  // Picker options: exclude the archive lane outright (new items
+  // shouldn't be created straight into archive) and, defensively,
+  // any admin-only lane when the current user isn't an admin. The
+  // backend already omits admin-only lanes from non-admin
+  // responses, so this second filter is normally a no-op.
   const laneList = lanes.data ?? [];
-  const resolvedLane =
-    laneList.find((l) => l.is_default_new) ??
-    laneList.filter((l) => !l.is_terminal).sort((a, b) => a.order - b.order)[0] ??
-    laneList[0] ??
-    null;
+  const laneOptions = useMemo(
+    () => laneList
+      .filter((l) => !l.is_archive)
+      .filter((l) => isAdmin || !l.is_admin_only)
+      .sort((a, b) => a.order - b.order),
+    [laneList, isAdmin],
+  );
+
+  // Selected lane id — user-editable, initialized once on mount via
+  // the effect below. `null` while lanes are still loading or when
+  // no eligible lanes exist.
+  const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
+  const laneInitializedRef = useRef(false);
+
+  useEffect(() => {
+    if (laneInitializedRef.current) return;
+    if (!lanes.data) return;
+    laneInitializedRef.current = true;
+    if (laneOptions.length === 0) return;
+    // Precedence: caller-supplied defaultLaneId (if visible in the
+    // picker) → admin-flagged is_default_new lane → first available
+    // non-archive lane in order.
+    const preferred =
+      (defaultLaneId ? laneOptions.find((l) => l.id === defaultLaneId) : null) ??
+      laneOptions.find((l) => l.is_default_new) ??
+      laneOptions[0] ??
+      null;
+    setSelectedLaneId(preferred?.id ?? null);
+  }, [lanes.data, laneOptions, defaultLaneId]);
   // Phase dates are optional; users can skip entirely and add them
   // later from the detail panel. Draft only carries fields the user
   // explicitly touched — `fillMissingPhaseDates` at submit time
@@ -74,13 +103,12 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
   const create = useMutation({
     mutationFn: () => {
       const dates = fillMissingPhaseDates(dateDraft, emptyPhaseDates);
-      // Omit swim_lane_id entirely — the backend will pick the
-      // default lane and 400 if the workspace has none configured.
       return api<Project>("/projects", {
         method: "POST",
         body: JSON.stringify({
           title,
           description: description.trim() || undefined,
+          swim_lane_id: selectedLaneId,
           owner_id: ownerId,
           teams: teamIds,
           type,
@@ -98,7 +126,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
   });
 
   // Subtasks require a parent to submit. Epics don't.
-  const canSubmit = !!title.trim() && !!resolvedLane
+  const canSubmit = !!title.trim() && !!selectedLaneId
     && (type === "epic" || !!parentId)
     && !create.isPending;
 
@@ -113,7 +141,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
       id: "__draft__",
       title: title || "(new project)",
       description,
-      swim_lane_id: resolvedLane?.id ?? null,
+      swim_lane_id: selectedLaneId,
       position: 0,
       owner_id: ownerId,
       teams: teamIds,
@@ -141,7 +169,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
     };
     const all = computeOverloads(projects.data ?? [], users.data ?? [], teams.data ?? [], preview);
     return overloadsForProject(all, preview);
-  }, [title, description, resolvedLane?.id, ownerId, teamIds, type, parentId, countsForCapacity, eff, merged.start_date, me.data?.id, projects.data, users.data, teams.data]);
+  }, [title, description, selectedLaneId, ownerId, teamIds, type, parentId, countsForCapacity, eff, merged.start_date, me.data?.id, projects.data, users.data, teams.data]);
 
   return (
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -215,6 +243,25 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
               />
             </label>
             <div className="grid grid-cols-2 gap-3">
+              <label className="col-span-2 block text-xs font-medium text-wp-slate">Swim lane
+                {laneOptions.length === 0 ? (
+                  <p className="mt-1 text-xs text-wp-red">
+                    No swim lanes exist yet. Ask an admin to create one before adding items.
+                  </p>
+                ) : (
+                  <select
+                    className="input mt-1"
+                    value={selectedLaneId ?? ""}
+                    onChange={(e) => setSelectedLaneId(e.target.value || null)}
+                  >
+                    {laneOptions.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.name}{l.is_default_new ? " (default)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </label>
               <label className="col-span-2 block text-xs font-medium text-wp-slate">Owner
                 <select className="input mt-1" value={ownerId ?? ""} onChange={(e) => setOwnerId(e.target.value || null)}>
                   <option value="">— None —</option>
@@ -232,16 +279,6 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
                 </div>
               </label>
             </div>
-
-            {resolvedLane ? (
-              <p className="text-xs text-wp-slate">
-                New items land in <span className="font-medium text-wp-ink">{resolvedLane.name}</span>. Admins can change this in Settings.
-              </p>
-            ) : (
-              <p className="text-xs text-wp-red">
-                No swim lanes exist yet. Ask an admin to create one before adding items.
-              </p>
-            )}
 
             <div className="border-t border-wp-stone/60 pt-3">
               <p className="text-xs text-wp-slate">
