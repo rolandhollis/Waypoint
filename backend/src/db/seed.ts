@@ -434,12 +434,15 @@ async function main() {
       const pid = rows[0]!.id;
       idByTitle[p.title] = pid;
 
-      for (const teamName of p.teams) {
-        const teamId = teamIds[teamName];
+      // Team join rows also carry a per-project position (same
+      // shape as project_kpis) so the frontend renders and lets the
+      // PM reorder them left-to-right in the order declared here.
+      for (let ti = 0; ti < p.teams.length; ti++) {
+        const teamId = teamIds[p.teams[ti]!];
         if (!teamId) continue;
         await client.query(
-          `INSERT INTO project_teams (project_id, team_id) VALUES ($1, $2)`,
-          [pid, teamId],
+          `INSERT INTO project_teams (project_id, team_id, position) VALUES ($1, $2, $3)`,
+          [pid, teamId, ti],
         );
       }
 

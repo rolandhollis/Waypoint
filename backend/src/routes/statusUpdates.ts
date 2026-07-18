@@ -104,7 +104,7 @@ statusUpdatesRouter.get("/report", async (req, res) => {
            p.position AS project_position,
            u.name     AS owner_name,
            COALESCE(
-             (SELECT array_agg(t.name ORDER BY t."order", t.name)
+             (SELECT array_agg(t.name ORDER BY pt.position ASC)
                 FROM project_teams pt
                 JOIN teams t ON t.id = pt.team_id
                WHERE pt.project_id = p.id),

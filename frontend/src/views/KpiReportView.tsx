@@ -167,7 +167,13 @@ function ProjectRow(props: {
   const { project, teams, lanes, onOpen } = props;
   const end = endDateOf(project);
   const lane = lanes.find((l) => l.id === project.swim_lane_id);
-  const projectTeams = teams.filter((t) => project.teams.includes(t.id));
+  // Iterate `project.teams` in its stored order so the KPI-report row
+  // mirrors whatever ranking the PM set on the detail panel — the
+  // primary team always shows first.
+  const teamsById = new Map(teams.map((t) => [t.id, t]));
+  const projectTeams = project.teams
+    .map((id) => teamsById.get(id))
+    .filter((t): t is Team => !!t);
   // Overdue / imminent styling — helps a PM scan for "what's about to
   // slip" without staring at the dates. Neutral if the project is
   // more than two weeks out.

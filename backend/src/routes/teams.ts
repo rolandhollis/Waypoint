@@ -132,9 +132,24 @@ teamsRouter.delete("/:id", requireAdmin, async (req, res) => {
         [body.reassign_to, groupId],
       );
       if (!check[0]) throw new HttpError(400, "reassign_to must be a team in this group");
+      // For every project that referenced the deleted team, either
+      // do nothing (target team is already listed — ON CONFLICT) or
+      // append the target team at the end of that project's team
+      // ordering. Appending is the least-surprising outcome: the PM
+      // never picked a rank for the reassigned team, so it should
+      // land after every position they *did* pick.
       await client.query(
-        `INSERT INTO project_teams (project_id, team_id)
-           SELECT project_id, $1 FROM project_teams WHERE team_id = $2
+        `INSERT INTO project_teams (project_id, team_id, position)
+           SELECT src.project_id,
+                  $1,
+                  COALESCE(
+                    (SELECT MAX(pt2.position) + 1
+                       FROM project_teams pt2
+                      WHERE pt2.project_id = src.project_id),
+                    0
+                  )
+             FROM project_teams src
+            WHERE src.team_id = $2
          ON CONFLICT DO NOTHING`,
         [body.reassign_to, team.id],
       );

@@ -141,7 +141,13 @@ export function ProjectDetailPanel({
   const phases = computePhases(merged);
   const eff = effectiveDates(merged);
   const owner = users.data?.find((u) => u.id === merged.owner_id);
-  const projectTeams = (teams.data ?? []).filter((t) => merged.teams.includes(t.id));
+  // Header chip preview follows the same team ranking as every other
+  // renderer: iterate `merged.teams` (the ordered list) and hydrate
+  // via the catalog map so the primary team always leads.
+  const teamsById = new Map((teams.data ?? []).map((t) => [t.id, t] as const));
+  const projectTeams = merged.teams
+    .map((id) => teamsById.get(id))
+    .filter((t): t is Team => !!t);
   const lane = lanes.data?.find((l) => l.id === merged.swim_lane_id);
   const requiresStatus = !!lane?.requires_weekly_status;
   const myChildren = kids.get(merged.id) ?? [];
@@ -215,7 +221,12 @@ export function ProjectDetailPanel({
                   {users.data?.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                 </select>
               </Field>
-              <Field label="Teams">
+              <Field
+                label="Teams"
+                hint={merged.teams.length > 1
+                  ? "Drag chips to reorder — first chip is the primary team, then secondary, and so on."
+                  : undefined}
+              >
                 <TeamMultiSelect
                   teams={teams.data ?? []}
                   value={merged.teams}
@@ -663,7 +674,9 @@ function HistoryRowBody({
   }
 
   // Nice-to-read array diffs for teams and tags: show what was added
-  // and removed rather than dumping both full arrays.
+  // and removed rather than dumping both full arrays. For teams, an
+  // order-only change (same set, different sequence) reads better as
+  // the full ordered before/after list — same treatment as KPIs above.
   if (field === "teams" || field === "tags") {
     const before = toStrArray(from);
     const after = toStrArray(to);
@@ -671,6 +684,18 @@ function HistoryRowBody({
     const removed = before.filter((x) => !after.includes(x));
     const format = (id: string) =>
       field === "teams" ? teams.find((t) => t.id === id)?.name ?? id : `#${id}`;
+    // Teams-only: pure reorder of an unchanged set. Render the full
+    // ordered rank so the audit trail shows exactly what the PM did.
+    if (
+      field === "teams" &&
+      added.length === 0 &&
+      removed.length === 0 &&
+      before.length > 1
+    ) {
+      return (
+        <>reordered {label} to {strong(after.map(format).join(" › "))}.</>
+      );
+    }
     const parts: React.ReactNode[] = [];
     if (added.length) {
       parts.push(

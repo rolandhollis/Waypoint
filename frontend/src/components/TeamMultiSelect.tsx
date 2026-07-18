@@ -1,5 +1,20 @@
 import * as Popover from "@radix-ui/react-popover";
-import { Check, ChevronDown, X } from "lucide-react";
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  horizontalListSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { Check, ChevronDown, GripVertical, X } from "lucide-react";
 import { useMemo } from "react";
 import type { Team } from "../lib/types";
 import { cn } from "../lib/cn";
@@ -8,6 +23,14 @@ import { cn } from "../lib/cn";
  * Multi-select for team memberships. Trigger shows the picked teams as
  * color-tagged chips; the popover has a checkbox list. Users can also
  * remove a team by clicking the × on its chip.
+ *
+ * Chip order is meaningful — PMs rank the contributing teams primary →
+ * secondary → tertiary and every downstream renderer (Board card,
+ * roadmap accent, KPI report, status report) mirrors that order. When
+ * two or more teams are assigned and the picker is editable, each chip
+ * carries a small grip on the left; dragging it reorders the chip and
+ * fires `onChange` with the new array so the existing PATCH plumbing
+ * ships the new order to the server.
  */
 export function TeamMultiSelect({
   value,
@@ -24,9 +47,27 @@ export function TeamMultiSelect({
   emptyText?: string;
   className?: string;
 }) {
+  // Look up selected teams while PRESERVING `value` order — the chip
+  // sequence IS the project's team ranking. Filtering the catalog
+  // by `value` (as an earlier version did) would silently re-sort by
+  // catalog order and hide the reorder feature entirely.
+  const teamsById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
   const selectedTeams = useMemo(
-    () => teams.filter((t) => value.includes(t.id)),
-    [teams, value],
+    () => value.map((id) => teamsById.get(id)).filter((t): t is Team => !!t),
+    [value, teamsById],
+  );
+
+  // Only enable drag-to-reorder when the user has write permission and
+  // there are at least two chips to reorder. A single chip renders as
+  // it did before this feature — no grip clutter.
+  const reorderEnabled = !disabled && selectedTeams.length >= 2;
+
+  const sensors = useSensors(
+    // Same activation distance as every other sortable list in the app
+    // (SortLaneModal, RoadmapHelper, KpiPicker) — 4px is comfortable
+    // enough that a plain click on the grip doesn't accidentally
+    // trigger a drag.
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
   );
 
   function toggle(id: string) {
@@ -40,6 +81,15 @@ export function TeamMultiSelect({
     onChange(value.filter((v) => v !== id));
   }
 
+  function handleDragEnd(e: DragEndEvent) {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const oldIdx = value.indexOf(String(active.id));
+    const newIdx = value.indexOf(String(over.id));
+    if (oldIdx < 0 || newIdx < 0) return;
+    onChange(arrayMove(value, oldIdx, newIdx));
+  }
+
   return (
     <Popover.Root>
       <Popover.Trigger
@@ -51,30 +101,30 @@ export function TeamMultiSelect({
         )}
       >
         {selectedTeams.length ? (
-          selectedTeams.map((t) => (
-            <span
-              key={t.id}
-              className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs"
-              style={{ borderColor: t.color, background: `${t.color}18`, color: t.color }}
-            >
-              <span
-                aria-hidden
-                className="inline-block h-2 w-2 rounded-full"
-                style={{ background: t.color }}
+          reorderEnabled ? (
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext
+                items={selectedTeams.map((t) => t.id)}
+                strategy={horizontalListSortingStrategy}
+              >
+                {selectedTeams.map((t) => (
+                  <SortableTeamChip
+                    key={t.id}
+                    team={t}
+                    onRemove={(e) => remove(t.id, e)}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+          ) : (
+            selectedTeams.map((t) => (
+              <StaticTeamChip
+                key={t.id}
+                team={t}
+                onRemove={disabled ? undefined : (e) => remove(t.id, e)}
               />
-              <span className="text-wp-ink">{t.name}</span>
-              {!disabled ? (
-                <span
-                  role="button"
-                  aria-label={`Remove ${t.name}`}
-                  onClick={(e) => remove(t.id, e)}
-                  className="ml-0.5 rounded p-0.5 text-wp-slate hover:bg-wp-stone/40 hover:text-wp-ink"
-                >
-                  <X size={10} />
-                </span>
-              ) : null}
-            </span>
-          ))
+            ))
+          )
         ) : (
           <span className="text-wp-slate">{emptyText}</span>
         )}
@@ -119,5 +169,110 @@ export function TeamMultiSelect({
         </Popover.Content>
       </Popover.Portal>
     </Popover.Root>
+  );
+}
+
+/**
+ * The visible bits every chip shares — colored border, tinted bg,
+ * dot marker, name, and the remove ×. Factored out because both the
+ * static single-chip case and the sortable multi-chip case render
+ * an identical body; only the wrapper element and the optional grip
+ * differ.
+ */
+function ChipBody({
+  team,
+  onRemove,
+}: {
+  team: Team;
+  onRemove?: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <>
+      <span
+        aria-hidden
+        className="inline-block h-2 w-2 rounded-full"
+        style={{ background: team.color }}
+      />
+      <span className="text-wp-ink">{team.name}</span>
+      {onRemove ? (
+        <span
+          role="button"
+          aria-label={`Remove ${team.name}`}
+          onClick={onRemove}
+          className="ml-0.5 rounded p-0.5 text-wp-slate hover:bg-wp-stone/40 hover:text-wp-ink"
+        >
+          <X size={10} />
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Non-draggable chip — rendered when disabled OR when only one team
+ * is assigned (nothing to reorder). Matches the original visual.
+ */
+function StaticTeamChip({
+  team,
+  onRemove,
+}: {
+  team: Team;
+  onRemove?: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs"
+      style={{ borderColor: team.color, background: `${team.color}18`, color: team.color }}
+    >
+      <ChipBody team={team} onRemove={onRemove} />
+    </span>
+  );
+}
+
+/**
+ * Draggable chip — same visual as the static chip plus a small
+ * left-side grip. The grip carries dnd-kit's drag listeners; a
+ * pure click on it (no 4px movement) is stopped from bubbling so
+ * the enclosing Popover.Trigger doesn't open the picker when the
+ * user was just adjusting a chip's order.
+ */
+function SortableTeamChip({
+  team,
+  onRemove,
+}: {
+  team: Team;
+  onRemove: (e: React.MouseEvent) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: team.id,
+  });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+    borderColor: team.color,
+    background: `${team.color}18`,
+    color: team.color,
+  };
+  return (
+    <span
+      ref={setNodeRef}
+      style={style}
+      className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs"
+    >
+      <span
+        {...attributes}
+        {...listeners}
+        aria-label={`Drag to reorder ${team.name}`}
+        // Non-drag clicks on the grip must not bubble to the
+        // Popover.Trigger — otherwise a stray tap would flip the
+        // picker open right after the user finished reordering.
+        onClick={(e) => e.stopPropagation()}
+        className="cursor-grab rounded p-0.5 text-wp-slate hover:bg-wp-stone/40 hover:text-wp-ink active:cursor-grabbing"
+      >
+        <GripVertical size={10} />
+      </span>
+      <ChipBody team={team} onRemove={onRemove} />
+    </span>
   );
 }

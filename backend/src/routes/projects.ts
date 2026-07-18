@@ -84,11 +84,12 @@ export async function recordAudit(
 }
 
 /**
- * Deep-ish equality check that treats arrays as unordered *sets* (used
- * for `teams` and `tags` — order isn't semantically meaningful there,
- * so `["a","b"] === ["b","a"]` and no audit event is written). Pass
- * `ordered = true` for fields where reorder itself is a meaningful
- * change (e.g. `kpis`, where the PM ranks their outcome buckets).
+ * Deep-ish equality check that treats arrays as unordered *sets* by
+ * default (used for `tags` — order isn't semantically meaningful
+ * there, so `["a","b"] === ["b","a"]` and no audit event is written).
+ * Pass `ordered = true` for fields where reorder itself is a
+ * meaningful change (e.g. `kpis` and `teams`, where the PM ranks
+ * their contributor list).
  */
 function valuesEqual(a: unknown, b: unknown, ordered = false): boolean {
   if (a === b) return true;
@@ -105,20 +106,29 @@ function valuesEqual(a: unknown, b: unknown, ordered = false): boolean {
   return false;
 }
 
-/** Audited fields for which array *order* is meaningful. */
-const ORDERED_ARRAY_FIELDS = new Set<string>(["kpis"]);
+/** Audited fields for which array *order* is meaningful.
+ *
+ * Both `kpis` and `teams` are ranked lists — PMs pick a primary team
+ * (drives the roadmap accent color, appears first on the Board card,
+ * etc.) then any number of secondary contributors, same as the KPI
+ * ranking. Treating them as ordered here means a reorder-only PATCH
+ * still writes a proper audit event; treating them as unordered would
+ * silently swallow the change. */
+const ORDERED_ARRAY_FIELDS = new Set<string>(["kpis", "teams"]);
 
 /**
  * SELECT fragment that hydrates a project row with its `teams` and
- * `kpis` arrays. `teams` is unordered (order isn't meaningful there);
- * `kpis` is ordered by the per-project `position` column because the
- * PM ranks their KPI list left-to-right. The alias `p` must be used
- * for the FROM.
+ * `kpis` arrays. Both are ordered by the per-project `position`
+ * column — the PM ranks each list left-to-right in the detail panel
+ * and every renderer downstream (Board card, roadmap accent, KPI
+ * report, status report) mirrors that order. The alias `p` must be
+ * used for the FROM.
  */
 const PROJECT_COLUMNS = `
   p.*,
   COALESCE(
-    (SELECT array_agg(pt.team_id) FROM project_teams pt WHERE pt.project_id = p.id),
+    (SELECT array_agg(pt.team_id ORDER BY pt.position ASC)
+       FROM project_teams pt WHERE pt.project_id = p.id),
     ARRAY[]::UUID[]
   ) AS teams,
   COALESCE(
@@ -156,15 +166,18 @@ const PROJECT_COLUMNS = `
 `;
 
 /**
- * Replace the full set of team memberships for a project. Used both by
- * POST (initial set) and PATCH (when the client sends a `teams` field).
+ * Replace the full ordered set of team memberships for a project.
+ * Called from POST (initial set) and PATCH (when the client sends
+ * a `teams` field). Order is derived from the array index — index
+ * 0 → position 0 — mirroring replaceProjectKpis so the per-project
+ * unique-position index stays gap-free after every write.
  */
 export async function replaceProjectTeams(client: PoolClient, projectId: string, teamIds: string[]) {
   await client.query(`DELETE FROM project_teams WHERE project_id = $1`, [projectId]);
   if (teamIds.length === 0) return;
-  const values = teamIds.map((_, i) => `($1, $${i + 2})`).join(", ");
+  const values = teamIds.map((_, i) => `($1, $${i + 2}, ${i})`).join(", ");
   await client.query(
-    `INSERT INTO project_teams (project_id, team_id) VALUES ${values}`,
+    `INSERT INTO project_teams (project_id, team_id, position) VALUES ${values}`,
     [projectId, ...teamIds],
   );
 }
@@ -187,11 +200,20 @@ async function replaceProjectKpis(client: PoolClient, projectId: string, kpiIds:
 }
 
 /**
- * Enforce phase-boundary ordering across the four phase dates. Each field
- * is independently nullable ("not scheduled yet"), but any pair that IS
- * set must be non-decreasing left to right: start ≤ target ≤ devStart ≤
- * devEnd ≤ optStart ≤ optEnd. Missing intermediate anchors fall through
- * to whichever earlier field is available.
+ * Enforce phase-boundary ordering across the six phase dates. Each
+ * field is independently nullable ("not scheduled yet"). The only
+ * invariant is that any pair of NON-NULL dates must be non-decreasing
+ * left-to-right in PHASE_ORDER: start ≤ target ≤ devStart ≤ devEnd ≤
+ * optStart ≤ optEnd. Null earlier fields are silently skipped — a PM
+ * who only fills in post-dev dates (or only development) is a
+ * supported flow, and clearing an earlier phase while a later phase
+ * remains set must not fail validation.
+ *
+ * Within-phase invariants (end ≥ start on Discovery/Dev/Opt) fall
+ * out of the chain automatically because each pair is adjacent in
+ * PHASE_ORDER. Cross-phase ordering (target ≤ devEnd even without
+ * dev_start; dev_end ≤ opt_end even without opt_start) also falls
+ * out for the same reason.
  */
 export function validatePhaseDates(p: {
   start_date?: string | null;
