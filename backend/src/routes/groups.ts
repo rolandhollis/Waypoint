@@ -89,6 +89,21 @@ groupsRouter.post("/", requireSuperUser, async (req, res) => {
       [group.id],
     );
 
+    // Seed the standard T-shirt size ladder used by the EZEstimates
+    // view. Mirrors the seed baked into migration 028 for existing
+    // groups so a brand-new tenant lands with S/M/L/XL/XXL ready to
+    // go. Admin can relabel or re-size from Admin → T-Shirt Sizes.
+    await client.query(
+      `INSERT INTO tshirt_sizes (group_id, label, days, position)
+       VALUES
+         ($1, 'S',   3,  0),
+         ($1, 'M',   7,  1),
+         ($1, 'L',   14, 2),
+         ($1, 'XL',  30, 3),
+         ($1, 'XXL', 90, 4)`,
+      [group.id],
+    );
+
     return group;
   });
   res.status(201).json(result);

@@ -169,6 +169,23 @@ export type KpiRow = {
   updated_at: Date;
 };
 
+/**
+ * T-shirt sizing preset used by the EZEstimates view. Fixed
+ * cardinality of 5 per tenant (S/M/L/XL/XXL, positions 0..4) — the
+ * admin can relabel and re-size, but never add or remove rows. See
+ * migration 028 and backend/src/routes/tshirtSizes.ts.
+ */
+export type TshirtSizeRow = {
+  id: string;
+  /** Tenant scope; every list/create/update filters by this. */
+  group_id: string;
+  label: string;
+  days: number;
+  position: number;
+  created_at: Date;
+  updated_at: Date;
+};
+
 export type ProjectType = "epic" | "subtask";
 
 /**

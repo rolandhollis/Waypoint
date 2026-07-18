@@ -12,6 +12,7 @@ import type {
   StatusReportResponse,
   SwimLane,
   Team,
+  TshirtSize,
   User,
   WeeklyStatusUpdate,
 } from "./types";
@@ -159,6 +160,21 @@ export function useKpis() {
   return useQuery({
     queryKey: ["kpis"],
     queryFn: () => api<Kpi[]>("/kpis"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+/**
+ * T-shirt size presets for the caller's current group. Ordered by
+ * position (0..4 → S/M/L/XL/XXL by default). Consumed by the
+ * EZEstimates size picker and the Admin → T-Shirt Sizes tab. Polls
+ * on the standard cadence so a relabel/re-size in another admin's
+ * tab shows up in the picker within a few seconds.
+ */
+export function useTshirtSizes() {
+  return useQuery({
+    queryKey: ["tshirtSizes"],
+    queryFn: () => api<TshirtSize[]>("/tshirt-sizes"),
     refetchInterval: POLL_MS,
   });
 }

@@ -20,11 +20,12 @@ import {
   useProjects,
   useSwimLanes,
   useTeams,
+  useTshirtSizes,
   useUnassignedUsers,
   useUserGroups,
   useUsers,
 } from "../lib/queries";
-import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, User } from "../lib/types";
+import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, TshirtSize, User } from "../lib/types";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
@@ -35,7 +36,7 @@ import { useAutoColor } from "../lib/useAutoColor";
 import { RevealPasswordCard } from "../components/RevealPasswordCard";
 import { X } from "lucide-react";
 
-type TabKey = "lanes" | "teams" | "kpis" | "users" | "groups" | "import" | "export" | "notifications" | "archived";
+type TabKey = "lanes" | "teams" | "kpis" | "tshirt-sizes" | "users" | "groups" | "import" | "export" | "notifications" | "archived";
 
 type TabDef = {
   key: TabKey;
@@ -54,6 +55,7 @@ const ALL_TABS: TabDef[] = [
   { key: "lanes",    label: "Swim lanes",    render: () => <SwimLanesAdmin /> },
   { key: "teams",    label: "Teams",         render: () => <TeamsAdmin /> },
   { key: "kpis",     label: "KPIs",          render: () => <KpisAdmin /> },
+  { key: "tshirt-sizes", label: "T-Shirt Sizes", render: () => <TshirtSizesAdmin /> },
   { key: "users",    label: "Users",         render: () => <UsersAdmin /> },
   { key: "groups",   label: "Groups",        render: () => <GroupsAdmin />, superUserOnly: true },
   { key: "import",   label: "Import CSV",    render: () => <CsvImportAdmin /> },
@@ -1343,6 +1345,133 @@ function SortableKpiRow(props: {
         />
       </div>
       <button className="btn-ghost !p-1 text-red-600" aria-label="Delete KPI" onClick={onDelete}><Trash2 size={14} /></button>
+    </li>
+  );
+}
+
+/**
+ * T-Shirt sizes admin — relabels + re-sizes the five presets (S, M,
+ * L, XL, XXL by default) that back the EZEstimates view's size
+ * picker. The catalog cardinality is fixed by design (no add /
+ * delete), which is why this tab is a simple two-column editor
+ * instead of the drag-reorder pattern used by lanes / teams / kpis.
+ *
+ * Validation is client-side + server-side:
+ *   - days must be a positive integer (1..3650)
+ *   - label must be non-empty and unique within the tenant
+ *   - the backend's PATCH schema mirrors both rules and returns 400
+ *     on violation; the mutation error banner surfaces the message.
+ */
+function TshirtSizesAdmin() {
+  const sizes = useTshirtSizes();
+  const qc = useQueryClient();
+
+  const patch = useMutation({
+    mutationFn: (v: { id: string; body: Partial<Pick<TshirtSize, "label" | "days">> }) =>
+      api<TshirtSize>(`/tshirt-sizes/${v.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(v.body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tshirtSizes"] }),
+  });
+
+  const rows = sizes.data ?? [];
+
+  return (
+    <section className="card-surface p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold">T-Shirt Sizes</h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Presets available in the EZEstimates size picker. Fixed at five
+            rows per tenant; you can relabel and re-size but not add or
+            remove. Days must be a positive integer.
+          </p>
+        </div>
+      </div>
+
+      <MutationErrorBanner mutation={patch} className="mt-3" />
+
+      {sizes.isLoading ? (
+        <p className="mt-3 text-xs text-wp-slate">Loading sizes…</p>
+      ) : rows.length === 0 ? (
+        <p className="mt-3 text-xs text-wp-slate">
+          No sizes configured yet. This shouldn't happen — the migration seeds
+          five rows per group. Reach out to a super-admin.
+        </p>
+      ) : (
+        <ul className="mt-3 divide-y divide-wp-stone">
+          {rows.map((s) => (
+            <TshirtSizeRow
+              key={s.id}
+              size={s}
+              onRename={(label) => patch.mutate({ id: s.id, body: { label } })}
+              onResize={(days) => patch.mutate({ id: s.id, body: { days } })}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/**
+ * One editable row for a T-shirt size preset. Both fields commit on
+ * blur (or Enter) to match the drag-reorder tabs' idiom of "type,
+ * click away, saved" — no explicit save button so PMs can rip
+ * through the ladder quickly.
+ */
+function TshirtSizeRow({
+  size,
+  onRename,
+  onResize,
+}: {
+  size: TshirtSize;
+  onRename: (label: string) => void;
+  onResize: (days: number) => void;
+}) {
+  return (
+    <li className="grid grid-cols-[auto_1fr_auto] items-center gap-3 py-2">
+      <span className="w-8 text-center text-xs font-semibold uppercase tracking-wide text-wp-slate/70">
+        {size.position + 1}
+      </span>
+      <label className="flex items-center gap-2 text-xs text-wp-slate">
+        Label
+        <input
+          key={`label-${size.id}-${size.updated_at}`}
+          className="input min-w-[6rem] flex-1"
+          defaultValue={size.label}
+          onBlur={(e) => {
+            const next = e.target.value.trim();
+            if (!next || next === size.label) return;
+            onRename(next);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          }}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-xs text-wp-slate">
+        Days
+        <input
+          type="number"
+          min={1}
+          max={3650}
+          key={`days-${size.id}-${size.updated_at}`}
+          className="input w-20"
+          defaultValue={size.days}
+          onBlur={(e) => {
+            const raw = e.target.value.trim();
+            if (!raw) return;
+            const next = Math.max(1, Math.floor(Number(raw)));
+            if (Number.isNaN(next) || next === size.days) return;
+            onResize(next);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          }}
+        />
+      </label>
     </li>
   );
 }

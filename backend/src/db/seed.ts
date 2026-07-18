@@ -132,7 +132,7 @@ async function main() {
     // starts from a blank multi-tenant world; CASCADE from users
     // covers user_groups but we truncate explicitly to be obvious.
     await client.query(
-      "TRUNCATE weekly_status_updates, status_history, project_audit_events, project_comments, project_teams, project_kpis, projects, teams, kpis, swim_lanes, user_groups, groups, users RESTART IDENTITY CASCADE",
+      "TRUNCATE weekly_status_updates, status_history, project_audit_events, project_comments, project_teams, project_kpis, projects, teams, kpis, tshirt_sizes, swim_lanes, user_groups, groups, users RESTART IDENTITY CASCADE",
     );
 
     console.log("Seeding groups...");
@@ -256,6 +256,28 @@ async function main() {
         [rmnGroupId, k.name, k.description, k.color, i, adminId],
       );
       kpiIds[k.name] = rows[0]!.id;
+    }
+
+    console.log("Seeding T-shirt size presets for both groups...");
+    // Both tenants get the standard S/M/L/XL/XXL ladder that backs the
+    // EZEstimates view's size picker. Mirrors migration 028 + the
+    // group-create hook in routes/groups.ts so a fresh seed lands
+    // identical to those paths.
+    const TSHIRT_SEEDS: Array<{ label: string; days: number; position: number }> = [
+      { label: "S",   days: 3,  position: 0 },
+      { label: "M",   days: 7,  position: 1 },
+      { label: "L",   days: 14, position: 2 },
+      { label: "XL",  days: 30, position: 3 },
+      { label: "XXL", days: 90, position: 4 },
+    ];
+    for (const groupId of [rmnGroupId, vcGroupId]) {
+      for (const s of TSHIRT_SEEDS) {
+        await client.query(
+          `INSERT INTO tshirt_sizes (group_id, label, days, position)
+           VALUES ($1, $2, $3, $4)`,
+          [groupId, s.label, s.days, s.position],
+        );
+      }
     }
 
     console.log("Seeding projects...");

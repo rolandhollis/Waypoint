@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type ViewKey = "board" | "roadmap";
+export type ViewKey = "board" | "roadmap" | "ezestimates";
 export type ColorBy = "swim_lane" | "team" | "owner";
 export type GroupBy = "none" | "owner" | "swim_lane" | "team" | "tag" | "kpi";
 
@@ -29,6 +29,7 @@ type PerView = {
 type Store = {
   board: PerView;
   roadmap: PerView;
+  ezestimates: PerView;
   /**
    * Set of epic ids that are expanded on the Roadmap. Everything else
    * shows only the epic row; expanding reveals the full descendant
@@ -51,12 +52,17 @@ type Store = {
 // because that's the layout most PMs open it in.
 const defaultBoardPerView: PerView   = { filters: emptyFilters, colorBy: "swim_lane", groupBy: "none" };
 const defaultRoadmapPerView: PerView = { filters: emptyFilters, colorBy: "swim_lane", groupBy: "team" };
+// EZEstimates is a flat, sizing-focused table — the color-by /
+// group-by controls aren't rendered there, so the defaults are just
+// filler that the FilterBar never surfaces to the user.
+const defaultEzestimatesPerView: PerView = { filters: emptyFilters, colorBy: "swim_lane", groupBy: "none" };
 
 export const useViewStore = create<Store>()(
   persist(
     (set) => ({
       board: defaultBoardPerView,
       roadmap: defaultRoadmapPerView,
+      ezestimates: defaultEzestimatesPerView,
       expandedEpicIds: [],
       setFilters: (view, filters) => set((s) => ({ ...s, [view]: { ...s[view], filters } })),
       setColorBy: (view, colorBy) => set((s) => ({ ...s, [view]: { ...s[view], colorBy } })),
@@ -71,7 +77,12 @@ export const useViewStore = create<Store>()(
       collapseAllEpics: () => set(() => ({ expandedEpicIds: [] })),
       clear: (view) => set((s) => ({
         ...s,
-        [view]: view === "board" ? defaultBoardPerView : defaultRoadmapPerView,
+        [view]:
+          view === "board"
+            ? defaultBoardPerView
+            : view === "roadmap"
+            ? defaultRoadmapPerView
+            : defaultEzestimatesPerView,
       })),
     }),
     {
@@ -80,7 +91,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 3,
+      version: 4,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -94,6 +105,12 @@ export const useViewStore = create<Store>()(
         // clean landing view — epics-only is the requested norm.
         if (version < 3 && !Array.isArray(persisted.expandedEpicIds)) {
           persisted.expandedEpicIds = [];
+        }
+        // < v4: added the EZEstimates view. Backfill its per-view
+        // slot so `useViewStore((s) => s.ezestimates.filters)` on a
+        // returning user doesn't blow up on undefined.
+        if (version < 4 && !persisted.ezestimates) {
+          persisted.ezestimates = defaultEzestimatesPerView;
         }
         return persisted;
       },
