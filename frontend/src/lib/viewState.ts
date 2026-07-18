@@ -3,7 +3,7 @@ import { persist } from "zustand/middleware";
 
 export type ViewKey = "board" | "roadmap";
 export type ColorBy = "swim_lane" | "team" | "owner";
-export type GroupBy = "none" | "owner" | "swim_lane" | "team" | "tag";
+export type GroupBy = "none" | "owner" | "swim_lane" | "team" | "tag" | "kpi";
 
 export type FilterState = {
   ownerIds: string[];

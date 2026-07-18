@@ -16,9 +16,9 @@ import {
 } from "../lib/dependencies";
 import { computePhases } from "../lib/phaseCompute";
 import { computeEpicSubtaskSegments, type EpicSubtaskSegment } from "../lib/epicSegments";
-import { useCanWrite, useProjects } from "../lib/queries";
+import { useCanWrite, useKpis, useProjects } from "../lib/queries";
 import { childrenByParent, descendants, indexById, rootEpic } from "../lib/hierarchy";
-import type { Project, SwimLane, Team, User } from "../lib/types";
+import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore, type ColorBy, type GroupBy } from "../lib/viewState";
 
 type Zoom = "3mo" | "6mo" | "1yr";
@@ -164,9 +164,16 @@ export function GanttTimeline(props: Props) {
     return s;
   }, [projects, byId]);
 
+  // KPI catalog is only needed when grouping by KPI, but the hook is
+  // cheap (single cached query) and calling it unconditionally keeps
+  // hook order stable across groupBy switches. Empty list falls out
+  // when the workspace has no KPIs defined yet.
+  const kpisQuery = useKpis();
+  const kpis = kpisQuery.data ?? [];
+
   const groups = useMemo(
-    () => groupTreeRows(projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams),
-    [projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams],
+    () => groupTreeRows(projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams, kpis),
+    [projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams, kpis],
   );
 
   const lanesById = useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
@@ -421,16 +428,46 @@ export function GanttTimeline(props: Props) {
                     className="flex items-center justify-between border-b border-wp-stone bg-wp-stone/30 px-3 text-xs font-semibold uppercase tracking-wide text-wp-slate"
                     style={{ height: GROUP_HEADER_HEIGHT }}
                   >
-                    <span>{g.label}</span>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {/* KPI grouping keys off the KPI's canonical
+                          color, so we show the same swatch users see
+                          in the KPI report / picker. Other groupings
+                          don't set g.color and render label-only. */}
+                      {g.color ? (
+                        <span
+                          aria-hidden
+                          className="inline-block h-2 w-2 shrink-0 rounded-full"
+                          style={{ background: g.color }}
+                        />
+                      ) : null}
+                      <span className="truncate">{g.label}</span>
+                    </span>
                     <span>{g.rows.length}</span>
                   </div>
                 ) : null}
                 {g.rows.map((row) => {
                   const p = row.project;
                   return (
+                    // Whole label row is a click target for opening the
+                    // project detail panel — mirrors the SVG-side hit
+                    // rect so anywhere on a row (label OR chart) opens
+                    // the modal. Rendered as div role="button" (not a
+                    // <button>) because the expand chevron below is
+                    // itself an interactive control, and nesting a
+                    // <button> inside a <button> is invalid HTML.
                     <div
                       key={`lbl-${p.id}`}
-                      className="flex items-center gap-1 border-b border-wp-stone px-2 text-xs"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={p.title}
+                      onClick={() => onOpen(p.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onOpen(p.id);
+                        }
+                      }}
+                      className="flex cursor-pointer items-center gap-1 border-b border-wp-stone px-2 text-left text-xs transition-colors hover:bg-wp-stone/30 focus:bg-wp-stone/40 focus:outline-none"
                       style={{ height: ROW_HEIGHT }}
                     >
                       {/* Indent scales with depth so nesting is obvious. */}
@@ -439,7 +476,14 @@ export function GanttTimeline(props: Props) {
                         <button
                           type="button"
                           className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-wp-slate hover:bg-wp-stone/60 hover:text-wp-ink"
-                          onClick={() => toggleEpicExpanded(p.id)}
+                          // Chevron toggles expand/collapse — stop the
+                          // click from bubbling to the row's onOpen so
+                          // clicking the chevron doesn't ALSO pop the
+                          // detail modal on top of the expand.
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleEpicExpanded(p.id);
+                          }}
                           title={row.isExpanded ? "Hide subtasks" : "Show subtasks"}
                           aria-label={row.isExpanded ? `Collapse ${p.title}` : `Expand ${p.title}`}
                         >
@@ -528,6 +572,33 @@ export function GanttTimeline(props: Props) {
                   const groupStartY = cursorY;
                   if (g.label) cursorY += GROUP_HEADER_HEIGHT;
                   const rowsTop = cursorY;
+                  // Per-row transparent rect stretching the full chart
+                  // width. Sits BEHIND the bar + overload overlays in
+                  // paint order so a click on empty row space (past
+                  // the bar's right edge, before its left edge, or in
+                  // an awaiting-dev / awaiting-opt gap that isn't
+                  // covered by the bar) opens the project detail
+                  // panel. Bar clicks are still handled by the bar's
+                  // own pointer-up → onOpen path so we don't
+                  // double-fire; overload tooltips get their own
+                  // onClick further down to preserve the click
+                  // affordance where they paint over this rect.
+                  const rowHitRects: React.ReactNode[] = g.rows.map((row, idx) => {
+                    const p = row.project;
+                    const rowY = cursorY + idx * ROW_HEIGHT;
+                    return (
+                      <rect
+                        key={`row-hit-${p.id}`}
+                        x={0}
+                        y={rowY}
+                        width={chartWidth}
+                        height={ROW_HEIGHT}
+                        fill="transparent"
+                        style={{ cursor: "pointer" }}
+                        onClick={() => onOpen(p.id)}
+                      />
+                    );
+                  });
                   const rowOverloadOverlays: React.ReactNode[] = [];
                   const rows = g.rows.map((row, idx) => {
                     const p = row.project;
@@ -645,6 +716,12 @@ export function GanttTimeline(props: Props) {
                   void rowsTop;
                   return (
                     <g key={`grp-${g.key}`}>
+                      {/* Hit rects go first so everything else paints
+                          (and hit-tests) on top of them. Group header
+                          rows have no project association, so they
+                          intentionally have NO hit rect and stay
+                          non-interactive. */}
+                      {rowHitRects}
                       {g.label ? (
                         <rect x={0} y={groupStartY} width={chartWidth} height={GROUP_HEADER_HEIGHT} fill="#F2F4F7" />
                       ) : null}
@@ -1389,7 +1466,18 @@ function computeRange(projects: Project[], timeframeMonths: number, dayPx: numbe
   return { start, end };
 }
 
-type Group = { key: string; label: string | null; rows: TreeRow[] };
+type Group = {
+  key: string;
+  label: string | null;
+  rows: TreeRow[];
+  /**
+   * Optional accent color for the group header. Only populated by
+   * groupings whose entities have a canonical color (currently just
+   * KPI); other groupings leave it undefined and the header renders
+   * label-only, matching the existing visual.
+   */
+  color?: string;
+};
 
 /**
  * Build the ordered list of rows for the roadmap. The top-level rows
@@ -1403,6 +1491,12 @@ type Group = { key: string; label: string | null; rows: TreeRow[] };
  * expanding an epic under Team A shows the whole tree under Team A
  * even if a subtask belongs to Team B. That matches the "epic is the
  * primary unit" mental model the user asked for.
+ *
+ * Multi-value groupings (team, kpi) intentionally duplicate a root
+ * across every group it belongs to — so a project tagged with two
+ * KPIs shows up under both KPI headers. Single-value groupings
+ * (owner, swim_lane, tag-primary) put each root in exactly one
+ * bucket.
  */
 function groupTreeRows(
   projects: Project[],
@@ -1414,6 +1508,7 @@ function groupTreeRows(
   users: User[],
   lanes: SwimLane[],
   teams: Team[],
+  kpis: Kpi[],
 ): Group[] {
   const inSet = new Set(projects.map((p) => p.id));
 
@@ -1458,12 +1553,20 @@ function groupTreeRows(
   const bucket = new Map<string, Project[]>();
   const labels = new Map<string, string>();
   const sortKeys = new Map<string, number>();
+  const colors = new Map<string, string>();
   const UNASSIGNED_KEY = "__unassigned";
   const UNASSIGNED_SORT = Number.MAX_SAFE_INTEGER;
 
-  const put = (key: string, label: string, sortKey: number | undefined, root: Project) => {
+  const put = (
+    key: string,
+    label: string,
+    sortKey: number | undefined,
+    root: Project,
+    color?: string,
+  ) => {
     labels.set(key, label);
     if (sortKey !== undefined) sortKeys.set(key, sortKey);
+    if (color) colors.set(key, color);
     const arr = bucket.get(key) ?? [];
     arr.push(root);
     bucket.set(key, arr);
@@ -1493,6 +1596,22 @@ function groupTreeRows(
     } else if (groupBy === "tag") {
       const primary = p.tags[0] ?? null;
       put(primary ?? UNASSIGNED_KEY, primary ? `#${primary}` : "No tag", undefined, p);
+    } else if (groupBy === "kpi") {
+      // KPI is multi-value: a project with N KPIs shows up under all N
+      // groups. Roots with zero KPIs land in the shared UNASSIGNED
+      // bucket rendered at the bottom as "(no KPI)". Unknown KPI ids
+      // on a project (e.g. a KPI deleted since the project was last
+      // saved) are silently skipped; treating them as unassigned
+      // would incorrectly merge them with projects that have no
+      // KPIs at all.
+      const known = (p.kpis ?? [])
+        .map((kid) => kpis.find((x) => x.id === kid))
+        .filter((k): k is Kpi => Boolean(k));
+      if (known.length === 0) {
+        put(UNASSIGNED_KEY, "(no KPI)", undefined, p);
+      } else {
+        for (const k of known) put(k.id, k.name, k.order, p, k.color);
+      }
     }
   }
 
@@ -1501,6 +1620,7 @@ function groupTreeRows(
       key: k,
       label: labels.get(k) ?? k,
       rows: rs.slice().sort(byStart).flatMap((r) => rowsFor(r.id)),
+      color: colors.get(k),
     }))
     .sort((a, b) => {
       const aw = a.key === UNASSIGNED_KEY ? UNASSIGNED_SORT : sortKeys.get(a.key);
