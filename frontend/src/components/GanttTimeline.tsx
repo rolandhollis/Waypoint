@@ -835,38 +835,57 @@ function Bar(props: {
   const barY = y + BAR_PADDING + extraPad;
   const barH = ROW_HEIGHT - BAR_PADDING * 2 - extraPad * 2;
 
-  const disc = phases.discovery!;
-  const dev = phases.development!;
-  const opt = phases.optimization!;
+  // Each phase is now independently nullable — a project with only
+  // (say) post-dev dates renders just the Optimization segment. The
+  // "geom" objects below carry the pixel positions for every phase
+  // that IS plottable; missing phases stay null and their bar/handle
+  // /segment-label render blocks simply short-circuit below.
+  const disc = phases.discovery;
+  const dev = phases.development;
+  const opt = phases.optimization;
   const devGap = phases.awaitingDev;
   const optGap = phases.awaitingOptimization;
 
-  const discX = differenceInCalendarDays(disc.start, chartStart) * dayPx;
-  const discW = Math.max(2, differenceInCalendarDays(disc.end, disc.start) * dayPx);
-  const devGapX = devGap ? differenceInCalendarDays(devGap.start, chartStart) * dayPx : 0;
-  const devGapW = devGap ? Math.max(2, differenceInCalendarDays(devGap.end, devGap.start) * dayPx) : 0;
-  const devX = differenceInCalendarDays(dev.start, chartStart) * dayPx;
-  const devW = Math.max(2, differenceInCalendarDays(dev.end, dev.start) * dayPx);
-  const optGapX = optGap ? differenceInCalendarDays(optGap.start, chartStart) * dayPx : 0;
-  const optGapW = optGap ? Math.max(2, differenceInCalendarDays(optGap.end, optGap.start) * dayPx) : 0;
-  const optX = differenceInCalendarDays(opt.start, chartStart) * dayPx;
-  const optW = Math.max(2, differenceInCalendarDays(opt.end, opt.start) * dayPx);
-  const optEndX = optX + optW;
+  const discGeom = disc ? {
+    x: differenceInCalendarDays(disc.start, chartStart) * dayPx,
+    w: Math.max(2, differenceInCalendarDays(disc.end, disc.start) * dayPx),
+  } : null;
+  const devGeom = dev ? {
+    x: differenceInCalendarDays(dev.start, chartStart) * dayPx,
+    w: Math.max(2, differenceInCalendarDays(dev.end, dev.start) * dayPx),
+  } : null;
+  const optGeom = opt ? {
+    x: differenceInCalendarDays(opt.start, chartStart) * dayPx,
+    w: Math.max(2, differenceInCalendarDays(opt.end, opt.start) * dayPx),
+  } : null;
+  const devGapGeom = devGap ? {
+    x: differenceInCalendarDays(devGap.start, chartStart) * dayPx,
+    w: Math.max(2, differenceInCalendarDays(devGap.end, devGap.start) * dayPx),
+  } : null;
+  const optGapGeom = optGap ? {
+    x: differenceInCalendarDays(optGap.start, chartStart) * dayPx,
+    w: Math.max(2, differenceInCalendarDays(optGap.end, optGap.start) * dayPx),
+  } : null;
+
+  // Right edge of the drawn bar — anchors the deadline / dependency
+  // alert icons past the tail of whichever phase actually ends last.
+  // `overallEnd` is guaranteed non-null when scheduled=true.
+  const overallEndX = differenceInCalendarDays(phases.overallEnd!, chartStart) * dayPx;
+  // Left edge of the drawn bar — anchors the move-drag tooltip.
+  const firstStartX = differenceInCalendarDays(phases.firstStart!, chartStart) * dayPx;
 
   const dragMode = activeDrag?.mode;
 
   return (
     <g style={{ pointerEvents: "auto" }}>
-      <title>{`${p.title}${
-        subtaskSegments ? "\n(Bar shows the roll-up of subtask phases — dotted sections span multiple phases at once.)\n" : ""
-      }
-Phase 1 (Discovery/Definition): ${format(disc.start, "MMM d")} → ${format(disc.end, "MMM d")}${
-        devGap ? `\nAwaiting Dev:                    ${format(devGap.start, "MMM d")} → ${format(devGap.end, "MMM d")}` : ""
-      }
-Phase 2 (Development):          ${format(dev.start, "MMM d")} → ${format(dev.end, "MMM d")}${
-        optGap ? `\nAwaiting Optimization:          ${format(optGap.start, "MMM d")} → ${format(optGap.end, "MMM d")}` : ""
-      }
-Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.end, "MMM d")}`}</title>
+      <title>{[
+        `${p.title}${subtaskSegments ? "\n(Bar shows the roll-up of subtask phases — dotted sections span multiple phases at once.)" : ""}`,
+        disc ? `Phase 1 (Discovery/Definition): ${format(disc.start, "MMM d")} → ${format(disc.end, "MMM d")}` : null,
+        devGap ? `Awaiting Dev:                    ${format(devGap.start, "MMM d")} → ${format(devGap.end, "MMM d")}` : null,
+        dev ? `Phase 2 (Development):          ${format(dev.start, "MMM d")} → ${format(dev.end, "MMM d")}` : null,
+        optGap ? `Awaiting Optimization:          ${format(optGap.start, "MMM d")} → ${format(optGap.end, "MMM d")}` : null,
+        opt ? `Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.end, "MMM d")}` : null,
+      ].filter(Boolean).join("\n")}</title>
 
       {/* Bar body — captures move drags + click-to-open. Cursor set separately for view-only users. */}
       <g
@@ -913,43 +932,52 @@ Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.e
           })
         ) : (
           <>
-            <rect x={discX} y={barY} width={discW} height={barH} fill={base} rx={3} />
-            {devGap ? (
+            {discGeom ? (
+              <rect x={discGeom.x} y={barY} width={discGeom.w} height={barH} fill={base} rx={3} />
+            ) : null}
+            {devGapGeom ? (
               <g>
-                <rect x={devGapX} y={barY + barH / 2 - 2} width={devGapW} height={4} fill="#CBD5E1" rx={2} />
-                <rect x={devGapX} y={barY + barH / 2 - 2} width={devGapW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+                <rect x={devGapGeom.x} y={barY + barH / 2 - 2} width={devGapGeom.w} height={4} fill="#CBD5E1" rx={2} />
+                <rect x={devGapGeom.x} y={barY + barH / 2 - 2} width={devGapGeom.w} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
               </g>
             ) : null}
-            <rect x={devX} y={barY} width={devW} height={barH} fill={base} fillOpacity={0.55} rx={3} />
-            <rect x={devX} y={barY} width={devW} height={barH} fill="url(#phase-hatch)" rx={3} />
-            {/* Unconfirmed dev estimate — dashed amber outline signals
-                that the segment's timing is a PM best-guess pending
-                engineering sign-off. Rendered above the fill layers so
-                the dashes stay legible against the hatched color.
-                Skipped in the subtask-rollup path because the epic's
-                own flag doesn't correspond to any single visible
-                segment there. */}
-            {!p.dev_estimate_sourced_by_dev ? (
-              <rect
-                x={devX + 0.5}
-                y={barY + 0.5}
-                width={Math.max(0, devW - 1)}
-                height={barH - 1}
-                rx={3}
-                fill="none"
-                stroke="#f59e0b"
-                strokeWidth={1.5}
-                strokeDasharray="4 3"
-                pointerEvents="none"
-              />
+            {devGeom ? (
+              <>
+                <rect x={devGeom.x} y={barY} width={devGeom.w} height={barH} fill={base} fillOpacity={0.55} rx={3} />
+                <rect x={devGeom.x} y={barY} width={devGeom.w} height={barH} fill="url(#phase-hatch)" rx={3} />
+                {/* Unconfirmed dev estimate — dashed amber outline signals
+                    that the segment's timing is a PM best-guess pending
+                    engineering sign-off. Rendered above the fill layers so
+                    the dashes stay legible against the hatched color.
+                    Skipped in the subtask-rollup path because the epic's
+                    own flag doesn't correspond to any single visible
+                    segment there. Also skipped when there is no
+                    Development phase to outline. */}
+                {!p.dev_estimate_sourced_by_dev ? (
+                  <rect
+                    x={devGeom.x + 0.5}
+                    y={barY + 0.5}
+                    width={Math.max(0, devGeom.w - 1)}
+                    height={barH - 1}
+                    rx={3}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth={1.5}
+                    strokeDasharray="4 3"
+                    pointerEvents="none"
+                  />
+                ) : null}
+              </>
             ) : null}
-            {optGap ? (
+            {optGapGeom ? (
               <g>
-                <rect x={optGapX} y={barY + barH / 2 - 2} width={optGapW} height={4} fill="#CBD5E1" rx={2} />
-                <rect x={optGapX} y={barY + barH / 2 - 2} width={optGapW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+                <rect x={optGapGeom.x} y={barY + barH / 2 - 2} width={optGapGeom.w} height={4} fill="#CBD5E1" rx={2} />
+                <rect x={optGapGeom.x} y={barY + barH / 2 - 2} width={optGapGeom.w} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
               </g>
             ) : null}
-            <rect x={optX} y={barY} width={optW} height={barH} fill={base} fillOpacity={0.25} rx={3} />
+            {optGeom ? (
+              <rect x={optGeom.x} y={barY} width={optGeom.w} height={barH} fill={base} fillOpacity={0.25} rx={3} />
+            ) : null}
           </>
         )}
       </g>
@@ -963,60 +991,68 @@ Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.e
           works if they need to shift the whole epic. */}
       {canEdit && !subtaskSegments ? (
         <>
-          <ResizeHandle x={discX + discW} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "target")} label="Ready for Dev" />
-          {devGap ? (
-            <ResizeHandle x={devX} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "devStart")} label="Dev Begins" />
+          {discGeom ? (
+            <ResizeHandle x={discGeom.x + discGeom.w} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "target")} label="Ready for Dev" />
           ) : null}
-          <ResizeHandle x={devX + devW} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "devEnd")} label="Dev Complete" />
-          {optGap ? (
-            <ResizeHandle x={optX} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "optStart")} label="Optimization Begins" />
+          {devGapGeom && devGeom ? (
+            <ResizeHandle x={devGeom.x} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "devStart")} label="Dev Begins" />
           ) : null}
-          <ResizeHandle x={optEndX} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "optEnd")} label="Optimization Complete" />
+          {devGeom ? (
+            <ResizeHandle x={devGeom.x + devGeom.w} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "devEnd")} label="Dev Complete" />
+          ) : null}
+          {optGapGeom && optGeom ? (
+            <ResizeHandle x={optGeom.x} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "optStart")} label="Optimization Begins" />
+          ) : null}
+          {optGeom ? (
+            <ResizeHandle x={optGeom.x + optGeom.w} y={barY} h={barH} onDown={(e) => onStartDrag(e, p.id, "optEnd")} label="Optimization Complete" />
+          ) : null}
         </>
       ) : null}
 
       {/* Live-drag labels — always centered inside the resizing segment.
-          Falls back to a short form when the long label won't fit. */}
-      {dragMode === "target" ? (
+          Falls back to a short form when the long label won't fit.
+          Each label is gated on its phase actually existing so we
+          don't render a preview for a phase the user isn't editing. */}
+      {dragMode === "target" && disc && discGeom ? (
         <SegmentLabel
-          x={discX} width={discW} y={barY} h={barH}
+          x={discGeom.x} width={discGeom.w} y={barY} h={barH}
           short={pluralDays(differenceInCalendarDays(disc.end, disc.start))}
           long={`${pluralDays(differenceInCalendarDays(disc.end, disc.start))} · Discovery`}
         />
       ) : null}
-      {dragMode === "devStart" && devGap ? (
+      {dragMode === "devStart" && devGap && devGapGeom ? (
         <SegmentLabel
-          x={devGapX} width={devGapW} y={barY} h={barH}
+          x={devGapGeom.x} width={devGapGeom.w} y={barY} h={barH}
           short={pluralDays(differenceInCalendarDays(devGap.end, devGap.start))}
           long={`${pluralDays(differenceInCalendarDays(devGap.end, devGap.start))} · Awaiting Dev`}
         />
       ) : null}
-      {dragMode === "devEnd" ? (
+      {dragMode === "devEnd" && dev && devGeom ? (
         <SegmentLabel
-          x={devX} width={devW} y={barY} h={barH}
+          x={devGeom.x} width={devGeom.w} y={barY} h={barH}
           short={pluralDays(differenceInCalendarDays(dev.end, dev.start))}
           long={`${pluralDays(differenceInCalendarDays(dev.end, dev.start))} · Development`}
         />
       ) : null}
-      {dragMode === "optStart" && optGap ? (
+      {dragMode === "optStart" && optGap && optGapGeom ? (
         <SegmentLabel
-          x={optGapX} width={optGapW} y={barY} h={barH}
+          x={optGapGeom.x} width={optGapGeom.w} y={barY} h={barH}
           short={pluralDays(differenceInCalendarDays(optGap.end, optGap.start))}
           long={`${pluralDays(differenceInCalendarDays(optGap.end, optGap.start))} · Awaiting Optimization`}
         />
       ) : null}
-      {dragMode === "optEnd" ? (
+      {dragMode === "optEnd" && opt && optGeom ? (
         <SegmentLabel
-          x={optX} width={optW} y={barY} h={barH}
+          x={optGeom.x} width={optGeom.w} y={barY} h={barH}
           short={pluralDays(differenceInCalendarDays(opt.end, opt.start))}
           long={`${pluralDays(differenceInCalendarDays(opt.end, opt.start))} · Optimization`}
         />
       ) : null}
       {dragMode === "move" && activeDrag ? (
         <g pointerEvents="none">
-          <rect x={discX - 2} y={barY - 16} width={70} height={14} rx={3} fill="#101828" opacity={0.9} />
-          <text x={discX + 2} y={barY - 5} fontSize={10} fill="#fff">
-            {activeDrag.deltaDays > 0 ? "+" : ""}{activeDrag.deltaDays}d · {format(disc.start, "MMM d")}
+          <rect x={firstStartX - 2} y={barY - 16} width={70} height={14} rx={3} fill="#101828" opacity={0.9} />
+          <text x={firstStartX + 2} y={barY - 5} fontSize={10} fill="#fff">
+            {activeDrag.deltaDays > 0 ? "+" : ""}{activeDrag.deltaDays}d · {format(phases.firstStart!, "MMM d")}
           </text>
         </g>
       ) : null}
@@ -1035,9 +1071,11 @@ Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.e
         // Icon slot positions past the bar's right edge. Deadline
         // sits closer to the bar; dep alert sits further out so it
         // doesn't overlap when both are firing. Both clamp so they
-        // don't render off-chart in an extreme case.
-        const deadlineIconX = Math.min(optEndX + 6, chartStart ? 999999 : 0);
-        const depIconX = Math.min(optEndX + 26, chartStart ? 999999 : 0);
+        // don't render off-chart in an extreme case. `overallEndX`
+        // (derived from `phases.overallEnd`) is the rightmost
+        // plotted edge across whichever phases are populated.
+        const deadlineIconX = Math.min(overallEndX + 6, chartStart ? 999999 : 0);
+        const depIconX = Math.min(overallEndX + 26, chartStart ? 999999 : 0);
         return (
           <g pointerEvents="none">
             {deadlineStatuses.map((s) => {
@@ -1143,14 +1181,14 @@ Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.e
         if (dependencyStatuses.length === 0) return null;
         const byPhase = groupDependenciesByPhase(dependencyStatuses);
         if (byPhase.size === 0) return null;
-        // Phase-start x positions on this bar. Matches the phase
-        // segment origins computed above; keeping the mapping local so
-        // future segment tweaks don't drift the icons.
-        const phaseStartX: Record<PhaseKey, number> = {
-          discovery: discX,
-          development: devX,
-          optimization: optX,
-        };
+        // Phase-start x positions on this bar. Only defined for
+        // phases that are actually drawn — a dep on a phase that
+        // isn't plotted (yet) simply has no icon slot, so we skip
+        // it rather than render a floating chain in nowhere.
+        const phaseStartX: Partial<Record<PhaseKey, number>> = {};
+        if (discGeom) phaseStartX.discovery = discGeom.x;
+        if (devGeom) phaseStartX.development = devGeom.x;
+        if (optGeom) phaseStartX.optimization = optGeom.x;
         const phaseName: Record<PhaseKey, string> = {
           discovery: "Discovery",
           development: "Development",
@@ -1161,6 +1199,7 @@ Phase 3 (Optimization):         ${format(opt.start, "MMM d")} → ${format(opt.e
           <g>
             {Array.from(byPhase.entries()).map(([phase, ss]) => {
               const cx = phaseStartX[phase];
+              if (cx === undefined) return null;
               const violated = ss.some((s) => s.severity === "violated");
               const color = violated ? "#DC2626" : "#64748B";
               return (
@@ -1328,8 +1367,8 @@ function computeRange(projects: Project[], timeframeMonths: number, dayPx: numbe
   const dates: Date[] = [];
   for (const p of projects) {
     const phases = computePhases(p);
-    if (phases.scheduled) {
-      dates.push(phases.discovery!.start, phases.overallEnd!);
+    if (phases.scheduled && phases.firstStart && phases.overallEnd) {
+      dates.push(phases.firstStart, phases.overallEnd);
     }
   }
   // Anchor the visible window to the selected timeframe starting today, then
@@ -1503,7 +1542,11 @@ function daysBetween(a: string | null, b: string | null): number {
 function clampDelta(d: DragState, delta: number): number {
   const i = d.initial;
   const effDevStart = i.dev_start_date ?? i.target_date;
-  const effOptStart = i.optimization_start_date ?? i.dev_end_date;
+  // Mirrors `phaseCompute.ts`: opt falls back to dev_end and, if dev
+  // is cleared, all the way to target_date. Keeping the two lookups
+  // in sync means dragging the opt-end handle can't shrink past a
+  // date the roadmap doesn't visually anchor on.
+  const effOptStart = i.optimization_start_date ?? i.dev_end_date ?? i.target_date;
   switch (d.mode) {
     case "target": {
       // Moving target also shifts every explicit downstream date by the

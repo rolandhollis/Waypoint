@@ -51,47 +51,26 @@ export function effectiveDates(p: PhaseDateFields) {
 }
 
 /**
- * Given a partial "draft" of phase-date changes, promote every
- * missing-but-implied field to the value the user was looking at.
- * Explicit values in the draft are respected; already-persisted
- * fields (passed via `existing`) are left alone.
+ * Pass-through for a partial phase-date draft. Historically this
+ * helper promoted the visible-but-implicit defaults from
+ * `effectiveDates` into the payload so the backend's strict
+ * left-to-right validator would accept partial patches. That
+ * promotion silently rewrote the PM's data — filling in dev/opt
+ * dates whenever they only intended to set (say) `target_date` — and
+ * made it impossible to save a project with only post-dev dates
+ * (the promotion would fabricate synthetic Discovery/Development
+ * dates just to satisfy the validator).
  *
- * Used by the detail-panel patch flow (existing = current project row)
- * and the new-project dialog (existing = all-null). Returns a shallow
- * clone of the draft with any implied fields filled in.
+ * The backend now accepts partial-phase payloads (see
+ * `validatePhaseDates`), so this returns a shallow clone of `draft`
+ * unchanged. Kept as a helper for API stability; callers may drop it
+ * once we're confident nothing else relies on the promotion.
  */
 export function fillMissingPhaseDates<T extends Partial<PhaseDateFields>>(
   draft: T,
-  existing: PhaseDateFields,
+  _existing: PhaseDateFields,
 ): T {
-  const touchesDate =
-    "start_date" in draft ||
-    "target_date" in draft ||
-    "dev_start_date" in draft ||
-    "dev_end_date" in draft ||
-    "optimization_start_date" in draft ||
-    "optimization_end_date" in draft;
-  if (!touchesDate) return { ...draft };
-
-  const merged: PhaseDateFields = { ...existing, ...(draft as Partial<PhaseDateFields>) };
-  const filled: T = { ...draft };
-
-  function ensure(key: keyof PhaseDateFields, computed: string | null) {
-    if (key in draft) return; // user explicitly touched it
-    if ((merged as Record<string, unknown>)[key] != null) return; // already persisted
-    if (computed == null) return; // no sensible default (no upstream anchor)
-    (filled as Record<string, unknown>)[key] = computed;
-    (merged as Record<string, unknown>)[key] = computed;
-  }
-
-  // Recompute the effective cascade after each fill so downstream
-  // defaults derive from the just-filled anchor.
-  ensure("target_date", effectiveDates(merged).target);
-  ensure("dev_start_date", effectiveDates(merged).devStart);
-  ensure("dev_end_date", effectiveDates(merged).devEnd);
-  ensure("optimization_start_date", effectiveDates(merged).optStart);
-  ensure("optimization_end_date", effectiveDates(merged).optEnd);
-  return filled;
+  return { ...draft };
 }
 
 /** All-null starting state for a brand-new project. */

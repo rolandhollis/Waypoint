@@ -82,7 +82,11 @@ export function computeEpicSubtaskSegments(
     .filter((ph): ph is ProjectPhases => ph.scheduled);
   if (!subs.length) return null;
 
-  const epicStart = epicPhases.discovery!.start.getTime();
+  // `firstStart`/`overallEnd` are always non-null when scheduled=true
+  // — a plottable phase exists somewhere in the project. Using them
+  // (not `discovery.start`) means an epic whose Discovery is null
+  // still gets bracketed correctly by its earliest-existing phase.
+  const epicStart = epicPhases.firstStart!.getTime();
   const epicEnd = epicPhases.overallEnd!.getTime();
 
   const boundarySet = new Set<number>([epicStart, epicEnd]);

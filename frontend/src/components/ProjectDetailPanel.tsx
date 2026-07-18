@@ -301,7 +301,11 @@ export function ProjectDetailPanel({
                   disabled={!canWrite}
                 />
               </Field>
-              <Field label="Development" className="col-span-2" hint={!eff.target ? "Set Discovery ‘Ready for dev’ first — Development picks up from there." : undefined}>
+              <Field
+                label="Development"
+                className="col-span-2"
+                hint={!eff.target ? "Development picks up from Discovery's ‘Ready for dev’ when set — you can still schedule it independently." : undefined}
+              >
                 <PairedDates
                   startLabel="Start"
                   startValue={eff.devStart}
@@ -311,7 +315,7 @@ export function ProjectDetailPanel({
                   endValue={eff.devEnd}
                   endMin={eff.devStart}
                   onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, dev_end_date: v }, project))}
-                  disabled={!canWrite || !eff.target}
+                  disabled={!canWrite}
                 />
                 <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-wp-ink">
                   <input
@@ -332,7 +336,11 @@ export function ProjectDetailPanel({
                   </span>
                 </label>
               </Field>
-              <Field label="Post-Dev Optimization" className="col-span-2" hint={!eff.target ? "Set Discovery ‘Ready for dev’ first — Post-Dev cascades from there." : undefined}>
+              <Field
+                label="Post-Dev Optimization"
+                className="col-span-2"
+                hint={!eff.devEnd && !eff.target ? "Post-Dev cascades from Development's end when set — you can still schedule it independently." : undefined}
+              >
                 <PairedDates
                   startLabel="Start"
                   startValue={eff.optStart}
@@ -342,7 +350,7 @@ export function ProjectDetailPanel({
                   endValue={eff.optEnd}
                   endMin={eff.optStart}
                   onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, optimization_end_date: v }, project))}
-                  disabled={!canWrite || !eff.target}
+                  disabled={!canWrite}
                 />
               </Field>
               <Field
@@ -381,19 +389,25 @@ export function ProjectDetailPanel({
               <h3 className="text-sm font-semibold text-wp-ink">Predicted timeline</h3>
               {phases.scheduled ? (
                 <ul className="mt-1.5 space-y-1 text-xs text-wp-slate">
-                  <li>Phase 1 · Discovery/Definition — {format(phases.discovery!.start, "MMM d")} → {format(phases.discovery!.end, "MMM d")}</li>
+                  {phases.discovery ? (
+                    <li>Phase 1 · Discovery/Definition — {format(phases.discovery.start, "MMM d")} → {format(phases.discovery.end, "MMM d")}</li>
+                  ) : null}
                   {phases.awaitingDev ? (
                     <li className="text-amber-700">Awaiting Dev — {format(phases.awaitingDev.start, "MMM d")} → {format(phases.awaitingDev.end, "MMM d")}</li>
                   ) : null}
-                  <li>Phase 2 · Development — {format(phases.development!.start, "MMM d")} → {format(phases.development!.end, "MMM d")}</li>
+                  {phases.development ? (
+                    <li>Phase 2 · Development — {format(phases.development.start, "MMM d")} → {format(phases.development.end, "MMM d")}</li>
+                  ) : null}
                   {phases.awaitingOptimization ? (
                     <li className="text-amber-700">Awaiting Optimization — {format(phases.awaitingOptimization.start, "MMM d")} → {format(phases.awaitingOptimization.end, "MMM d")}</li>
                   ) : null}
-                  <li>Phase 3 · Post-Dev Optimization — {format(phases.optimization!.start, "MMM d")} → {format(phases.optimization!.end, "MMM d")}</li>
+                  {phases.optimization ? (
+                    <li>Phase 3 · Post-Dev Optimization — {format(phases.optimization.start, "MMM d")} → {format(phases.optimization.end, "MMM d")}</li>
+                  ) : null}
                 </ul>
               ) : (
                 <p className="mt-1.5 text-xs text-wp-slate">
-                  Set start, target, dev end, and optimization end dates to plot this project on the Roadmap.
+                  Fill in a phase (start + end) to plot this project on the Roadmap. Any single phase is enough — a post-dev-only project still shows its Optimization segment.
                 </p>
               )}
             </section>

@@ -656,12 +656,18 @@ export function scheduleRoadmap(input: SchedulerInput): SchedulerResult {
 }
 
 /**
- * True for items the scheduler is willing to consider. Mirrors the
- * "would show on roadmap" rule the PM described in the spec.
+ * True for items the scheduler is willing to consider. The auto-shift
+ * math needs BOTH an anchor start (`start_date`) and an outer end
+ * (`optimization_end_date`) to compute the full-project delta, so
+ * we require both here even though the Roadmap itself now renders
+ * projects with only a partial subset of phases populated. Anything
+ * missing those two anchors is filtered out — the PM should finish
+ * scheduling the item manually before auto-batch shifting it.
  */
 export function isSchedulable(project: Project, lanesById: Map<string, SwimLane>): boolean {
   if (project.deleted_at) return false;
   if (!computePhases(project).scheduled) return false;
+  if (!project.start_date || !project.optimization_end_date) return false;
   const lane = project.swim_lane_id ? lanesById.get(project.swim_lane_id) : null;
   if (lane?.is_terminal || lane?.is_archive) return false;
   return true;

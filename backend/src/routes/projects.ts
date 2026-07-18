@@ -201,31 +201,30 @@ export function validatePhaseDates(p: {
   optimization_start_date?: string | null;
   optimization_end_date?: string | null;
 }) {
-  const s = p.start_date ?? null;
-  const t = p.target_date ?? null;
-  const ds = p.dev_start_date ?? null;
-  const de = p.dev_end_date ?? null;
-  const os = p.optimization_start_date ?? null;
-  const oe = p.optimization_end_date ?? null;
-
-  if (s && t && t < s) throw new HttpError(400, "target_date must be on or after start_date");
-  if (ds) {
-    if (!t) throw new HttpError(400, "dev_start_date requires target_date to be set");
-    if (ds < t) throw new HttpError(400, "dev_start_date must be on or after target_date");
-  }
-  if (de) {
-    const anchor = ds ?? t;
-    if (!anchor) throw new HttpError(400, "dev_end_date requires target_date to be set");
-    if (de < anchor) throw new HttpError(400, "dev_end_date must be on or after the dev start");
-  }
-  if (os) {
-    if (!de) throw new HttpError(400, "optimization_start_date requires dev_end_date to be set");
-    if (os < de) throw new HttpError(400, "optimization_start_date must be on or after dev_end_date");
-  }
-  if (oe) {
-    const anchor = os ?? de;
-    if (!anchor) throw new HttpError(400, "optimization_end_date requires dev_end_date to be set");
-    if (oe < anchor) throw new HttpError(400, "optimization_end_date must be on or after the optimization start");
+  const chain: readonly [PhaseField, string | null][] = [
+    ["start_date", p.start_date ?? null],
+    ["target_date", p.target_date ?? null],
+    ["dev_start_date", p.dev_start_date ?? null],
+    ["dev_end_date", p.dev_end_date ?? null],
+    ["optimization_start_date", p.optimization_start_date ?? null],
+    ["optimization_end_date", p.optimization_end_date ?? null],
+  ];
+  // Walk left-to-right; each non-null date must be ≥ the last
+  // non-null date we saw. Because ≤ is transitive, the pairwise
+  // "current ≥ previous non-null" check implies the full chain is
+  // non-decreasing across every present pair.
+  let prevKey: PhaseField | null = null;
+  let prevVal: string | null = null;
+  for (const [key, val] of chain) {
+    if (!val) continue;
+    if (prevVal && val < prevVal) {
+      throw new HttpError(
+        400,
+        `${key} (${val}) must be on or after ${prevKey} (${prevVal})`,
+      );
+    }
+    prevKey = key;
+    prevVal = val;
   }
 }
 

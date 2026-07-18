@@ -263,7 +263,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
 
                 <PhaseField
                   label="Development"
-                  hint={!eff.target ? "Set Discovery ‘Ready for dev’ first — Development picks up from there." : undefined}
+                  hint={!eff.target ? "Development picks up from Discovery's ‘Ready for dev’ when set — you can still schedule it independently." : undefined}
                 >
                   <PairedDates
                     startLabel="Start"
@@ -274,7 +274,6 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
                     endValue={eff.devEnd}
                     endMin={eff.devStart}
                     onEndChange={(v) => setDate("dev_end_date", v)}
-                    disabled={!eff.target}
                   />
                   <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-wp-ink">
                     <input
@@ -294,7 +293,7 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
 
                 <PhaseField
                   label="Post-Dev Optimization"
-                  hint={!eff.target ? "Set Discovery ‘Ready for dev’ first — Post-Dev cascades from there." : undefined}
+                  hint={!eff.devEnd && !eff.target ? "Post-Dev cascades from Development's end when set — you can still schedule it independently." : undefined}
                 >
                   <PairedDates
                     startLabel="Start"
@@ -305,7 +304,6 @@ export function NewProjectDialog({ defaultLaneId: _defaultLaneId, onClose }: { d
                     endValue={eff.optEnd}
                     endMin={eff.optStart}
                     onEndChange={(v) => setDate("optimization_end_date", v)}
-                    disabled={!eff.target}
                   />
                 </PhaseField>
               </div>

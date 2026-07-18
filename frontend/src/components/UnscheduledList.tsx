@@ -13,6 +13,8 @@ export function UnscheduledList(props: {
 }) {
   const { projects, lanes, users, teams, onOpen } = props;
 
+  const teamsById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
+
   const groups = useMemo(() => {
     // Bucket by lane id (null = unassigned) and drop excluded lanes entirely.
     const byLane = new Map<string | null, Project[]>();
@@ -50,7 +52,7 @@ export function UnscheduledList(props: {
       <div className="flex items-center gap-2 text-sm font-semibold text-wp-ink">
         <AlertCircle size={16} className="text-amber-500" />
         Unscheduled ({total})
-        <span className="ml-2 text-xs font-normal text-wp-slate">Needs start, target, dev end, and optimization end dates to appear on the timeline.</span>
+        <span className="ml-2 text-xs font-normal text-wp-slate">Needs at least one phase with both a start and an end date to appear on the timeline.</span>
       </div>
 
       {groups.length === 0 ? (
@@ -73,12 +75,13 @@ export function UnscheduledList(props: {
               <ul className="flex flex-col gap-2">
                 {g.projects.map((p) => {
                   const owner = users.find((u) => u.id === p.owner_id);
-                  const projectTeams = teams.filter((t) => p.teams.includes(t.id));
-                  const missing: string[] = [];
-                  if (!p.start_date) missing.push("start_date");
-                  if (!p.target_date) missing.push("target_date");
-                  if (!p.dev_end_date) missing.push("dev_end_date");
-                  if (!p.optimization_end_date) missing.push("optimization_end_date");
+                  // Iterate `p.teams` in its stored order so the row
+                  // preserves the PM's ranking — the primary team
+                  // shows first in the comma-joined list.
+                  const projectTeams = p.teams
+                    .map((id) => teamsById.get(id))
+                    .filter((t): t is Team => !!t);
+                  const description = p.description?.trim();
                   return (
                     <li key={p.id}>
                       <button
@@ -90,7 +93,11 @@ export function UnscheduledList(props: {
                           {owner ? <span>{owner.name}</span> : null}
                           {projectTeams.length ? <span>· {projectTeams.map((t) => t.name).join(", ")}</span> : null}
                         </div>
-                        <div className="mt-1 text-xs text-amber-700">missing: {missing.join(", ")}</div>
+                        {description ? (
+                          <p className="mt-1 line-clamp-2 text-xs text-wp-slate" title={description}>
+                            {description}
+                          </p>
+                        ) : null}
                       </button>
                     </li>
                   );

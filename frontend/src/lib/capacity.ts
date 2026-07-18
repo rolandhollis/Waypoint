@@ -44,15 +44,24 @@ export type OverloadInterval = {
 };
 
 /**
- * A project's roadmap-bar span, if the project is scheduled. Matches
- * the "scheduled = has all four phase dates" rule enforced elsewhere.
+ * A project's roadmap-bar span, if the project has at least one
+ * plottable phase. Matches `computePhases`'s footprint: the earliest
+ * set start (Discovery start → Dev start → Opt start) and the latest
+ * set end (Opt end → Dev end → Discovery end). A post-dev-only
+ * project therefore contributes its opt segment to the capacity
+ * sweep instead of being silently dropped.
  */
 export function projectSpan(p: Project): { start: string; end: string } | null {
-  if (!p.start_date) return null;
-  // overallEnd mirrors phaseCompute.ts's rule for the bar's right edge.
-  const end = p.optimization_end_date ?? p.dev_end_date ?? p.target_date;
-  if (!end) return null;
-  return { start: p.start_date, end };
+  const start =
+    p.start_date ?? p.dev_start_date ?? p.optimization_start_date ?? null;
+  const end =
+    p.optimization_end_date ?? p.dev_end_date ?? p.target_date ?? null;
+  if (!start || !end) return null;
+  // Defensive: a badly-shaped project (later start than any end)
+  // shouldn't produce a negative-width bar. Return null so the sweep
+  // ignores it rather than crash on the negative interval.
+  if (start > end) return null;
+  return { start, end };
 }
 
 /**
