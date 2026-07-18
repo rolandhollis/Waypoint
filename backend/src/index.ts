@@ -19,6 +19,7 @@ import { projectsRouter } from "./routes/projects.js";
 import { projectCommentsRouter } from "./routes/comments.js";
 import { projectDeadlinesRouter } from "./routes/deadlines.js";
 import { projectDependenciesRouter } from "./routes/dependencies.js";
+import { linksRouter, projectLinksRouter } from "./routes/links.js";
 import { projectStatusUpdatesRouter, statusUpdatesRouter } from "./routes/statusUpdates.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { digestRecipientsRouter } from "./routes/digestRecipients.js";
@@ -67,6 +68,8 @@ app.use("/api/projects", authenticate, groupScope, projectsRouter);
 app.use("/api/projects/:id/comments", authenticate, groupScope, projectCommentsRouter);
 app.use("/api/projects/:id/deadlines", authenticate, groupScope, projectDeadlinesRouter);
 app.use("/api/projects/:id/dependencies", authenticate, groupScope, projectDependenciesRouter);
+app.use("/api/projects/:id/links", authenticate, groupScope, projectLinksRouter);
+app.use("/api/links", authenticate, groupScope, linksRouter);
 app.use("/api/projects/:id/status-updates", authenticate, groupScope, projectStatusUpdatesRouter);
 app.use("/api/status-updates", authenticate, groupScope, statusUpdatesRouter);
 

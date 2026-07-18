@@ -297,6 +297,29 @@ export type ProjectDependencyRow = {
   updated_at: Date;
 };
 
+/**
+ * External-URL link attached to a project (Jira ticket, Confluence
+ * page, Figma, etc.). See migration 027.
+ *
+ * `label` is denormalized per-link — no separate label catalog
+ * table. The "known labels" list surfaced to the frontend's picker
+ * is derived at query time from DISTINCT labels within the caller's
+ * group.
+ *
+ * `position` is a per-project sequence; reorder is a full-replace
+ * on the client side (no drag UI shipped yet, but the column is
+ * here to avoid a follow-up migration).
+ */
+export type ProjectLinkRow = {
+  id: string;
+  project_id: string;
+  label: string;
+  url: string;
+  position: number;
+  created_at: Date;
+  updated_at: Date;
+};
+
 export type ProjectAuditRow = {
   id: string;
   project_id: string;

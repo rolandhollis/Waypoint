@@ -176,6 +176,29 @@ export type ProjectDependency = {
   note: string;
 };
 
+/**
+ * External-URL "link" attached to a project (Jira ticket, Confluence
+ * page, Figma, etc.). See migration 027.
+ *
+ * `label` is stored per-link as a plain string; there's no shared
+ * catalog table. The link-label picker sources its suggestions
+ * from `GET /links/label-suggestions` (DISTINCT labels across the
+ * caller's group) unioned with the built-in defaults
+ * (`Jira`, `Confluence`) — see `useLinkLabelSuggestions`.
+ *
+ * `position` is present so a future drag-reorder UI can land as a
+ * full-replace without a migration; no reorder affordance ships yet.
+ */
+export type ProjectLink = {
+  id: string;
+  project_id: string;
+  label: string;
+  url: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Project = {
   id: string;
   title: string;
@@ -183,7 +206,14 @@ export type Project = {
   swim_lane_id: string | null;
   position: number;
   owner_id: string | null;
-  /** Team memberships (M:N via `project_teams`). Order is not meaningful. */
+  /**
+   * Ordered team memberships (M:N via `project_teams`). Order IS
+   * meaningful — PMs rank the contributing teams primary → secondary
+   * → tertiary on the detail panel, and every downstream renderer
+   * (Board card chips, Roadmap accent, KPI report row, Sort modal,
+   * status report row) mirrors that order. Backend preserves it via
+   * a `position` column on the join, same shape as `project_kpis`.
+   */
   teams: string[];
   tags: string[];
   /**

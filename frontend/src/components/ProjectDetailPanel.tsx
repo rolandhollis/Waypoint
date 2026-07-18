@@ -17,6 +17,7 @@ import { PairedDates } from "./PairedDates";
 import { ProjectComments } from "./ProjectComments";
 import { ProjectDeadlines } from "./ProjectDeadlines";
 import { ProjectDependencies } from "./ProjectDependencies";
+import { ProjectLinks } from "./ProjectLinks";
 import { ProjectPicker } from "./ProjectPicker";
 import { StatusPill } from "./StatusPill";
 import { StatusUpdateForm } from "./StatusUpdateForm";
@@ -427,6 +428,8 @@ export function ProjectDetailPanel({
 
             <ProjectDependencies project={project} />
 
+            <ProjectLinks project={project} />
+
             {myChildren.length ? (
               <section className="mt-6">
                 <h3 className="text-sm font-semibold text-wp-ink">
@@ -827,6 +830,39 @@ function HistoryRowBody({
     return <>touched a dependency.</>;
   }
 
+  // External-URL link events. field is `link:<link_id>`; from/to
+  // are `{label, url}` on create/delete or the before/after values
+  // on update. Compact renderers that name the label first so a
+  // reader can scan the trail without expanding each row.
+  if (field.startsWith("link:")) {
+    const fromL = linkValue(from);
+    const toL = linkValue(to);
+    if (!fromL && toL) {
+      return <>added link {strong(toL.label)} → {strong(shortenUrl(toL.url))}.</>;
+    }
+    if (fromL && !toL) {
+      return <>removed link {strong(fromL.label)} (was {shortenUrl(fromL.url)}).</>;
+    }
+    if (fromL && toL) {
+      const labelChanged = fromL.label !== toL.label;
+      const urlChanged = fromL.url !== toL.url;
+      if (labelChanged && urlChanged) {
+        return (
+          <>
+            renamed link {strong(fromL.label)} to {strong(toL.label)} and changed its URL to {strong(shortenUrl(toL.url))}.
+          </>
+        );
+      }
+      if (labelChanged) {
+        return <>renamed link {strong(fromL.label)} to {strong(toL.label)}.</>;
+      }
+      if (urlChanged) {
+        return <>changed URL for {strong(toL.label)} to {strong(shortenUrl(toL.url))}.</>;
+      }
+    }
+    return <>touched a link.</>;
+  }
+
   // Generic scalar (dates, title, etc.).
   if (isBlank(to)) return <>cleared {label}.</>;
   if (isBlank(from)) return <>set {label} to {strong(String(to))}.</>;
@@ -850,6 +886,26 @@ function dependencyValue(v: unknown):
     depends_on_swim_lane_id: asStr("depends_on_swim_lane_id"),
     note: asStr("note"),
   };
+}
+
+/** Extract a `{label, url}` payload from a project_audit_events
+ *  row for a `link:*` event. Returns null on shape mismatch so
+ *  the caller can distinguish "create" (from=null) from "bad row". */
+function linkValue(v: unknown): { label: string; url: string } | null {
+  if (!v || typeof v !== "object") return null;
+  const obj = v as Record<string, unknown>;
+  const label = obj.label;
+  const url = obj.url;
+  if (typeof label !== "string" || typeof url !== "string") return null;
+  return { label, url };
+}
+
+/** Trim `https?://` for display in audit rows so long URLs don't
+ *  overflow the timeline. Purely cosmetic — the full URL is
+ *  available on hover via the `title` attribute on link chips
+ *  above, and the audit row is prose. */
+function shortenUrl(u: string): string {
+  return u.replace(/^https?:\/\//, "").replace(/\/$/, "");
 }
 
 function deadlineValue(v: unknown): { deadline_date: string; note: string } | null {

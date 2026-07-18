@@ -6,6 +6,7 @@ import type {
   PendingStatusResponse,
   Project,
   ProjectComment,
+  ProjectLink,
   ProjectTimelineEntry,
   Role,
   StatusReportResponse,
@@ -183,6 +184,34 @@ export function useProjectStatusUpdates(id: string) {
     queryKey: ["projectStatusUpdates", id],
     queryFn: () => api<WeeklyStatusUpdate[]>(`/projects/${id}/status-updates`),
     enabled: !!id,
+  });
+}
+
+/**
+ * External-URL links attached to a project (Jira, Confluence, etc.).
+ * Backed by GET /projects/:id/links; mutations
+ * (POST/PATCH/DELETE) invalidate this key + projectHistory so the
+ * audit trail stays in sync.
+ */
+export function useProjectLinks(id: string) {
+  return useQuery({
+    queryKey: ["projectLinks", id],
+    queryFn: () => api<ProjectLink[]>(`/projects/${id}/links`),
+    enabled: !!id,
+  });
+}
+
+/**
+ * DISTINCT labels across every link in the caller's current group.
+ * Feeds the link-label combobox; the frontend unions this list with
+ * the built-in defaults (`Jira`, `Confluence`) so both surface even
+ * before any link has been created in the tenant.
+ */
+export function useLinkLabelSuggestions() {
+  return useQuery({
+    queryKey: ["linkLabelSuggestions"],
+    queryFn: () => api<{ labels: string[] }>("/links/label-suggestions"),
+    staleTime: 30_000,
   });
 }
 
