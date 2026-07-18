@@ -7,17 +7,19 @@ import {
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
-import { api } from "../lib/api";
+import { ArrowUpDown, Plus } from "lucide-react";
+import { ApiError, api } from "../lib/api";
 import { useCanWrite, useIsAdmin, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore } from "../lib/viewState";
 import { applyFilters } from "../lib/filtering";
 import { FilterBar } from "../components/FilterBar";
 import { ProjectCard } from "../components/ProjectCard";
+import type { BoardCardQuickActionsProps } from "../components/BoardCardQuickActions";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
 import { NewProjectDialog } from "../components/NewProjectDialog";
 import { PhaseDatePromptModal } from "../components/PhaseDatePromptModal";
+import { SortLaneModal } from "../components/SortLaneModal";
 import { InfoTooltip } from "../components/InfoTooltip";
 
 export function BoardView() {
@@ -42,6 +44,11 @@ export function BoardView() {
   // server confirms the move so the modal isn't rendered on top of a
   // failed drop. Carries just enough to identify project + lane.
   const [phasePrompt, setPhasePrompt] = useState<{ projectId: string; laneId: string } | null>(null);
+  // Lane id whose "Sort lane" modal is currently open. Held here (not
+  // inside LaneColumn) so we can pass the same filter-scoped project
+  // list to the modal that's rendered in the column — same grouping,
+  // same order, without recomputing.
+  const [sortingLaneId, setSortingLaneId] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
   useEffect(() => {
@@ -159,6 +166,29 @@ export function BoardView() {
     onError: (err, v) => {
       if (v._prev) qc.setQueryData(["projects"], v._prev);
       const msg = err instanceof Error ? err.message : "Move failed. Try again.";
+      alert(msg);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["pendingStatus"] });
+    },
+  });
+
+  // Dedicated archive mutation. Uses the tenant-scoped /:id/archive
+  // endpoint (rather than /move) so non-admins — who can't even see
+  // the archive lane in their /swim-lanes response — can still archive
+  // their own work. Failures (e.g. "still has subtasks outside
+  // Archive") surface via a plain alert since the quick-actions menu
+  // has already closed by the time the response comes back.
+  const archiveMutation = useMutation({
+    mutationFn: (id: string) =>
+      api(`/projects/${id}/archive`, { method: "POST" }),
+    onError: (err) => {
+      const msg = err instanceof ApiError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : "Archive failed. Try again.";
       alert(msg);
     },
     onSettled: () => {
@@ -350,6 +380,131 @@ export function BoardView() {
     laneList[0] ??
     null;
 
+  // Quick-action lane lookups. Parking Lot is a case-insensitive name
+  // match (per PRD) since it's a soft convention rather than a schema
+  // flag; some tenants won't have one, and that's fine — the "Move to
+  // Parking Lot" row simply hides itself. Archive is a schema flag
+  // (`is_archive`), resolved the same way `/projects/:id/archive`
+  // resolves it server-side.
+  const parkingLotLaneId = useMemo(
+    () => laneList.find((l) => l.name.trim().toLowerCase() === "parking lot")?.id ?? null,
+    [laneList],
+  );
+  const archiveLaneId = useMemo(
+    () => laneList.find((l) => l.is_archive)?.id ?? null,
+    [laneList],
+  );
+
+  const allProjects = projects.data ?? [];
+
+  /**
+   * Build the quick-actions prop bundle for a single project. Returns
+   * undefined for viewers (no ⋮ trigger, no right-click menu) so the
+   * caller can gate rendering with a null check.
+   *
+   * Each callback either fires the existing moveMutation (reusing all
+   * its optimistic-update, rollback, phase-prompt, and invalidation
+   * side effects — the same code path the drag flow uses) or, for
+   * archive, fires the dedicated archiveMutation.
+   */
+  function makeQuickActions(project: Project): BoardCardQuickActionsProps | undefined {
+    if (!canWrite) return undefined;
+
+    // Lane member index computed from the *unfiltered* project list
+    // so "top" / "bottom" mean "top/bottom of the actual lane in the
+    // database", not "top/bottom of what happens to be visible under
+    // the current filter". A filtered view otherwise misreports both
+    // predicates the moment any card ahead of / behind this one is
+    // hidden.
+    const laneMembers = allProjects
+      .filter((p) => p.swim_lane_id === project.swim_lane_id && !p.deleted_at)
+      .sort((a, b) => a.position - b.position);
+    const idx = laneMembers.findIndex((p) => p.id === project.id);
+    const isAtTop = idx === 0;
+    const isAtBottom = idx === laneMembers.length - 1;
+
+    const inParkingLot = parkingLotLaneId != null && project.swim_lane_id === parkingLotLaneId;
+    const inArchive = archiveLaneId != null && project.swim_lane_id === archiveLaneId;
+    const canMoveToParkingLot = parkingLotLaneId != null && !inParkingLot;
+    const canArchive = archiveLaneId != null && !inArchive;
+
+    // Optimistic-update helper for same-lane reorders (Move to top /
+    // bottom). Mirrors what handleDragEnd does inline for a drag drop
+    // so the click feels instant and the failure mode (rare) still
+    // rolls back cleanly.
+    function fireSameLaneMove(position: number) {
+      if (project.swim_lane_id == null) return;
+      const snapshot = qc.getQueryData<Project[]>(["projects"]);
+      if (!snapshot) return;
+      qc.cancelQueries({ queryKey: ["projects"] });
+      qc.setQueryData<Project[]>(
+        ["projects"],
+        reindexAfterMove(snapshot, project.id, project.swim_lane_id, position),
+      );
+      moveMutation.mutate({
+        id: project.id,
+        swim_lane_id: project.swim_lane_id,
+        position,
+        _prev: snapshot,
+        _crossLane: false,
+      });
+    }
+
+    return {
+      isAtTop,
+      isAtBottom,
+      canMoveToParkingLot,
+      canArchive,
+      onMoveToTop: () => {
+        if (isAtTop || project.swim_lane_id == null) return;
+        fireSameLaneMove(0);
+      },
+      onMoveToBottom: () => {
+        if (isAtBottom || project.swim_lane_id == null) return;
+        // laneMembers already excludes deleted rows and is 0-indexed,
+        // so the final slot is laneMembers.length - 1. Passing that
+        // exactly matches how `/projects/:id/move` clamps the index.
+        fireSameLaneMove(laneMembers.length - 1);
+      },
+      onMoveToParkingLot: () => {
+        if (!parkingLotLaneId || inParkingLot) return;
+        const snapshot = qc.getQueryData<Project[]>(["projects"]);
+        // Land at the end of Parking Lot — matches drag-drop of a card
+        // onto empty lane space, and avoids stomping on the existing
+        // head of the parking-lot backlog. Count from the snapshot so
+        // the optimistic write and the server-side clamp agree.
+        const targetPosition = snapshot
+          ? snapshot.filter(
+              (p) => p.swim_lane_id === parkingLotLaneId && !p.deleted_at && p.id !== project.id,
+            ).length
+          : 0;
+        if (snapshot) {
+          qc.cancelQueries({ queryKey: ["projects"] });
+          qc.setQueryData<Project[]>(
+            ["projects"],
+            reindexAfterMove(snapshot, project.id, parkingLotLaneId, targetPosition),
+          );
+        }
+        moveMutation.mutate({
+          id: project.id,
+          swim_lane_id: parkingLotLaneId,
+          position: targetPosition,
+          _prev: snapshot ?? undefined,
+          _crossLane: true,
+        });
+      },
+      onArchive: () => {
+        if (!archiveLaneId || inArchive) return;
+        // No optimistic update here — the archive endpoint may reject
+        // the request (e.g. "still has subtasks outside Archive") and
+        // the rollback dance for a cross-lane move on failure isn't
+        // worth the complexity for a click-driven action. onSettled
+        // invalidates ["projects"] so the UI catches up either way.
+        archiveMutation.mutate(project.id);
+      },
+    };
+  }
+
   if (laneList.length === 0) {
     return (
       <div className="p-8">
@@ -399,11 +554,13 @@ export function BoardView() {
                 lane={lane}
                 projects={grouped.get(lane.id) ?? []}
                 onOpen={setSelectedId}
+                onSort={canWrite ? () => setSortingLaneId(lane.id) : undefined}
                 colorBy={colorBy}
                 users={users.data ?? []}
                 teams={teams.data ?? []}
                 lanes={laneList}
-                allProjects={projects.data ?? []}
+                allProjects={allProjects}
+                makeQuickActions={makeQuickActions}
               />
             ))}
           </div>
@@ -424,11 +581,36 @@ export function BoardView() {
       </DndContext>
 
       {selectedId ? (
-        <ProjectDetailPanel id={selectedId} onClose={() => setSelectedId(null)} onOpenProject={setSelectedId} />
+        <ProjectDetailPanel
+          id={selectedId}
+          onClose={() => setSelectedId(null)}
+          onOpenProject={setSelectedId}
+          // Sibling ordering matches the visual Board scan: laneList
+          // is already sorted by `order`, and grouped[lane.id] carries
+          // the per-lane items in drag-tracked position. Flatten and
+          // pass so prev/next walks the board exactly the way the eye
+          // does — top of leftmost column to bottom of rightmost.
+          siblingIds={laneList.flatMap((l) => (grouped.get(l.id) ?? []).map((p) => p.id))}
+        />
       ) : null}
       {newInLane !== null ? (
         <NewProjectDialog defaultLaneId={newInLane || null} onClose={() => setNewInLane(null)} />
       ) : null}
+      {sortingLaneId ? (() => {
+        // Guard against the lane getting deleted between the button
+        // press and this render — cheaper than gating the whole
+        // subtree with an early return.
+        const sortLane = laneList.find((l) => l.id === sortingLaneId);
+        if (!sortLane) return null;
+        return (
+          <SortLaneModal
+            lane={sortLane}
+            projects={grouped.get(sortingLaneId) ?? []}
+            teams={teams.data ?? []}
+            onClose={() => setSortingLaneId(null)}
+          />
+        );
+      })() : null}
       {phasePrompt ? (() => {
         // Both must still exist by the time the mutation resolves —
         // deleting the card or the lane between drop and prompt is
@@ -452,13 +634,23 @@ function LaneColumn(props: {
   lane: SwimLane;
   projects: Project[];
   onOpen: (id: string) => void;
+  /** When provided, renders a "Sort" button in the lane header that
+   *  fires this callback. Omitted for viewers so read-only sessions
+   *  don't advertise an action they can't take. */
+  onSort?: () => void;
   colorBy: import("../lib/viewState").ColorBy;
   users: User[];
   teams: Team[];
   lanes: SwimLane[];
   allProjects: Project[];
+  /** Factory that returns the quick-actions bundle for one project, or
+   *  undefined for viewers (in which case the ⋮ trigger and right-click
+   *  menu on the card both no-op — see ProjectCard). Passed as a
+   *  function rather than pre-computed per-card so the write of
+   *  `moveMutation`/`archiveMutation` closures stays in one place. */
+  makeQuickActions: (project: Project) => BoardCardQuickActionsProps | undefined;
 }) {
-  const { lane, projects, onOpen, colorBy, users, teams, lanes, allProjects } = props;
+  const { lane, projects, onOpen, onSort, colorBy, users, teams, lanes, allProjects, makeQuickActions } = props;
   const droppableId = `lane:${lane.id}`;
 
   return (
@@ -486,6 +678,21 @@ function LaneColumn(props: {
         {lane.is_terminal ? (
           <span className="chip !border-emerald-300 !bg-emerald-50 !text-emerald-800">terminal</span>
         ) : null}
+        {/* Sort trigger anchored to the right of the header so it
+            doesn't fight the lane name / chip cluster for space.
+            Disabled implicitly (not rendered) for viewers via the
+            onSort omission from the parent. */}
+        {onSort && projects.length > 1 ? (
+          <button
+            type="button"
+            className="ml-auto btn-ghost !p-1 text-wp-slate hover:text-wp-ink"
+            onClick={onSort}
+            title="Reorder items in this lane"
+            aria-label={`Sort ${lane.name}`}
+          >
+            <ArrowUpDown size={14} />
+          </button>
+        ) : null}
       </div>
 
       <SortableContext
@@ -505,6 +712,7 @@ function LaneColumn(props: {
                 teams={teams}
                 lanes={lanes}
                 allProjects={allProjects}
+                quickActions={makeQuickActions(p)}
               />
             ))}
             {projects.length === 0 ? (
@@ -539,8 +747,9 @@ function SortableCard(props: {
   teams: Team[];
   lanes: SwimLane[];
   allProjects: Project[];
+  quickActions?: BoardCardQuickActionsProps;
 }) {
-  const { project, onOpen, colorBy, users, teams, lanes, allProjects } = props;
+  const { project, onOpen, colorBy, users, teams, lanes, allProjects, quickActions } = props;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: project.id });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
   return (
@@ -554,6 +763,7 @@ function SortableCard(props: {
         allProjects={allProjects}
         onOpen={onOpen}
         dragHandleProps={{ ...attributes, ...listeners }}
+        quickActions={quickActions}
       />
     </div>
   );

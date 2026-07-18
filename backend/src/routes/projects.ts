@@ -1020,6 +1020,117 @@ projectsRouter.post("/:id/move", requireWrite, async (req, res) => {
 });
 
 /**
+ * Bulk-reorder every project in a single swim lane in one atomic
+ * transaction.
+ *
+ * Callers use this from the Board's "Sort lane" modal — a full-lane
+ * drag-and-drop reorder is a much better UX than firing N single
+ * /:id/move calls (each of which does its own cross-lane rebalance and
+ * status_history bookkeeping). This endpoint stays lane-local: swim
+ * lane membership doesn't change, no terminal-lane stamping happens,
+ * no status_history row is written. All that logic is only relevant to
+ * *lane transitions*; a pure sort is not one.
+ *
+ * Request body:
+ *   {
+ *     swim_lane_id: string,     // the lane being sorted
+ *     order: string[],          // project ids in their NEW order
+ *   }
+ *
+ * Contract enforced server-side:
+ *   * Every id in `order` must currently live in `swim_lane_id` for
+ *     the caller's group (case: filtered subset from the client). Any
+ *     that don't → 400. This is deliberately strict — the client only
+ *     ever sends items it visually pulled from the lane, so a
+ *     mismatch means the cache is stale or the request was crafted by
+ *     hand, and we'd rather fail than silently move cards between
+ *     lanes.
+ *   * `order` may be a subset of the lane's members (the client passes
+ *     the filtered subset). Missing members keep their relative order
+ *     with each other and are appended after the sorted subset, so the
+ *     visible portion always ends up in the user's chosen order
+ *     without stomping on rows the user couldn't see in the modal.
+ *
+ * Positions are reindexed 0..n-1 in the final blended order so the
+ * per-lane unique-position index stays gap-free.
+ */
+const reorderLaneSchema = z.object({
+  swim_lane_id: z.string().uuid(),
+  order: z.array(z.string().uuid()).min(1),
+});
+
+projectsRouter.post("/reorder-lane", requireWrite, async (req, res) => {
+  const body = reorderLaneSchema.parse(req.body);
+  const groupId = req.groupId!;
+
+  await withTransaction(async (client) => {
+    // Lane must belong to the caller's group. Blocks cross-tenant
+    // access even for well-formed requests.
+    const { rows: laneRows } = await client.query<{ id: string }>(
+      `SELECT id FROM swim_lanes WHERE id = $1 AND group_id = $2`,
+      [body.swim_lane_id, groupId],
+    );
+    if (!laneRows[0]) throw new HttpError(404, "swim lane not found");
+
+    // Snapshot the lane's current membership (order by position, then
+    // created_at as a stable tiebreaker) so we can (a) verify the
+    // sorted subset is legitimate and (b) blend it with the
+    // un-sorted rows the caller couldn't see.
+    const { rows: current } = await client.query<{ id: string }>(
+      `SELECT id FROM projects
+        WHERE swim_lane_id = $1
+          AND group_id = $2
+          AND deleted_at IS NULL
+        ORDER BY position ASC, created_at ASC
+        FOR UPDATE`,
+      [body.swim_lane_id, groupId],
+    );
+    const currentIds = current.map((r) => r.id);
+    const currentSet = new Set(currentIds);
+
+    // Every id the client sent must be in this lane right now.
+    // Rejecting on drift beats silently discarding half the request.
+    const foreign = body.order.filter((id) => !currentSet.has(id));
+    if (foreign.length) {
+      throw new HttpError(400, `ids not in this lane: ${foreign.join(", ")}`);
+    }
+    // Dedupe defensively — the client shouldn't send dupes but a
+    // stray render bug shouldn't corrupt the position sequence.
+    const seen = new Set<string>();
+    const orderedSubset: string[] = [];
+    for (const id of body.order) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      orderedSubset.push(id);
+    }
+
+    // Blend the caller-sorted subset with the rows the caller
+    // couldn't see (filtered out on the client). Keep the unfiltered
+    // tail in its existing relative order — that's the least
+    // surprising outcome for anyone who didn't participate in the
+    // sort dialog.
+    const tail = currentIds.filter((id) => !seen.has(id));
+    const finalOrder = [...orderedSubset, ...tail];
+
+    for (let i = 0; i < finalOrder.length; i++) {
+      await client.query(
+        `UPDATE projects SET position = $1, updated_at = NOW()
+          WHERE id = $2 AND position <> $1`,
+        [i, finalOrder[i]],
+      );
+    }
+
+    // Deliberately NOT recording an audit event per project — this is
+    // a positional sort, not a data change, and would drown the audit
+    // trail with noise every time a PM tidies a lane. Lane MOVEMENT
+    // (a card actually changing swim lanes) continues to be audited
+    // by moveProjectImpl above.
+  });
+
+  res.json({ ok: true });
+});
+
+/**
  * Move a project into the workspace's archive lane. The lane's id is
  * resolved server-side so non-admins (who never see the lane in their
  * swim-lanes response) can still archive their own work with one click.

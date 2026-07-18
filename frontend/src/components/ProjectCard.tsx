@@ -1,5 +1,6 @@
 import { differenceInCalendarDays, format } from "date-fns";
-import { AlertTriangle, Calendar, ChevronRight, Layers, Map } from "lucide-react";
+import { AlertTriangle, Calendar, ChevronRight, Layers, Map as MapIcon } from "lucide-react";
+import { useRef } from "react";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy } from "../lib/viewState";
 import { cn } from "../lib/cn";
@@ -7,6 +8,11 @@ import { readableOn, tint } from "../lib/colors";
 import { computePhases } from "../lib/phaseCompute";
 import { StatusPill } from "./StatusPill";
 import { LaneMoveMenu } from "./LaneMoveMenu";
+import {
+  BoardCardQuickActions,
+  type BoardCardQuickActionsHandle,
+  type BoardCardQuickActionsProps,
+} from "./BoardCardQuickActions";
 import { useProjectCurrentWeekStatus } from "../hooks/useProjectCurrentWeekStatus";
 
 export function ProjectCard(props: {
@@ -22,10 +28,27 @@ export function ProjectCard(props: {
   onOpen?: () => void;
   isDragging?: boolean;
   dragHandleProps?: React.HTMLAttributes<HTMLElement> & Record<string, unknown>;
+  /** When provided, renders the ⋮ quick-actions trigger in the card's
+   *  top-right AND wires a right-click handler on the card root that
+   *  opens the same menu at the pointer. Omitted for viewers (BoardView
+   *  passes undefined when useCanWrite() is false) and for the
+   *  DragOverlay clone, both of which should show a static card. */
+  quickActions?: BoardCardQuickActionsProps;
 }) {
-  const { project, colorBy, users, teams, lanes, allProjects, onOpen, isDragging, dragHandleProps } = props;
+  const { project, colorBy, users, teams, lanes, allProjects, onOpen, isDragging, dragHandleProps, quickActions } = props;
+  // Imperative handle: right-click on the card root fires openAt(x, y)
+  // on the quick-actions menu, which opens it anchored to the pointer.
+  // Left-click on the ⋮ trigger uses Radix's default anchor and
+  // ignores this ref.
+  const quickActionsRef = useRef<BoardCardQuickActionsHandle>(null);
   const owner = users.find((u) => u.id === project.owner_id);
-  const projectTeams = teams.filter((t) => project.teams.includes(t.id));
+  // Iterate `project.teams` (the ranked list) and look up each team
+  // in the catalog so the chip sequence mirrors the PM's chosen
+  // primary → secondary → tertiary order.
+  const teamsById = new Map(teams.map((t) => [t.id, t]));
+  const projectTeams = project.teams
+    .map((id) => teamsById.get(id))
+    .filter((t): t is Team => !!t);
   const lane = lanes.find((l) => l.id === project.swim_lane_id);
   const accent = pickAccent({ colorBy, lane, teams: projectTeams, owner });
   const parent = project.parent_id
@@ -62,6 +85,21 @@ export function ProjectCard(props: {
           onOpen();
         }
       }}
+      // Right-click power-user shortcut. Only wired when quickActions
+      // is provided (i.e. we're on the Board AND the caller can
+      // write). Preventing the default browser context menu is
+      // required both to open our own AND to keep pointer coords
+      // matching what the user clicked (default would deselect our
+      // active-card treatment). Viewers get the browser's native
+      // context menu falls through untouched.
+      onContextMenu={
+        quickActions
+          ? (e) => {
+              e.preventDefault();
+              quickActionsRef.current?.openAt(e.clientX, e.clientY);
+            }
+          : undefined
+      }
       className={cn(
         // Kanban convention: pointer at rest (the tile is primarily a
         // link to details), grabbing only while a drag is actually
@@ -86,7 +124,7 @@ export function ProjectCard(props: {
               ↳ {parent.title}
             </div>
           ) : null}
-          <div className="line-clamp-2 flex items-center gap-1 text-sm font-medium text-wp-ink">
+          <div className="flex items-start gap-1 text-sm font-medium text-wp-ink">
             {isEpic ? (
               <span
                 className="inline-flex shrink-0 items-center text-wp-red"
@@ -96,7 +134,7 @@ export function ProjectCard(props: {
                 <Layers size={12} />
               </span>
             ) : null}
-            <span className="min-w-0 flex-1 truncate">{project.title}</span>
+            <span className="min-w-0 flex-1 whitespace-normal break-words">{project.title}</span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-wp-slate">
             {projectTeams.map((t) => {
@@ -122,7 +160,12 @@ export function ProjectCard(props: {
             ))}
           </div>
         </div>
-        <ChevronRight size={14} className="mt-0.5 text-wp-slate opacity-0 group-hover:opacity-100" />
+        <div className="ml-auto flex shrink-0 items-start gap-0.5">
+          {quickActions ? (
+            <BoardCardQuickActions ref={quickActionsRef} {...quickActions} />
+          ) : null}
+          <ChevronRight size={14} className="mt-1 text-wp-slate opacity-0 group-hover:opacity-100" />
+        </div>
       </div>
 
       <div className="mt-2 flex items-center justify-between text-xs text-wp-slate">
@@ -149,7 +192,7 @@ export function ProjectCard(props: {
               title="On roadmap"
               aria-label="On roadmap"
             >
-              <Map size={12} />
+              <MapIcon size={12} />
             </span>
           ) : null}
           {needsStatus ? <StatusPill flag={status?.health_flag ?? "white"} completed={!!status?.completed} /> : null}
