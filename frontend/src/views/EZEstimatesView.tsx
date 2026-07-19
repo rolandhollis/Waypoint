@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
 import { AiSuggestPopover, type AiSuggestPhaseCascade } from "../components/AiSuggestPopover";
@@ -7,13 +7,22 @@ import { EstimateProvenanceChip } from "../components/EstimateProvenanceChip";
 import { FilterBar } from "../components/FilterBar";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
 import { PhaseSizePicker } from "../components/PhaseSizePicker";
+import { ViolationChip } from "../components/ViolationChip";
+import { ViolationToast } from "../components/ViolationToast";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { applyFilters } from "../lib/filtering";
 import { addIsoDays, todayIso, type PhaseDateFields } from "../lib/phaseDates";
 import { useCanWrite, useProjects, useSwimLanes, useTshirtSizes, useUsers } from "../lib/queries";
-import type { Project, User } from "../lib/types";
+import type { Project, SwimLane, User } from "../lib/types";
 import { useViewStore } from "../lib/viewState";
+import {
+  computeProjectViolations,
+  diffViolations,
+  hasDelta,
+  type ViolationDelta,
+  type ViolationSet,
+} from "../lib/violations";
 
 /**
  * Phase definitions used by both the cascade helper and the row
@@ -131,9 +140,21 @@ export function computeCascadePatch(
   const oldStart = project[phase.startField] as string | null;
   const oldEnd   = project[phase.endField]   as string | null;
 
-  // Phase start stays put when set; otherwise fall back to today.
-  // Only the END slides to accommodate the new N-day length.
-  const newStart = oldStart ?? today;
+  // When this phase has no persisted start we normally fall back to
+  // today — but the backend enforces a non-decreasing chain across
+  // every non-null phase date, so "today" would 400 on any project
+  // whose upstream phase (Discovery target, Dev end, …) hasn't
+  // elapsed yet. Walk the preceding phases and pull the fallback
+  // forward past the latest set upstream date so the PATCH lands.
+  let earliestStart = today;
+  for (let i = 0; i < idx; i++) {
+    const up = PHASES[i]!;
+    const upS = project[up.startField] as string | null;
+    const upE = project[up.endField]   as string | null;
+    if (upS && upS > earliestStart) earliestStart = upS;
+    if (upE && upE > earliestStart) earliestStart = upE;
+  }
+  const newStart = oldStart ?? earliestStart;
   const newEnd = addIsoDays(newStart, newDays)!;
 
   const patch: PhaseDatePatch = {};
@@ -277,6 +298,40 @@ export function EZEstimatesView() {
     return m;
   }, [users.data]);
 
+  // Two O(1) lookup maps used by the deadline + dependency
+  // violation calculators. Computed once per (lanes / projects)
+  // query snapshot so every row's chip / toast reads through the
+  // same view of the world; without these each row would either
+  // rebuild the maps in its render loop (O(n²)) or the violation
+  // check would silently miss a rename mid-poll.
+  const lanesById = useMemo(() => {
+    const m = new Map<string, SwimLane>();
+    for (const lane of lanes.data ?? []) m.set(lane.id, lane);
+    return m;
+  }, [lanes.data]);
+  const projectsById = useMemo(() => {
+    const m = new Map<string, Project>();
+    for (const p of projects.data ?? []) m.set(p.id, p);
+    return m;
+  }, [projects.data]);
+
+  // Per-row toast state — one bucket per project id, cleared on
+  // dismiss (auto after ~8s or explicit ×). The `nonce` bumps on
+  // every new toast so a rapid second violation on the same row
+  // remounts the toast component (and resets the auto-dismiss
+  // timer) instead of stacking.
+  const [toasts, setToasts] = useState<
+    Record<string, { delta: ViolationDelta; nonce: number }>
+  >({});
+  const dismissToast = useCallback((projectId: string) => {
+    setToasts((prev) => {
+      if (!prev[projectId]) return prev;
+      const next = { ...prev };
+      delete next[projectId];
+      return next;
+    });
+  }, []);
+
   // One mutation shared across every row — TanStack Query serializes
   // concurrent invocations of the same key internally, and a shared
   // mutation lets us render one banner at the top on failure.
@@ -351,6 +406,14 @@ export function EZEstimatesView() {
    * this view only lets the user (or Claude) touch one phase per
    * click — the cascade helper below shifts later phases as a
    * derived effect, and the backend infers 'cascade' for those.
+   *
+   * Violation snapshotting: we compute the project's deadline +
+   * dependency violation set BEFORE the PATCH fires (against the
+   * current projects list), and re-compute AFTER using the mutated
+   * project the backend returned. If the diff reveals a NEW miss
+   * or a WORSER overrun, we stash a per-row toast so the PM sees
+   * the impact without switching to the Roadmap. Improvements
+   * (or equivalent-severity carry-overs) fall through silently.
    */
   function handlePickSize(
     project: Project,
@@ -360,16 +423,41 @@ export function EZEstimatesView() {
   ) {
     const patch = computeCascadePatch(project, phase.key, days);
     if (Object.keys(patch).length === 0) return;
-    patchProject.mutate({
-      projectId: project.id,
-      body: {
-        ...patch,
-        _meta: {
-          source,
-          editedPhases: [EZ_TO_BACKEND_PHASE[phase.key]],
+    const before: ViolationSet = computeProjectViolations(project, lanesById, projectsById);
+    patchProject.mutate(
+      {
+        projectId: project.id,
+        body: {
+          ...patch,
+          _meta: {
+            source,
+            editedPhases: [EZ_TO_BACKEND_PHASE[phase.key]],
+          },
         },
       },
-    });
+      {
+        onSuccess: (updated) => {
+          // Swap the mutated project into the lookup map so any
+          // dependency edge back to THIS project resolves against
+          // the fresh dates. We deliberately re-use the cached
+          // lanes + projects snapshot rather than waiting for the
+          // invalidate refetch — the diff we care about is "did
+          // THIS click break something," not the whole-world view.
+          const nextProjectsById = new Map(projectsById);
+          nextProjectsById.set(updated.id, updated);
+          const after = computeProjectViolations(updated, lanesById, nextProjectsById);
+          const delta = diffViolations(before, after);
+          if (!hasDelta(delta)) return;
+          setToasts((prev) => ({
+            ...prev,
+            [updated.id]: {
+              delta,
+              nonce: (prev[updated.id]?.nonce ?? 0) + 1,
+            },
+          }));
+        },
+      },
+    );
   }
 
   /**
@@ -468,6 +556,18 @@ export function EZEstimatesView() {
           <ul className="divide-y divide-wp-stone">
             {rows.map((project) => {
               const isOpen = expandedIds.has(project.id);
+              // Per-row violation snapshot. Cheap enough to compute
+              // inline (list rarely exceeds a few hundred rows) and
+              // keeps the chip in sync with any background poll —
+              // hoisting it into a project-id-keyed memo would leak
+              // stale statuses if a swim-lane rename landed between
+              // renders.
+              const rowViolations = computeProjectViolations(
+                project,
+                lanesById,
+                projectsById,
+              );
+              const rowToast = toasts[project.id];
               return (
                 <li key={project.id} className="py-2 pl-4 pr-6">
                   <div className="flex items-start gap-3">
@@ -526,6 +626,17 @@ export function EZEstimatesView() {
                         project={project}
                         usersById={usersById}
                       />
+                    </div>
+                    {/* Always-on violation chip. Sits immediately
+                        AFTER the provenance chip so the row's
+                        left-to-right reading order flows title →
+                        AI suggest → provenance → warning →
+                        pickers. Renders nothing when the project
+                        has no active violations; hover reveals a
+                        deadline/dep breakdown identical in shape
+                        to the roadmap's red-triangle tooltip. */}
+                    <div className="mt-4 shrink-0 self-start">
+                      <ViolationChip violations={rowViolations} />
                     </div>
                     {/* Fixed-width phase-picker rail. `w-[7.5rem]` per
                         column keeps the S/M/L pickers vertically
@@ -593,6 +704,18 @@ export function EZEstimatesView() {
                       })}
                     </div>
                   </div>
+                  {rowToast ? (
+                    <ViolationToast
+                      // Key on the nonce so a rapid follow-up
+                      // click on the same row remounts (and
+                      // resets the auto-dismiss timer) instead of
+                      // silently replacing the delta payload while
+                      // the old timer keeps counting down.
+                      key={rowToast.nonce}
+                      delta={rowToast.delta}
+                      onDismiss={() => dismissToast(project.id)}
+                    />
+                  ) : null}
                   <Collapsible open={isOpen}>
                     <div className="mt-2 whitespace-pre-wrap pl-6 text-xs text-wp-slate">
                       {project.description?.trim() ? (
