@@ -7,9 +7,10 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDownAZ, GripVertical, Mail, Send, Trash2 } from "lucide-react";
+import { ArrowDownAZ, GripVertical, Mail, Send, Sparkles, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import {
+  useAiEstimatorHealth,
   useGroupMembers,
   useGroups,
   useHealth,
@@ -26,6 +27,7 @@ import {
   useUsers,
 } from "../lib/queries";
 import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, TshirtSize, User } from "../lib/types";
+import { AiReferenceEstimatesAdmin } from "../components/AiReferenceEstimatesAdmin";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
@@ -36,7 +38,7 @@ import { useAutoColor } from "../lib/useAutoColor";
 import { RevealPasswordCard } from "../components/RevealPasswordCard";
 import { X } from "lucide-react";
 
-type TabKey = "lanes" | "teams" | "kpis" | "tshirt-sizes" | "users" | "groups" | "import" | "export" | "notifications" | "archived";
+type TabKey = "lanes" | "teams" | "kpis" | "tshirt-sizes" | "ai-reference-estimates" | "users" | "groups" | "import" | "export" | "notifications" | "archived";
 
 type TabDef = {
   key: TabKey;
@@ -56,6 +58,7 @@ const ALL_TABS: TabDef[] = [
   { key: "teams",    label: "Teams",         render: () => <TeamsAdmin /> },
   { key: "kpis",     label: "KPIs",          render: () => <KpisAdmin /> },
   { key: "tshirt-sizes", label: "T-Shirt Sizes", render: () => <TshirtSizesAdmin /> },
+  { key: "ai-reference-estimates", label: "AI reference estimates", render: () => <AiReferenceEstimatesAdmin /> },
   { key: "users",    label: "Users",         render: () => <UsersAdmin /> },
   { key: "groups",   label: "Groups",        render: () => <GroupsAdmin />, superUserOnly: true },
   { key: "import",   label: "Import CSV",    render: () => <CsvImportAdmin /> },
@@ -196,7 +199,81 @@ function NotificationsAdmin() {
     <div className="flex flex-col gap-4">
       <ReminderAdmin />
       <DigestAdmin />
+      <AiEstimatorStatusRow />
     </div>
+  );
+}
+
+/**
+ * One-line read-only status row for the Claude-powered EZEstimates
+ * suggester. Reads GET /projects/ai-estimator/health so it can tell
+ * the admin whether ANTHROPIC_API_KEY is set on the current deploy.
+ *
+ * Deliberately read-only: the API key is a Fly secret, never a
+ * value we surface through the UI (that would be a big security
+ * regression). The remediation copy points the admin at the
+ * `fly secrets set` command instead of implying they can flip it
+ * here.
+ */
+function AiEstimatorStatusRow() {
+  const health = useAiEstimatorHealth();
+  const configured = health.data?.configured === true;
+  const model = health.data?.model ?? null;
+  return (
+    <section className="card-surface p-4">
+      <div className="flex items-start gap-3">
+        <span
+          className={
+            "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full " +
+            (configured
+              ? "bg-emerald-100 text-emerald-700"
+              : "bg-wp-stone/40 text-wp-slate")
+          }
+        >
+          <Sparkles size={16} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold text-wp-ink">
+            AI phase-size estimator
+          </h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Powers the [✨ Suggest] button on the EZEstimates view. Uses
+            Anthropic Claude to size Discovery / Development / Post-Dev
+            based on the T-shirt catalog and this workspace's recently
+            completed projects.
+          </p>
+          {health.isLoading ? (
+            <p className="mt-2 text-xs text-wp-slate">Checking status…</p>
+          ) : health.isError ? (
+            <p className="mt-2 text-xs text-red-700">
+              Could not reach the health endpoint.
+            </p>
+          ) : configured ? (
+            <p className="mt-2 text-xs text-emerald-800">
+              <span className="font-semibold">Configured.</span> Using model{" "}
+              <code className="rounded bg-wp-stone/40 px-1 py-0.5 text-[11px] text-wp-ink">
+                {model}
+              </code>
+              . Rotate by setting <code>ANTHROPIC_MODEL</code> in Fly secrets.
+            </p>
+          ) : (
+            <p className="mt-2 text-xs text-amber-800">
+              <span className="font-semibold">Not configured.</span> The
+              feature is dormant until an operator sets{" "}
+              <code className="rounded bg-wp-stone/40 px-1 py-0.5 text-[11px] text-wp-ink">
+                ANTHROPIC_API_KEY
+              </code>{" "}
+              in Fly secrets (
+              <code className="rounded bg-wp-stone/40 px-1 py-0.5 text-[11px] text-wp-ink">
+                fly secrets set ANTHROPIC_API_KEY=…
+              </code>
+              ). Until then the Suggest button returns a 503 with the same
+              remediation copy.
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1357,7 +1434,10 @@ function SortableKpiRow(props: {
  * instead of the drag-reorder pattern used by lanes / teams / kpis.
  *
  * Validation is client-side + server-side:
- *   - days must be a positive integer (1..3650)
+ *   - days must be a non-negative integer (0..3650). Zero is allowed
+ *     and means "phase_end == phase_start" — a same-day window, not a
+ *     "clear the phase" signal. Useful for e.g. a Post-Dev size on a
+ *     trivial task where no post-dev work is expected.
  *   - label must be non-empty and unique within the tenant
  *   - the backend's PATCH schema mirrors both rules and returns 400
  *     on violation; the mutation error banner surfaces the message.
@@ -1385,7 +1465,8 @@ function TshirtSizesAdmin() {
           <p className="mt-1 text-xs text-wp-slate">
             Presets available in the EZEstimates size picker. Fixed at five
             rows per tenant; you can relabel and re-size but not add or
-            remove. Days must be a positive integer.
+            remove. Days must be a non-negative integer (0 is allowed — it
+            sets the phase end to match the phase start).
           </p>
         </div>
       </div>
@@ -1455,7 +1536,7 @@ function TshirtSizeRow({
         Days
         <input
           type="number"
-          min={1}
+          min={0}
           max={3650}
           key={`days-${size.id}-${size.updated_at}`}
           className="input w-20"
@@ -1463,8 +1544,10 @@ function TshirtSizeRow({
           onBlur={(e) => {
             const raw = e.target.value.trim();
             if (!raw) return;
-            const next = Math.max(1, Math.floor(Number(raw)));
-            if (Number.isNaN(next) || next === size.days) return;
+            const parsed = Math.floor(Number(raw));
+            if (Number.isNaN(parsed)) return;
+            const next = Math.max(0, parsed);
+            if (next === size.days) return;
             onResize(next);
           }}
           onKeyDown={(e) => {

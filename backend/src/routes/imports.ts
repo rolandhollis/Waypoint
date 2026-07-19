@@ -246,13 +246,29 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
           [laneRow.id],
         );
         const position = maxRows[0]?.next ?? 0;
+
+        // Stamp per-phase provenance for any phase whose start or
+        // end date shipped in the CSV row. The importer is the sole
+        // author of these dates on create, so all present phases
+        // count as directly edited — no cascade fallback here.
+        const stampedAt = new Date();
+        const userId = req.user!.id;
+        const discoveryPresent = row.start_date != null || row.target_date != null;
+        const developmentPresent = row.dev_start_date != null || row.dev_end_date != null;
+        const postDevPresent =
+          row.optimization_start_date != null || row.optimization_end_date != null;
+
         const { rows: insRows } = await client.query<{ id: string }>(
           `INSERT INTO projects
              (group_id, title, description, swim_lane_id, position, owner_id, tags,
               type, parent_id,
               start_date, target_date, dev_start_date, dev_end_date,
-              optimization_start_date, optimization_end_date, created_by)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'epic',NULL,$8,$9,$10,$11,$12,$13,$14)
+              optimization_start_date, optimization_end_date, created_by,
+              discovery_updated_at, discovery_updated_by_user_id, discovery_updated_source,
+              development_updated_at, development_updated_by_user_id, development_updated_source,
+              post_dev_updated_at, post_dev_updated_by_user_id, post_dev_updated_source)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'epic',NULL,$8,$9,$10,$11,$12,$13,$14,
+                   $15,$16,$17,$18,$19,$20,$21,$22,$23)
            RETURNING id`,
           [
             groupId,
@@ -269,6 +285,15 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
             row.optimization_start_date ?? null,
             row.optimization_end_date ?? null,
             req.user!.id,
+            discoveryPresent ? stampedAt : null,
+            discoveryPresent ? userId : null,
+            discoveryPresent ? "csv" : null,
+            developmentPresent ? stampedAt : null,
+            developmentPresent ? userId : null,
+            developmentPresent ? "csv" : null,
+            postDevPresent ? stampedAt : null,
+            postDevPresent ? userId : null,
+            postDevPresent ? "csv" : null,
           ],
         );
         const projectId = insRows[0]!.id;

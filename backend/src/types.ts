@@ -170,6 +170,36 @@ export type KpiRow = {
 };
 
 /**
+ * Curated "gold-standard" phase-size example used to seed the AI
+ * suggester's few-shot pool. Distinct from real projects: an admin
+ * uploads a CSV of title + description + per-phase-day rows to
+ * teach Claude what a good estimate looks like for THIS tenant.
+ *
+ * Loader unions curated rows FIRST with historical projects that
+ * carry dev_estimate_sourced_by_dev=TRUE (see backend/src/ai/estimator.ts).
+ * At least one of the three *_days fields must be non-null and any
+ * present value must be >= 0 — enforced by CHECK constraints in
+ * migration 031.
+ */
+export type AiReferenceEstimateRow = {
+  id: string;
+  /** Tenant scope; every list/create/update filters by this. */
+  group_id: string;
+  title: string;
+  description: string;
+  discovery_days: number | null;
+  development_days: number | null;
+  post_dev_days: number | null;
+  /** Free-form context Claude can weigh, e.g. "sized by RH, high confidence". */
+  notes: string | null;
+  /** Optional provenance hint, e.g. "2024 Q4 loyalty email project". */
+  source_label: string | null;
+  position: number;
+  created_at: Date;
+  created_by: string | null;
+};
+
+/**
  * T-shirt sizing preset used by the EZEstimates view. Fixed
  * cardinality of 5 per tenant (S/M/L/XL/XXL, positions 0..4) — the
  * admin can relabel and re-size, but never add or remove rows. See
@@ -242,9 +272,52 @@ export type ProjectRow = {
   dev_estimate_sourced_by_dev: boolean;
   deleted_at: Date | null;
   created_by: string | null;
+  /**
+   * Most recent Claude-generated phase-size suggestion for this
+   * project. Written by POST /projects/:id/ai-estimate; read back
+   * (without another Anthropic call) by the matching GET so the
+   * EZEstimates popover can render a cached answer immediately.
+   * Null when the user has never asked for a suggestion.
+   *
+   * Shape is validated at write time by aiEstimator; the DB column
+   * is JSONB so we can iterate on the schema without a migration
+   * per tweak. See backend/src/ai/estimator.ts for the canonical
+   * TypeScript shape (`AiSuggestion`).
+   */
+  ai_suggestion: unknown | null;
+  ai_suggested_at: Date | null;
+  /**
+   * Per-phase provenance columns added by migration 032. Populated
+   * whenever the corresponding phase's date pair actually changes
+   * (ISO-date-equal comparison, not raw string / timestamp — see
+   * projects.ts PATCH). NULL until first update; the EZEstimates
+   * row hides the provenance chip when all three phases are null.
+   *
+   * `_source` is one of 'user' | 'claude' | 'csv' | 'cascade'
+   * (CHECK-constrained at the DB layer). 'cascade' is stamped when
+   * a change to an *earlier* phase implicitly shifted this phase's
+   * dates — the acting user is still recorded so a tooltip can
+   * attribute the shift, but the label distinguishes derived
+   * effects from a direct pick.
+   */
+  discovery_updated_at: Date | null;
+  discovery_updated_by_user_id: string | null;
+  discovery_updated_source: EstimateSource | null;
+  development_updated_at: Date | null;
+  development_updated_by_user_id: string | null;
+  development_updated_source: EstimateSource | null;
+  post_dev_updated_at: Date | null;
+  post_dev_updated_by_user_id: string | null;
+  post_dev_updated_source: EstimateSource | null;
   created_at: Date;
   updated_at: Date;
 };
+
+/**
+ * Allowed values for the per-phase `_updated_source` columns. Mirrors
+ * the CHECK constraint in migration 032 — keep the two in sync.
+ */
+export type EstimateSource = "user" | "claude" | "csv" | "cascade";
 
 export type StatusHistoryRow = {
   id: string;
@@ -366,6 +439,47 @@ export type TimelineEntryRow = {
   field: string | null;
   from_value: unknown;
   to_value: unknown;
+};
+
+/**
+ * Row shape returned by `GET /projects/audit/recent` — a flat list of
+ * recent change events across the caller's tenant, pre-joined with
+ * project + user + root-epic metadata so the Roadmap's "Recent
+ * changes" section can render without any extra client-side lookups.
+ *
+ * Discriminated by `kind`:
+ *   * `"audit"`  — from `project_audit_events` (create/edit/archive/restore).
+ *   * `"move"`   — from `status_history` (lane movements).
+ *
+ * `root_epic_id` / `root_epic_title` reflect the top-most ancestor
+ * reachable via the parent_id chain at query time. A standalone
+ * project (no parent) is its own root, so those two fields will match
+ * `project_id` / `project_title` for it. Lane-move rows carry the
+ * from/to swim-lane ids in `from_value` / `to_value` so the frontend
+ * can reuse the same lookup path it uses for the per-project
+ * timeline; scalar edits keep the raw JSONB values.
+ *
+ * `in_archive` is true when the project currently sits in an archive
+ * lane so the UI can chip it "(archived)" — the change still shows
+ * up (recently-shipped work is exactly what the roadmap-adjacent
+ * feed is for) but the audience knows why it's not on the chart.
+ */
+export type RecentAuditEventRow = {
+  id: string;
+  kind: "audit" | "move";
+  project_id: string;
+  project_title: string;
+  project_type: ProjectType;
+  root_epic_id: string;
+  root_epic_title: string;
+  user_id: string | null;
+  user_name: string | null;
+  action: string;
+  field: string | null;
+  from_value: unknown;
+  to_value: unknown;
+  occurred_at: Date;
+  in_archive: boolean;
 };
 
 export type HealthFlag = "white" | "green" | "yellow" | "red";

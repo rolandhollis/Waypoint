@@ -4,7 +4,19 @@ import { z } from "zod";
 import { query, withTransaction } from "../db/pool.js";
 import { requireWrite } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
-import type { ProjectAuditAction, ProjectDeadlineRow, ProjectRow, SwimLaneRow, TimelineEntryRow } from "../types.js";
+import type { EstimateSource, ProjectAuditAction, ProjectDeadlineRow, ProjectRow, RecentAuditEventRow, SwimLaneRow, TimelineEntryRow, TshirtSizeRow } from "../types.js";
+import { config } from "../config.js";
+import {
+  AiEstimatorParseError,
+  buildUserPrompt,
+  generateSuggestion,
+  nearestSizeLabel,
+  PHASE_KEYS,
+  type AiSuggestion,
+  type FewShotExample,
+  type PhaseKey,
+  type TshirtBucket,
+} from "../ai/estimator.js";
 
 /** Ordered phase-date fields, earliest → latest. Used by both the
  * internal-ordering validator and the forward-cascade helper. */
@@ -529,6 +541,33 @@ const projectBaseSchema = z.object({
    * can spot provisional timing at a glance.
    */
   dev_estimate_sourced_by_dev: z.boolean().optional(),
+  /**
+   * Per-phase estimate provenance metadata. Optional and out-of-band
+   * (leading underscore) so it stays clearly distinct from the
+   * persisted project columns above — it drives WHICH of the nine
+   * `*_updated_*` columns get stamped by this write, not the row's
+   * business fields.
+   *
+   *   * `source`        — one of 'user' | 'claude' | 'csv'. Defaults
+   *                       to 'user' when omitted so pre-provenance
+   *                       callers keep working. `'cascade'` is NOT
+   *                       accepted from the wire — the router derives
+   *                       that value for phases that were shifted by
+   *                       upstream changes but not directly targeted.
+   *   * `editedPhases`  — which of the three phases (`discovery`,
+   *                       `development`, `post_dev`) the caller was
+   *                       directly editing in this write. Any changed
+   *                       phase NOT in this list is stamped
+   *                       'cascade'. When the list is omitted the
+   *                       server assumes every changed phase was a
+   *                       direct edit (legacy PATCH callers).
+   */
+  _meta: z
+    .object({
+      source: z.enum(["user", "claude", "csv"]).optional(),
+      editedPhases: z.array(z.enum(["discovery", "development", "post_dev"])).optional(),
+    })
+    .optional(),
 });
 
 /** Column names that live on the `projects` table itself (i.e. what the
@@ -542,6 +581,41 @@ const PROJECT_COLUMN_KEYS = [
   "excluded_from_capacity",
   "dev_estimate_sourced_by_dev",
 ] as const;
+
+/**
+ * Provenance-phase → (start_field, end_field) map. Used both to
+ * detect which phase's date pair changed on a PATCH and to build the
+ * INSERT stamp on POST when a new project ships with phase dates.
+ * Matches the same triad the frontend cascade helper uses so both
+ * ends of the wire stamp the same buckets.
+ */
+type ProvenancePhaseKey = "discovery" | "development" | "post_dev";
+
+const PHASE_PROVENANCE_FIELDS = {
+  discovery: ["start_date", "target_date"] as const,
+  development: ["dev_start_date", "dev_end_date"] as const,
+  post_dev: ["optimization_start_date", "optimization_end_date"] as const,
+} satisfies Record<ProvenancePhaseKey, readonly [string, string]>;
+
+const PROVENANCE_PHASE_KEYS: readonly ProvenancePhaseKey[] = [
+  "discovery",
+  "development",
+  "post_dev",
+];
+
+/**
+ * Normalize an incoming date value to a bare ISO YYYY-MM-DD string
+ * so we can compare "did this phase's date actually change?" without
+ * tripping on `2026-08-15` vs `2026-08-15T00:00:00.000Z` vs a JS Date
+ * object surfaced by node-postgres. The backend stores phase dates as
+ * DATE (see migration 004) so anything but the calendar day is noise.
+ */
+function toIsoDay(v: unknown): string | null {
+  if (v == null) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (typeof v === "string") return v.slice(0, 10);
+  return null;
+}
 
 const listSchema = z.object({
   include_deleted: z.enum(["true", "false"]).optional(),
@@ -631,14 +705,45 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
       [laneId],
     );
     const position = maxRows[0]?.next ?? 0;
+
+    // Stamp per-phase provenance for any phase whose START or END
+    // date is non-null in the create body. New projects have no
+    // pre-existing dates to cascade off, so every stamped phase is
+    // treated as a direct edit — `_meta.editedPhases` is ignored on
+    // POST (the shape of an insert is unambiguous). Legacy callers
+    // that don't send `_meta` fall through to source='user'.
+    const createSource: EstimateSource = body._meta?.source ?? "user";
+    const stampedAt = new Date();
+    const userId = req.user!.id;
+    const phaseStamps: Record<ProvenancePhaseKey, {
+      at: Date | null;
+      by: string | null;
+      src: EstimateSource | null;
+    }> = {
+      discovery: { at: null, by: null, src: null },
+      development: { at: null, by: null, src: null },
+      post_dev: { at: null, by: null, src: null },
+    };
+    for (const phase of PROVENANCE_PHASE_KEYS) {
+      const [sField, eField] = PHASE_PROVENANCE_FIELDS[phase];
+      const sVal = body[sField as keyof typeof body];
+      const eVal = body[eField as keyof typeof body];
+      if (sVal == null && eVal == null) continue;
+      phaseStamps[phase] = { at: stampedAt, by: userId, src: createSource };
+    }
+
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO projects
          (group_id, title, description, swim_lane_id, position, owner_id, tags,
           type, parent_id,
           start_date, target_date, dev_start_date, dev_end_date,
           optimization_start_date, optimization_end_date,
-          excluded_from_capacity, dev_estimate_sourced_by_dev, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+          excluded_from_capacity, dev_estimate_sourced_by_dev, created_by,
+          discovery_updated_at, discovery_updated_by_user_id, discovery_updated_source,
+          development_updated_at, development_updated_by_user_id, development_updated_source,
+          post_dev_updated_at, post_dev_updated_by_user_id, post_dev_updated_source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+               $19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING id`,
       [
         groupId,
         body.title,
@@ -658,6 +763,15 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
         body.excluded_from_capacity ?? false,
         body.dev_estimate_sourced_by_dev ?? false,
         req.user!.id,
+        phaseStamps.discovery.at,
+        phaseStamps.discovery.by,
+        phaseStamps.discovery.src,
+        phaseStamps.development.at,
+        phaseStamps.development.by,
+        phaseStamps.development.src,
+        phaseStamps.post_dev.at,
+        phaseStamps.post_dev.by,
+        phaseStamps.post_dev.src,
       ],
     );
     const projectId = rows[0]!.id;
@@ -808,6 +922,45 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
       values.push(v);
       fields.push(`"${key}" = $${values.length}`);
     }
+
+    // Per-phase provenance stamps for the three EZEstimates phases.
+    // A phase is considered "changed" only when its ISO-date pair
+    // moved — a client that echoes back the current dates unchanged
+    // does NOT restamp provenance. When `_meta.editedPhases` is
+    // supplied, phases NOT on that list get 'cascade' (the caller
+    // signaled they were shifted by an upstream pick, not directly
+    // touched); when omitted, all changed phases are treated as
+    // direct edits so legacy PATCH callers keep working.
+    if (touchesPhaseDates) {
+      const metaSource: EstimateSource = body._meta?.source ?? "user";
+      const editedList = body._meta?.editedPhases;
+      const editedSet = editedList ? new Set<ProvenancePhaseKey>(editedList) : null;
+      for (const phase of PROVENANCE_PHASE_KEYS) {
+        const [sField, eField] = PHASE_PROVENANCE_FIELDS[phase];
+        const sInBody = (body as Record<string, unknown>)[sField] !== undefined;
+        const eInBody = (body as Record<string, unknown>)[eField] !== undefined;
+        if (!sInBody && !eInBody) continue;
+        // ISO-day compare on both endpoints. Undefined in body means
+        // "not changing" — fall back to the existing value.
+        const oldS = toIsoDay((existing as unknown as Record<string, unknown>)[sField]);
+        const oldE = toIsoDay((existing as unknown as Record<string, unknown>)[eField]);
+        const nextS = sInBody
+          ? toIsoDay((body as Record<string, unknown>)[sField])
+          : oldS;
+        const nextE = eInBody
+          ? toIsoDay((body as Record<string, unknown>)[eField])
+          : oldE;
+        if (nextS === oldS && nextE === oldE) continue;
+        const phaseSource: EstimateSource =
+          editedSet === null || editedSet.has(phase) ? metaSource : "cascade";
+        fields.push(`"${phase}_updated_at" = NOW()`);
+        values.push(req.user!.id);
+        fields.push(`"${phase}_updated_by_user_id" = $${values.length}`);
+        values.push(phaseSource);
+        fields.push(`"${phase}_updated_source" = $${values.length}`);
+      }
+    }
+
     if (fields.length) {
       values.push(projectId);
       await client.query(
@@ -1232,6 +1385,133 @@ projectsRouter.post("/:id/restore", requireWrite, async (req, res) => {
 });
 
 /**
+ * Tenant-wide "what changed recently" feed backing the Roadmap's
+ * Recent-changes section. Merges `project_audit_events` (field edits,
+ * creates, archives, restores) with `status_history` (lane movements)
+ * across every non-deleted project in the caller's group, joined
+ * with the caller-relevant metadata (project title/type, root-epic
+ * rollup, actor display name, archived-lane flag) so the frontend
+ * can render without a second round-trip.
+ *
+ * `?days` bounds the window (default 7, capped at 30). Results are
+ * capped at 500 rows; `truncated` on the response flags when the cap
+ * clipped older activity so the UI can hint that the view is partial.
+ *
+ * Move-audit rows are filtered out because every real lane move
+ * already writes to `status_history` (rendered here as kind='move')
+ * plus a duplicate `project_audit_events` row with action='move'.
+ * Including both would double-count each move in the feed; the
+ * status_history version carries the from/to lane ids in the shape
+ * the shared audit renderer expects, so we keep that one and drop
+ * the audit-events duplicate.
+ */
+const RECENT_EVENTS_CAP = 500;
+
+projectsRouter.get("/audit/recent", async (req, res) => {
+  const daysRaw = Number.parseInt(String(req.query.days ?? "7"), 10);
+  const days = Number.isFinite(daysRaw) ? Math.max(1, Math.min(30, daysRaw)) : 7;
+  const groupId = req.groupId!;
+  const isAdmin = req.userGroupRole === "admin";
+
+  // Non-admins never see projects that live in admin-only lanes;
+  // the same filter runs on GET /projects, so keep the feed
+  // consistent with what those users see elsewhere.
+  const hiddenLaneClause = isAdmin
+    ? ""
+    : `AND NOT EXISTS (
+         SELECT 1 FROM swim_lanes sl2
+          WHERE sl2.id = p.swim_lane_id AND sl2.is_admin_only = TRUE
+       )`;
+
+  const { rows } = await query<RecentAuditEventRow>(
+    `WITH RECURSIVE walk AS (
+       -- Base: every live project in the group is its own start.
+       SELECT id AS start_id, id AS cur_id, parent_id, title AS cur_title, 0 AS depth
+         FROM projects
+        WHERE group_id = $1 AND deleted_at IS NULL
+       UNION ALL
+       -- Walk one hop up the parent chain; stop when the parent is
+       -- missing or soft-deleted (deepest reachable ancestor becomes
+       -- the effective root).
+       SELECT w.start_id, p.id, p.parent_id, p.title, w.depth + 1
+         FROM walk w
+         JOIN projects p ON p.id = w.parent_id AND p.deleted_at IS NULL
+     ),
+     roots AS (
+       -- Pick the deepest reachable row per start_id (the root epic,
+       -- or the last still-alive ancestor if the true root was
+       -- deleted). DISTINCT ON keeps one row per start_id keyed on
+       -- depth so ordering is deterministic.
+       SELECT DISTINCT ON (start_id) start_id AS project_id, cur_id AS root_id, cur_title AS root_title
+         FROM walk
+        ORDER BY start_id, depth DESC
+     )
+     SELECT * FROM (
+       SELECT
+         e.id::text AS id,
+         'audit'::text AS kind,
+         e.project_id,
+         p.title AS project_title,
+         p.type AS project_type,
+         r.root_id AS root_epic_id,
+         r.root_title AS root_epic_title,
+         e.user_id,
+         u.name AS user_name,
+         e.action,
+         e.field,
+         e.from_value,
+         e.to_value,
+         e."timestamp" AS occurred_at,
+         COALESCE(sl.is_archive, FALSE) AS in_archive
+       FROM project_audit_events e
+       JOIN projects p ON p.id = e.project_id
+       JOIN roots r ON r.project_id = p.id
+       LEFT JOIN users u ON u.id = e.user_id
+       LEFT JOIN swim_lanes sl ON sl.id = p.swim_lane_id
+       WHERE p.group_id = $1
+         AND p.deleted_at IS NULL
+         AND e."timestamp" >= NOW() - ($2::int * INTERVAL '1 day')
+         AND e.action <> 'move'
+         ${hiddenLaneClause}
+       UNION ALL
+       SELECT
+         sh.id::text AS id,
+         'move'::text AS kind,
+         sh.project_id,
+         p.title AS project_title,
+         p.type AS project_type,
+         r.root_id AS root_epic_id,
+         r.root_title AS root_epic_title,
+         sh.moved_by_user_id AS user_id,
+         u.name AS user_name,
+         'move'::text AS action,
+         'swim_lane_id'::text AS field,
+         to_jsonb(sh.from_swim_lane_id) AS from_value,
+         to_jsonb(sh.to_swim_lane_id) AS to_value,
+         sh."timestamp" AS occurred_at,
+         COALESCE(sl.is_archive, FALSE) AS in_archive
+       FROM status_history sh
+       JOIN projects p ON p.id = sh.project_id
+       JOIN roots r ON r.project_id = p.id
+       LEFT JOIN users u ON u.id = sh.moved_by_user_id
+       LEFT JOIN swim_lanes sl ON sl.id = p.swim_lane_id
+       WHERE p.group_id = $1
+         AND p.deleted_at IS NULL
+         AND sh."timestamp" >= NOW() - ($2::int * INTERVAL '1 day')
+         AND sh.from_swim_lane_id IS NOT NULL
+         ${hiddenLaneClause}
+     ) combined
+     ORDER BY occurred_at DESC
+     LIMIT $3`,
+    [groupId, days, RECENT_EVENTS_CAP + 1],
+  );
+
+  const truncated = rows.length > RECENT_EVENTS_CAP;
+  const events = truncated ? rows.slice(0, RECENT_EVENTS_CAP) : rows;
+  res.json({ events, days, truncated });
+});
+
+/**
  * Unified timeline: lane movements (from `status_history`) merged with
  * per-field edits, creates, archives, and restores (from
  * `project_audit_events`), normalized to a single row shape and sorted
@@ -1266,3 +1546,421 @@ projectsRouter.get("/:id/history", async (req, res) => {
   );
   res.json(rows);
 });
+
+// -----------------------------------------------------------------
+// AI phase-size estimator (Claude Sonnet 4.5 by default).
+//
+// GET  /projects/:id/ai-estimate  → cached suggestion (viewers OK)
+// POST /projects/:id/ai-estimate  → generate a fresh one (writers only)
+// GET  /projects/ai-estimator/health  → is the feature configured?
+//
+// The POST endpoint is the ONLY code path that touches Anthropic.
+// No boot-time health check, no background pings — an unconfigured
+// deploy stays quiet until a user clicks Suggest, at which point
+// the endpoint returns 503 with a self-serve remediation hint.
+// -----------------------------------------------------------------
+
+/**
+ * Per-tenant soft rate limit for the POST endpoint. Fixed-window
+ * counter kept in process memory, same shape as the login limiter
+ * in routes/auth.ts. 60 requests per minute is generous for
+ * interactive use (a PM clicks Suggest a handful of times an hour)
+ * and tight enough that a runaway client can't burn a workspace's
+ * Anthropic budget in seconds.
+ *
+ * Deliberately per-machine: Fly runs a small number of instances
+ * so a determined attacker can multiply the cap by machine count,
+ * but that's still bounded and we get log-visible 429s well before
+ * any real damage.
+ */
+const AI_WINDOW_MS = 60_000;
+const AI_MAX_PER_WINDOW = 60;
+type AiRateBucket = { count: number; resetAt: number };
+const aiRateBuckets = new Map<string, AiRateBucket>();
+
+function checkAndBumpAiRate(groupId: string): { allowed: boolean; retryAfterMs: number } {
+  const now = Date.now();
+  const cur = aiRateBuckets.get(groupId);
+  if (!cur || cur.resetAt <= now) {
+    aiRateBuckets.set(groupId, { count: 1, resetAt: now + AI_WINDOW_MS });
+    return { allowed: true, retryAfterMs: 0 };
+  }
+  if (cur.count >= AI_MAX_PER_WINDOW) {
+    return { allowed: false, retryAfterMs: Math.max(0, cur.resetAt - now) };
+  }
+  cur.count++;
+  return { allowed: true, retryAfterMs: 0 };
+}
+
+/**
+ * Difference in whole days between two YYYY-MM-DD ISO strings.
+ * Returns null if either input is missing so the caller can skip
+ * a phase whose bounds aren't both persisted.
+ */
+function daysBetweenIso(from: string | null, to: string | null): number | null {
+  if (!from || !to) return null;
+  const a = new Date(`${from}T00:00:00Z`).getTime();
+  const b = new Date(`${to}T00:00:00Z`).getTime();
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return Math.max(0, Math.round((b - a) / 86_400_000));
+}
+
+/**
+ * Row shape returned by the few-shot SELECT. Kept local to the
+ * ai-estimate endpoints since no other consumer needs it.
+ */
+type FewShotProjectRow = {
+  id: string;
+  title: string;
+  description: string | null;
+  start_date: string | null;
+  target_date: string | null;
+  dev_start_date: string | null;
+  dev_end_date: string | null;
+  optimization_start_date: string | null;
+  optimization_end_date: string | null;
+};
+
+/** Cap on the combined curated + historical few-shot pool. Reference
+ *  rows always land first; historical rows fill any remaining slots.
+ *  30 keeps token cost bounded while still leaving room for a large
+ *  curated catalog and a handful of engineer-confirmed analogs. */
+const FEW_SHOT_TOTAL_CAP = 30;
+/** Upper bound on historical rows considered before capping. */
+const HISTORICAL_QUERY_LIMIT = 30;
+
+/**
+ * Load ALL curated reference estimates for the tenant, ordered by
+ * position. Caller is responsible for capping the union of curated
+ * + historical to FEW_SHOT_TOTAL_CAP.
+ *
+ * A curator's `notes` string is passed through so the prompt can
+ * render it inline as a `# Notes:` hint — Claude weighs the
+ * commentary alongside the numbers.
+ */
+async function loadCuratedReferenceExamples(
+  groupId: string,
+  tshirts: TshirtBucket[],
+): Promise<FewShotExample[]> {
+  const { rows } = await query<{
+    title: string;
+    description: string;
+    discovery_days: number | null;
+    development_days: number | null;
+    post_dev_days: number | null;
+    notes: string | null;
+  }>(
+    `SELECT title, description, discovery_days, development_days,
+            post_dev_days, notes
+       FROM ai_reference_estimates
+      WHERE group_id = $1
+      ORDER BY position ASC, created_at ASC`,
+    [groupId],
+  );
+
+  return rows.map((r) => {
+    const phases: FewShotExample["phases"] = {};
+    if (r.discovery_days != null) {
+      phases.discovery = {
+        actual_days: r.discovery_days,
+        nearest_size: nearestSizeLabel(r.discovery_days, tshirts),
+      };
+    }
+    if (r.development_days != null) {
+      phases.development = {
+        actual_days: r.development_days,
+        nearest_size: nearestSizeLabel(r.development_days, tshirts),
+      };
+    }
+    if (r.post_dev_days != null) {
+      phases.post_dev = {
+        actual_days: r.post_dev_days,
+        nearest_size: nearestSizeLabel(r.post_dev_days, tshirts),
+      };
+    }
+    return {
+      title: r.title,
+      description: r.description ?? "",
+      phases,
+      notes: r.notes ?? null,
+    };
+  });
+}
+
+/**
+ * Load up to HISTORICAL_QUERY_LIMIT recently-completed local
+ * projects whose dev estimate was flagged as confirmed by
+ * engineering. Selection criteria:
+ *
+ *   * Same tenant as the target.
+ *   * NOT the target itself (excluded by id).
+ *   * `dev_estimate_sourced_by_dev = TRUE` — only PMs+eng-vetted
+ *     estimates make the prompt now; the previous "any completed
+ *     project" heuristic pulled in a lot of stale guesses.
+ *   * Not soft-deleted.
+ *   * ALL of start_date, dev_end_date, optimization_end_date set
+ *     — those three "end anchor" columns are the minimum coverage
+ *     needed to say a project genuinely shipped. Missing
+ *     intermediate columns don't disqualify the row; the matching
+ *     phase is simply omitted from `phases` if its interior bound
+ *     is null.
+ *
+ * Ordered by actual_completion_date DESC (falling back to
+ * updated_at DESC) so the most recently-shipped work leads the
+ * list — same mental model the PM has.
+ */
+async function loadHistoricalConfirmedExamples(
+  groupId: string,
+  excludeProjectId: string,
+  tshirts: TshirtBucket[],
+): Promise<FewShotExample[]> {
+  const { rows } = await query<FewShotProjectRow>(
+    `SELECT id, title, description,
+            start_date::text, target_date::text,
+            dev_start_date::text, dev_end_date::text,
+            optimization_start_date::text, optimization_end_date::text
+       FROM projects p
+      WHERE p.group_id = $1
+        AND p.id <> $2
+        AND p.deleted_at IS NULL
+        AND p.dev_estimate_sourced_by_dev = TRUE
+        AND p.start_date IS NOT NULL
+        AND p.dev_end_date IS NOT NULL
+        AND p.optimization_end_date IS NOT NULL
+      ORDER BY p.actual_completion_date DESC NULLS LAST,
+               p.updated_at DESC
+      LIMIT $3`,
+    [groupId, excludeProjectId, HISTORICAL_QUERY_LIMIT],
+  );
+
+  return rows.map((r) => {
+    const phases: FewShotExample["phases"] = {};
+
+    const discoveryDays = daysBetweenIso(r.start_date, r.target_date);
+    if (discoveryDays != null) {
+      phases.discovery = {
+        actual_days: discoveryDays,
+        nearest_size: nearestSizeLabel(discoveryDays, tshirts),
+      };
+    }
+    const devDays = daysBetweenIso(r.dev_start_date, r.dev_end_date);
+    if (devDays != null) {
+      phases.development = {
+        actual_days: devDays,
+        nearest_size: nearestSizeLabel(devDays, tshirts),
+      };
+    }
+    const postDevDays = daysBetweenIso(
+      r.optimization_start_date,
+      r.optimization_end_date,
+    );
+    if (postDevDays != null) {
+      phases.post_dev = {
+        actual_days: postDevDays,
+        nearest_size: nearestSizeLabel(postDevDays, tshirts),
+      };
+    }
+
+    return {
+      title: r.title,
+      description: r.description ?? "",
+      phases,
+    };
+  });
+}
+
+/**
+ * Load the T-shirt catalog for the current tenant, sorted by
+ * position. Used by both the estimator prompt and the response
+ * validator. Reuses the same table the /tshirt-sizes router reads
+ * from so a relabel/re-size in Admin → T-Shirt Sizes flows into
+ * every future suggestion immediately.
+ */
+async function loadTshirtBuckets(groupId: string): Promise<TshirtBucket[]> {
+  const { rows } = await query<TshirtSizeRow>(
+    `SELECT * FROM tshirt_sizes WHERE group_id = $1 ORDER BY position ASC`,
+    [groupId],
+  );
+  return rows.map((r) => ({ label: r.label, days: r.days }));
+}
+
+/**
+ * Load the tenant's display name. Small enough to inline without a
+ * dedicated helper elsewhere; used only by the estimator so the
+ * system prompt reads "the {name} team's roadmap tool" rather
+ * than the generic filler.
+ */
+async function loadGroupName(groupId: string): Promise<string> {
+  const { rows } = await query<{ name: string }>(
+    `SELECT name FROM groups WHERE id = $1`,
+    [groupId],
+  );
+  return rows[0]?.name ?? "your";
+}
+
+/**
+ * Health-check: does the current deploy have an Anthropic key
+ * configured? Intentionally does NOT probe Anthropic — a live
+ * dependency check would add latency to every admin-page load and
+ * count against the workspace's rate limit. Reads config only.
+ */
+projectsRouter.get("/ai-estimator/health", (_req, res) => {
+  res.json({
+    configured: !!config.anthropic.apiKey,
+    model: config.anthropic.apiKey ? config.anthropic.model : null,
+  });
+});
+
+/**
+ * GET the cached AI suggestion (if any). Available to any role
+ * with read access — viewers see whatever the last writer generated
+ * without spending a token themselves. Returns `{ suggestion: null }`
+ * when nothing has ever been generated for this project.
+ */
+projectsRouter.get("/:id/ai-estimate", async (req, res) => {
+  const isAdmin = req.userGroupRole === "admin";
+  const clauses = ["p.id = $1", "p.group_id = $2"];
+  if (!isAdmin) clauses.push(HIDDEN_LANE_CLAUSE);
+  const { rows } = await query<{
+    ai_suggestion: unknown | null;
+    ai_suggested_at: Date | null;
+  }>(
+    `SELECT ai_suggestion, ai_suggested_at
+       FROM projects p
+      WHERE ${clauses.join(" AND ")}`,
+    [req.params.id, req.groupId!],
+  );
+  if (!rows[0]) throw new HttpError(404, "project not found");
+  const row = rows[0];
+  if (!row.ai_suggestion) {
+    res.json({ suggestion: null, cached: true, generated_at: null });
+    return;
+  }
+  res.json({
+    suggestion: row.ai_suggestion,
+    cached: true,
+    generated_at: row.ai_suggested_at,
+  });
+});
+
+/**
+ * POST — generate a fresh Claude suggestion, persist it, return it.
+ *
+ * Failure surface (all with informative messages the popover can
+ * render verbatim):
+ *   * 503 — ANTHROPIC_API_KEY is not set on the server. Admin needs
+ *          to `fly secrets set ANTHROPIC_API_KEY=...`.
+ *   * 429 — per-tenant rate limit tripped (60/min).
+ *   * 502 — Anthropic call failed (upstream 5xx / timeout) OR the
+ *          response was successful but the payload was malformed.
+ *          Nothing is persisted in either case so a stale-but-good
+ *          cached suggestion isn't clobbered by junk.
+ *   * 404 — project not found in this tenant (defensive; groupScope
+ *          + soft-delete guard already narrows this).
+ */
+projectsRouter.post("/:id/ai-estimate", requireWrite, async (req, res) => {
+  if (!config.anthropic.apiKey) {
+    res.status(503).json({
+      error: "AI estimator not configured — set ANTHROPIC_API_KEY in Fly secrets",
+    });
+    return;
+  }
+
+  const groupId = req.groupId!;
+  const projectId = String(req.params.id);
+
+  // Rate-limit BEFORE loading the target so a hostile client can't
+  // burn DB time cycling on 429s. Emit Retry-After so browsers /
+  // fetch retries pace themselves.
+  const rate = checkAndBumpAiRate(groupId);
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", Math.ceil(rate.retryAfterMs / 1000).toString());
+    res.status(429).json({
+      error: `AI estimator rate limit reached for this workspace (${AI_MAX_PER_WINDOW}/min). Try again shortly.`,
+    });
+    return;
+  }
+
+  // Target project must exist in the caller's tenant and not be
+  // soft-deleted. Non-admins additionally can't estimate cards
+  // living in admin-only lanes — matches the read visibility rules
+  // used on GET /projects/:id.
+  const isAdmin = req.userGroupRole === "admin";
+  const targetClauses = ["p.id = $1", "p.group_id = $2", "p.deleted_at IS NULL"];
+  if (!isAdmin) targetClauses.push(HIDDEN_LANE_CLAUSE);
+  const { rows: targetRows } = await query<{
+    id: string;
+    title: string;
+    description: string;
+  }>(
+    `SELECT id, title, description
+       FROM projects p
+      WHERE ${targetClauses.join(" AND ")}`,
+    [projectId, groupId],
+  );
+  const target = targetRows[0];
+  if (!target) throw new HttpError(404, "project not found");
+
+  const [tshirts, groupName] = await Promise.all([
+    loadTshirtBuckets(groupId),
+    loadGroupName(groupId),
+  ]);
+  if (tshirts.length === 0) {
+    res.status(502).json({
+      error: "estimator failed",
+      detail: "no T-shirt sizes are configured for this workspace",
+    });
+    return;
+  }
+
+  // Curated reference estimates land first (highest priority);
+  // engineer-confirmed historical projects fill any remaining
+  // slots up to FEW_SHOT_TOTAL_CAP. If BOTH sources are empty
+  // buildUserPrompt still generates a valid prompt with a
+  // "no historical data available — best-effort" note.
+  const [curatedAll, historicalAll] = await Promise.all([
+    loadCuratedReferenceExamples(groupId, tshirts),
+    loadHistoricalConfirmedExamples(groupId, projectId, tshirts),
+  ]);
+  const curated = curatedAll.slice(0, FEW_SHOT_TOTAL_CAP);
+  const historicalCap = Math.max(0, FEW_SHOT_TOTAL_CAP - curated.length);
+  const historical = historicalAll.slice(0, historicalCap);
+
+  let suggestion: AiSuggestion;
+  try {
+    suggestion = await generateSuggestion({
+      tenantName: groupName,
+      tshirts,
+      curated,
+      historical,
+      target: { title: target.title, description: target.description },
+    });
+  } catch (err) {
+    const detail =
+      err instanceof AiEstimatorParseError
+        ? err.message
+        : err instanceof Error
+        ? err.message
+        : "unknown error";
+    console.error("[ai-estimator] generation failed", err);
+    res.status(502).json({ error: "estimator failed", detail });
+    return;
+  }
+
+  await query(
+    `UPDATE projects
+        SET ai_suggestion = $1::jsonb,
+            ai_suggested_at = NOW(),
+            updated_at = NOW()
+      WHERE id = $2 AND group_id = $3`,
+    [JSON.stringify(suggestion), projectId, groupId],
+  );
+
+  res.json({ suggestion, cached: false });
+});
+
+// Re-export a couple of estimator helpers for tests / hand-inspection
+// in local dev. Not part of the HTTP surface — imported directly by
+// scripts that want to eyeball a prompt without spending a token.
+export { buildUserPrompt, PHASE_KEYS };
+export type { PhaseKey };

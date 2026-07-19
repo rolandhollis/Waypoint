@@ -28,7 +28,11 @@ tshirtSizesRouter.get("/", async (req, res) => {
 
 const patchSchema = z.object({
   label: z.string().min(1).max(32).optional(),
-  days: z.number().int().positive().max(3650).optional(),
+  // Non-negative so tenants can define a 0-day preset (useful when a
+  // phase like Post-Dev is expected to be a no-op for trivial items).
+  // The picker interprets 0 as "phase_end == phase_start" — a valid
+  // same-day window — not as "clear the phase".
+  days: z.number().int().nonnegative().max(3650).optional(),
 });
 
 tshirtSizesRouter.patch("/:id", requireAdmin, async (req, res) => {

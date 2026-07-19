@@ -1,9 +1,11 @@
 import React, { useMemo, useState } from "react";
 import { format } from "date-fns";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { useCanWrite, useProjects, useStatusReport } from "../lib/queries";
 import { useViewStore } from "../lib/viewState";
 import { applyFilters } from "../lib/filtering";
+import { cn } from "../lib/cn";
+import { Collapsible } from "../components/Collapsible";
 import { FilterBar } from "../components/FilterBar";
 import { StatusPill } from "../components/StatusPill";
 import type { StatusReportRow } from "../lib/types";
@@ -147,9 +149,16 @@ export function StatusReportView() {
                             setExpanded(next);
                           }}
                           aria-label={isOpen ? "Collapse" : "Expand"}
+                          aria-expanded={isOpen}
                           className="btn-ghost !p-0.5"
                         >
-                          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          <ChevronRight
+                            size={14}
+                            className={cn(
+                              "transition-transform duration-200 ease-out motion-reduce:transition-none",
+                              isOpen && "rotate-90",
+                            )}
+                          />
                         </button>
                       </td>
                       <td className="px-3 py-2"><StatusPill flag={r.health_flag ?? "white"} completed={!!r.completed} size="md" /></td>
@@ -169,19 +178,25 @@ export function StatusReportView() {
                         {r.submitted_at ? format(new Date(r.submitted_at), "MMM d, h:mm a") : "—"}
                       </td>
                     </tr>
-                    {isOpen ? (
-                      <tr className="border-b border-wp-stone bg-wp-bg">
-                        <td colSpan={8} className="px-8 py-3">
-                          {r.detailed_update && r.detailed_update.length ? (
-                            <ul className="ml-4 list-disc space-y-1 text-sm text-wp-slate">
-                              {r.detailed_update.map((b, i) => <li key={i}>{b}</li>)}
-                            </ul>
-                          ) : (
-                            <span className="text-sm italic text-wp-slate/60">No detailed bullets submitted for this week.</span>
-                          )}
-                        </td>
-                      </tr>
-                    ) : null}
+                    <tr className={isOpen ? "border-b border-wp-stone bg-wp-bg" : ""}>
+                      <td colSpan={8} className="p-0">
+                        {/* Collapsible slides the detail block open/closed
+                            in-place. The outer tr / td must have zero
+                            padding when collapsed, so all real spacing
+                            lives inside the Collapsible children. */}
+                        <Collapsible open={isOpen}>
+                          <div className="px-8 py-3">
+                            {r.detailed_update && r.detailed_update.length ? (
+                              <ul className="ml-4 list-disc space-y-1 text-sm text-wp-slate">
+                                {r.detailed_update.map((b, i) => <li key={i}>{b}</li>)}
+                              </ul>
+                            ) : (
+                              <span className="text-sm italic text-wp-slate/60">No detailed bullets submitted for this week.</span>
+                            )}
+                          </div>
+                        </Collapsible>
+                      </td>
+                    </tr>
                   </React.Fragment>,
                 );
               });

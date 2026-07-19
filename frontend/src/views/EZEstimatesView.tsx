@@ -1,14 +1,18 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import { AiSuggestPopover, type AiSuggestPhaseCascade } from "../components/AiSuggestPopover";
+import { Collapsible } from "../components/Collapsible";
+import { EstimateProvenanceChip } from "../components/EstimateProvenanceChip";
 import { FilterBar } from "../components/FilterBar";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
 import { PhaseSizePicker } from "../components/PhaseSizePicker";
 import { api } from "../lib/api";
+import { cn } from "../lib/cn";
 import { applyFilters } from "../lib/filtering";
 import { addIsoDays, todayIso, type PhaseDateFields } from "../lib/phaseDates";
-import { useProjects, useSwimLanes, useTshirtSizes } from "../lib/queries";
-import type { Project } from "../lib/types";
+import { useCanWrite, useProjects, useSwimLanes, useTshirtSizes, useUsers } from "../lib/queries";
+import type { Project, User } from "../lib/types";
 import { useViewStore } from "../lib/viewState";
 
 /**
@@ -24,6 +28,36 @@ const PHASES = [
 
 type PhaseDef = (typeof PHASES)[number];
 type PhaseKey = PhaseDef["key"];
+
+/**
+ * The AI estimator (backend/src/ai/estimator.ts) speaks a
+ * snake_case phase key set that mirrors the DB / API surface, while
+ * the EZEstimates view has always used the mixed-case PhaseKey
+ * above. Rather than break either callsite, this table bridges the
+ * two so the popover's `[Accept]` buttons can dispatch into the
+ * SAME cascade helper the manual picker uses.
+ */
+const AI_TO_EZ_PHASE: Record<
+  "discovery" | "development" | "post_dev",
+  PhaseKey
+> = {
+  discovery: "discovery",
+  development: "development",
+  post_dev: "postDev",
+};
+
+/**
+ * Inverse of {@link AI_TO_EZ_PHASE} — bridge from the view's
+ * mixed-case PhaseKey back to the snake_case set the backend uses in
+ * `_meta.editedPhases`. The two enums exist for historical reasons
+ * (see comment at AI_TO_EZ_PHASE); this table is the single place
+ * that flips them.
+ */
+const EZ_TO_BACKEND_PHASE: Record<PhaseKey, "discovery" | "development" | "post_dev"> = {
+  discovery: "discovery",
+  development: "development",
+  postDev: "post_dev",
+};
 
 /**
  * Fields on `Project` the cascade may touch. Narrowed to just the
@@ -176,7 +210,15 @@ export function EZEstimatesView() {
   const lanes = useSwimLanes();
   const sizes = useTshirtSizes();
   const qc = useQueryClient();
+  const canWrite = useCanWrite();
   const filters = useViewStore((s) => s.ezestimates.filters);
+  // EZEstimates-only filter dropdowns (persisted in the ezestimates
+  // slice). Kept as individual selectors so a change to one control
+  // doesn't rerender for the other.
+  const createdWithinDays = useViewStore((s) => s.ezestimates.createdWithinDays);
+  const devSourced = useViewStore((s) => s.ezestimates.devSourced);
+  const setCreatedWithinDays = useViewStore((s) => s.setEzestimatesCreatedWithinDays);
+  const setDevSourced = useViewStore((s) => s.setEzestimatesDevSourced);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   // Which lanes to hide. Terminal + archive are schema flags;
@@ -192,6 +234,15 @@ export function EZEstimatesView() {
     return set;
   }, [lanes.data]);
 
+  // Cutoff timestamp for the "Created within last N days" dropdown.
+  // Computed once per (createdWithinDays) change, not per row. Uses
+  // local time as spec'd: N * 86_400_000 ms subtracted from now, and
+  // the comparison below is inclusive of the boundary.
+  const createdCutoffMs = useMemo(() => {
+    if (createdWithinDays === null) return null;
+    return Date.now() - createdWithinDays * 24 * 60 * 60 * 1000;
+  }, [createdWithinDays]);
+
   const rows = useMemo(() => {
     const raw = projects.data ?? [];
     // applyFilters already skips soft-deleted rows AND applies the
@@ -201,16 +252,48 @@ export function EZEstimatesView() {
     // Then drop anything living in a hidden lane. Rows with no lane
     // at all stay visible so a mis-provisioned project is still
     // reachable through this view.
-    return filtered.filter(
-      (p) => !p.swim_lane_id || !hiddenLaneIds.has(p.swim_lane_id),
-    );
-  }, [projects.data, filters, hiddenLaneIds]);
+    return filtered.filter((p) => {
+      if (p.swim_lane_id && hiddenLaneIds.has(p.swim_lane_id)) return false;
+      // EZEstimates-only "Created" filter. Inclusive of the cutoff so
+      // a project created exactly N days ago still shows up.
+      if (createdCutoffMs !== null) {
+        const createdMs = new Date(p.created_at).getTime();
+        if (!Number.isFinite(createdMs) || createdMs < createdCutoffMs) return false;
+      }
+      // EZEstimates-only "Dev-sourced" filter. "any" bypasses.
+      if (devSourced === "yes" && p.dev_estimate_sourced_by_dev !== true) return false;
+      if (devSourced === "no" && p.dev_estimate_sourced_by_dev !== false) return false;
+      return true;
+    });
+  }, [projects.data, filters, hiddenLaneIds, createdCutoffMs, devSourced]);
+
+  // Users query used by the row-level provenance chip. Kept out of
+  // the inner render loop so every row uses the same cached map
+  // regardless of how many pickers fire in a session.
+  const users = useUsers();
+  const usersById = useMemo(() => {
+    const m = new Map<string, User>();
+    for (const u of users.data ?? []) m.set(u.id, u);
+    return m;
+  }, [users.data]);
 
   // One mutation shared across every row — TanStack Query serializes
   // concurrent invocations of the same key internally, and a shared
   // mutation lets us render one banner at the top on failure.
+  //
+  // Body shape: the phase-date patch plus the provenance `_meta`
+  // envelope so the backend can stamp per-phase `_updated_*` columns
+  // (see backend/src/routes/projects.ts PATCH handler + migration
+  // 032). The `_meta` field is out-of-band (leading underscore) —
+  // the backend accepts it in the same zod schema as the persisted
+  // columns, but it never ends up in the row itself.
   const patchProject = useMutation({
-    mutationFn: (args: { projectId: string; body: PhaseDatePatch }) =>
+    mutationFn: (args: {
+      projectId: string;
+      body: PhaseDatePatch & {
+        _meta: { source: "user" | "claude"; editedPhases: readonly ("discovery" | "development" | "post_dev")[] };
+      };
+    }) =>
       api<Project>(`/projects/${args.projectId}`, {
         method: "PATCH",
         body: JSON.stringify(args.body),
@@ -224,10 +307,97 @@ export function EZEstimatesView() {
     },
   });
 
-  function handlePickSize(project: Project, phase: PhaseDef, days: number) {
+  // Dedicated mutation for the "dev estimate confirmed by engineering"
+  // flag next to the Development picker. Kept separate from
+  // `patchProject` so its body type stays narrowed to phase dates and
+  // the audit-log entries don't co-mingle date shifts with the flag
+  // toggle. Optimistic: flip the cached row instantly so the tick
+  // feels responsive, then invalidate on settle for a canonical
+  // refresh.
+  const toggleDevConfirmed = useMutation({
+    mutationFn: (args: { projectId: string; value: boolean }) =>
+      api<Project>(`/projects/${args.projectId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ dev_estimate_sourced_by_dev: args.value }),
+      }),
+    onMutate: async ({ projectId, value }) => {
+      await qc.cancelQueries({ queryKey: ["projects"] });
+      const previous = qc.getQueryData<Project[]>(["projects"]);
+      if (previous) {
+        qc.setQueryData<Project[]>(
+          ["projects"],
+          previous.map((p) =>
+            p.id === projectId
+              ? { ...p, dev_estimate_sourced_by_dev: value }
+              : p,
+          ),
+        );
+      }
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(["projects"], ctx.previous);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+
+  /**
+   * Fire the shared cascade PATCH for a single phase-size pick.
+   *
+   * `source` is passed straight through to the backend's `_meta`
+   * envelope. `editedPhases` is ALWAYS a one-element list because
+   * this view only lets the user (or Claude) touch one phase per
+   * click — the cascade helper below shifts later phases as a
+   * derived effect, and the backend infers 'cascade' for those.
+   */
+  function handlePickSize(
+    project: Project,
+    phase: PhaseDef,
+    days: number,
+    source: "user" | "claude" = "user",
+  ) {
     const patch = computeCascadePatch(project, phase.key, days);
     if (Object.keys(patch).length === 0) return;
-    patchProject.mutate({ projectId: project.id, body: patch });
+    patchProject.mutate({
+      projectId: project.id,
+      body: {
+        ...patch,
+        _meta: {
+          source,
+          editedPhases: [EZ_TO_BACKEND_PHASE[phase.key]],
+        },
+      },
+    });
+  }
+
+  /**
+   * Bridge between the AI popover's `(aiKey, days)` contract and
+   * the view's `(project, phaseDef, days)` cascade helper. Curried
+   * so each row can hand the popover a callback bound to its own
+   * project without capturing stale state. Accepts a `source`
+   * argument so the caller (manual click vs Claude accept) can
+   * flag which provenance value the backend should stamp for the
+   * DIRECTLY-edited phase — downstream cascaded phases still land
+   * as 'cascade' regardless of source.
+   */
+  function makeAiCascade(
+    project: Project,
+    dispatch: (
+      project: Project,
+      phase: PhaseDef,
+      days: number,
+      source: "user" | "claude",
+    ) => void,
+    source: "user" | "claude",
+  ): AiSuggestPhaseCascade {
+    return (aiKey, days) => {
+      const ezKey = AI_TO_EZ_PHASE[aiKey];
+      const phase = PHASES.find((p) => p.key === ezKey);
+      if (!phase) return;
+      dispatch(project, phase, days, source);
+    };
   }
 
   function toggleExpanded(id: string) {
@@ -242,7 +412,41 @@ export function EZEstimatesView() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <FilterBar view="ezestimates" />
-      <div className="border-b border-wp-stone bg-white/60 px-4 py-2 text-sm">
+      {/* EZEstimates-only extra filter row. Kept separate from the
+          shared FilterBar so we don't couple its API to a single
+          view's needs; wraps naturally on narrow screens because the
+          FilterBar above already uses flex-wrap. */}
+      <div className="flex flex-wrap items-center gap-3 border-b border-wp-stone bg-white/60 px-4 py-2 text-xs">
+        <label className="flex items-center gap-1.5">
+          <span className="text-wp-slate">Created</span>
+          <select
+            className="input !w-36 !py-1 !text-xs"
+            value={createdWithinDays === null ? "all" : String(createdWithinDays)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setCreatedWithinDays(v === "all" ? null : (Number(v) as 7 | 14 | 30));
+            }}
+          >
+            <option value="all">All time</option>
+            <option value="7">Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5">
+          <span className="text-wp-slate">Dev-sourced</span>
+          <select
+            className="input !w-24 !py-1 !text-xs"
+            value={devSourced}
+            onChange={(e) => setDevSourced(e.target.value as "any" | "yes" | "no")}
+          >
+            <option value="any">Any</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </label>
+      </div>
+      <div className="border-b border-wp-stone bg-white/60 py-2 pl-4 pr-6 text-sm">
         <span className="font-semibold text-wp-ink">EZEstimates</span>
         <span className="ml-2 text-xs text-wp-slate">
           {rows.length} project{rows.length === 1 ? "" : "s"} · pick a T-shirt
@@ -265,7 +469,7 @@ export function EZEstimatesView() {
             {rows.map((project) => {
               const isOpen = expandedIds.has(project.id);
               return (
-                <li key={project.id} className="px-4 py-2">
+                <li key={project.id} className="py-2 pl-4 pr-6">
                   <div className="flex items-start gap-3">
                     <button
                       type="button"
@@ -274,11 +478,13 @@ export function EZEstimatesView() {
                       aria-expanded={isOpen}
                       className="mt-0.5 shrink-0 text-wp-slate hover:text-wp-ink"
                     >
-                      {isOpen ? (
-                        <ChevronDown size={14} />
-                      ) : (
-                        <ChevronRight size={14} />
-                      )}
+                      <ChevronRight
+                        size={14}
+                        className={cn(
+                          "transition-transform duration-200 ease-out motion-reduce:transition-none",
+                          isOpen && "rotate-90",
+                        )}
+                      />
                     </button>
                     {/* Clickable title area — also toggles expansion so
                         a PM can hit the whole row's description slot
@@ -292,6 +498,35 @@ export function EZEstimatesView() {
                         {project.title}
                       </div>
                     </button>
+                    {/* AI phase-size suggester. Fires the SAME
+                        cascade helper the manual pickers use so
+                        accepting a suggestion is byte-for-byte
+                        identical to a manual click — audit trail,
+                        downstream shifts, and dev-confirmed flag
+                        all behave the same. Provenance source is
+                        'claude' for accepts here so the row chip
+                        reads "Claude" (not the acting user's
+                        name) after an accept. */}
+                    <div className="mt-4 shrink-0 self-start">
+                      <AiSuggestPopover
+                        project={project}
+                        sizes={sizes.data}
+                        onAcceptPhase={makeAiCascade(project, handlePickSize, "claude")}
+                        onAcceptAll={makeAiCascade(project, handlePickSize, "claude")}
+                      />
+                    </div>
+                    {/* Provenance chip — "Updated <M/D/YY> · <source>".
+                        Extract into its own component so a NULL-across-
+                        the-board project cleanly renders nothing (the
+                        row collapses this slot rather than reserving
+                        placeholder space). Hover reveals a per-phase
+                        breakdown table. */}
+                    <div className="mt-4 shrink-0 self-start">
+                      <EstimateProvenanceChip
+                        project={project}
+                        usersById={usersById}
+                      />
+                    </div>
                     {/* Fixed-width phase-picker rail. `w-[7.5rem]` per
                         column keeps the S/M/L pickers vertically
                         aligned across rows even when phase labels
@@ -299,11 +534,8 @@ export function EZEstimatesView() {
                     <div className="flex shrink-0 items-start gap-2">
                       {PHASES.map((phase) => {
                         const currentDays = phaseLengthDays(project, phase);
-                        return (
-                          <div
-                            key={phase.key}
-                            className="flex w-[7.5rem] flex-col items-end gap-0.5"
-                          >
+                        const column = (
+                          <div className="flex w-[7.5rem] flex-col items-end gap-0.5">
                             <span className="text-[10px] uppercase tracking-wide text-wp-slate/70">
                               {phase.label}
                             </span>
@@ -317,10 +549,51 @@ export function EZEstimatesView() {
                             />
                           </div>
                         );
+                        // The "dev estimate confirmed by engineering"
+                        // flag lives inline next to the Development
+                        // picker — it's a property of that estimate,
+                        // not a row-level toggle. Invisible spacer
+                        // span mirrors the phase-label row so the
+                        // checkbox lines up vertically with the
+                        // pickers in the adjacent columns.
+                        if (phase.key === "development") {
+                          return (
+                            <Fragment key={phase.key}>
+                              {column}
+                              <label
+                                className="flex shrink-0 flex-col items-center gap-0.5"
+                                title="Dev estimate confirmed by engineering (roadmap dashes unconfirmed segments)"
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="invisible text-[10px] uppercase tracking-wide"
+                                >
+                                  .
+                                </span>
+                                <input
+                                  type="checkbox"
+                                  aria-label="Dev estimate confirmed by engineering"
+                                  className="mt-1 h-3.5 w-3.5 accent-wp-red disabled:cursor-not-allowed disabled:opacity-50"
+                                  disabled={!canWrite}
+                                  checked={!!project.dev_estimate_sourced_by_dev}
+                                  onChange={(e) =>
+                                    toggleDevConfirmed.mutate({
+                                      projectId: project.id,
+                                      value: e.target.checked,
+                                    })
+                                  }
+                                />
+                              </label>
+                            </Fragment>
+                          );
+                        }
+                        return (
+                          <Fragment key={phase.key}>{column}</Fragment>
+                        );
                       })}
                     </div>
                   </div>
-                  {isOpen ? (
+                  <Collapsible open={isOpen}>
                     <div className="mt-2 whitespace-pre-wrap pl-6 text-xs text-wp-slate">
                       {project.description?.trim() ? (
                         project.description
@@ -330,7 +603,7 @@ export function EZEstimatesView() {
                         </span>
                       )}
                     </div>
-                  ) : null}
+                  </Collapsible>
                 </li>
               );
             })}

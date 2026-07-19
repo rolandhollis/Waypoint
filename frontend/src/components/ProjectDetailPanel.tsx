@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
+import { AuditEventBody, auditActorLabel, timelineEntryToRenderEntry } from "../lib/auditRender";
 import { useCanWrite, useCurrentGroupRole, useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { computePhases } from "../lib/phaseCompute";
 import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
@@ -25,6 +26,29 @@ import { TagPicker } from "./TagPicker";
 import { TeamMultiSelect } from "./TeamMultiSelect";
 
 type Draft = Partial<Project>;
+
+/**
+ * Map from a persisted phase-date field name to its provenance
+ * "phase key" — the backend uses these keys inside `_meta.editedPhases`
+ * to distinguish direct edits from cascaded shifts. Kept in one
+ * place so the touched-fields tracker below can compute the edited
+ * phase set with one lookup.
+ */
+const PHASE_FIELD_TO_KEY: Record<string, "discovery" | "development" | "post_dev"> = {
+  start_date: "discovery",
+  target_date: "discovery",
+  dev_start_date: "development",
+  dev_end_date: "development",
+  optimization_start_date: "post_dev",
+  optimization_end_date: "post_dev",
+};
+
+/**
+ * Set of persisted phase-date field names — used by the save handler
+ * to distinguish phase-date edits (which need `_meta` provenance)
+ * from ordinary field edits.
+ */
+const PHASE_DATE_FIELD_NAMES = Object.keys(PHASE_FIELD_TO_KEY) as ReadonlyArray<keyof Project>;
 
 export function ProjectDetailPanel({
   id,
@@ -81,18 +105,29 @@ export function ProjectDetailPanel({
   const statusUpdates = useProjectStatusUpdates(id);
 
   const [draft, setDraft] = useState<Draft>({});
+  /**
+   * Which phase-date FIELDS the user has directly touched since load.
+   * We derive the `_meta.editedPhases` set from these on save so a
+   * date change that was clearly a downstream cascade-clear (see
+   * `cascadeClear` below) doesn't get mis-attributed as a direct
+   * edit. Reset when the panel switches to a different project.
+   */
+  const [touchedPhaseFields, setTouchedPhaseFields] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     setDraft({});
+    setTouchedPhaseFields(new Set());
   }, [id]);
 
   const patch = useMutation({
-    mutationFn: (body: Draft) => api<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    mutationFn: (body: Draft & { _meta?: { source: "user"; editedPhases: readonly ("discovery" | "development" | "post_dev")[] } }) =>
+      api<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
     onSuccess: (updated) => {
       qc.setQueryData(["project", id], updated);
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["projectStatusUpdates", id] });
       qc.invalidateQueries({ queryKey: ["projectHistory", id] });
       setDraft({});
+      setTouchedPhaseFields(new Set());
       onClose();
     },
   });
@@ -225,6 +260,25 @@ export function ProjectDetailPanel({
   // id from the archive flag on the server side.
   const inArchive = !!lane?.is_archive;
   const canArchive = canWrite && !inArchive;
+
+  /**
+   * Wrap a phase-date input change: applies the value (running the
+   * existing cascade-clear helper so downstream stale dates get
+   * nulled), and records THIS specific field as user-touched. The
+   * touched-fields set is what powers `_meta.editedPhases` on save —
+   * any phase whose start OR end was directly typed by the user
+   * becomes a direct-edit stamp; cascaded date shifts land as
+   * source='cascade' on the backend.
+   */
+  const markPhaseDateChange = (field: string, value: string | null) => {
+    setTouchedPhaseFields((prev) => {
+      if (prev.has(field)) return prev;
+      const next = new Set(prev);
+      next.add(field);
+      return next;
+    });
+    setDraft((d) => cascadeClear({ ...d, [field]: value } as Draft, project));
+  };
 
   return (
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -409,11 +463,11 @@ export function ProjectDetailPanel({
                 <PairedDates
                   startLabel="Start"
                   startValue={merged.start_date}
-                  onStartChange={(v) => setDraft((d) => cascadeClear({ ...d, start_date: v }, project))}
+                  onStartChange={(v) => markPhaseDateChange("start_date", v)}
                   endLabel="Ready for dev"
                   endValue={merged.target_date}
                   endMin={merged.start_date}
-                  onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, target_date: v }, project))}
+                  onEndChange={(v) => markPhaseDateChange("target_date", v)}
                   disabled={!canWrite}
                 />
               </Field>
@@ -426,11 +480,11 @@ export function ProjectDetailPanel({
                   startLabel="Start"
                   startValue={eff.devStart}
                   startMin={eff.target}
-                  onStartChange={(v) => setDraft((d) => cascadeClear({ ...d, dev_start_date: v }, project))}
+                  onStartChange={(v) => markPhaseDateChange("dev_start_date", v)}
                   endLabel="End"
                   endValue={eff.devEnd}
                   endMin={eff.devStart}
-                  onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, dev_end_date: v }, project))}
+                  onEndChange={(v) => markPhaseDateChange("dev_end_date", v)}
                   disabled={!canWrite}
                 />
                 <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-wp-ink">
@@ -461,11 +515,11 @@ export function ProjectDetailPanel({
                   startLabel="Start"
                   startValue={eff.optStart}
                   startMin={eff.devEnd}
-                  onStartChange={(v) => setDraft((d) => cascadeClear({ ...d, optimization_start_date: v }, project))}
+                  onStartChange={(v) => markPhaseDateChange("optimization_start_date", v)}
                   endLabel="End"
                   endValue={eff.optEnd}
                   endMin={eff.optStart}
-                  onEndChange={(v) => setDraft((d) => cascadeClear({ ...d, optimization_end_date: v }, project))}
+                  onEndChange={(v) => markPhaseDateChange("optimization_end_date", v)}
                   disabled={!canWrite}
                 />
               </Field>
@@ -638,7 +692,39 @@ export function ProjectDetailPanel({
                 <button
                   className="btn-primary"
                   disabled={Object.keys(draft).length === 0 || patch.isPending}
-                  onClick={() => patch.mutate(fillMissingPhaseDates(draft, project))}
+                  onClick={() => {
+                    // Build `_meta` for the backend's per-phase
+                    // provenance stamping. We attach it only when
+                    // this save actually touches a phase date — an
+                    // owner / tag / title edit doesn't need it, and
+                    // sending an empty `editedPhases` array would
+                    // cause every cascaded shift to be labelled
+                    // 'cascade' with no accompanying direct-edit
+                    // stamp (still correct, but noisier).
+                    const filled = fillMissingPhaseDates(draft, project);
+                    const editedPhases = new Set<
+                      "discovery" | "development" | "post_dev"
+                    >();
+                    for (const field of PHASE_DATE_FIELD_NAMES) {
+                      if (touchedPhaseFields.has(field as string)) {
+                        editedPhases.add(PHASE_FIELD_TO_KEY[field as string]!);
+                      }
+                    }
+                    const patchesPhaseDate = PHASE_DATE_FIELD_NAMES.some(
+                      (f) => (filled as Record<string, unknown>)[f as string] !== undefined,
+                    );
+                    if (patchesPhaseDate) {
+                      patch.mutate({
+                        ...filled,
+                        _meta: {
+                          source: "user",
+                          editedPhases: Array.from(editedPhases),
+                        },
+                      });
+                    } else {
+                      patch.mutate(filled);
+                    }
+                  }}
                 >
                   {patch.isPending ? "Saving…" : "Save changes"}
                 </button>
@@ -717,14 +803,14 @@ function HistoryRow({ h, allProjectsById }: { h: ProjectTimelineEntry; allProjec
   const lanes = useSwimLanes();
   const teams = useTeams();
   const kpis = useKpis();
-  const who = users.data?.find((u) => u.id === h.user_id)?.name ?? "system";
+  const who = auditActorLabel(h, users.data ?? []);
   return (
     <li className="leading-relaxed">
       <span className="text-wp-slate/80">{format(new Date(h.timestamp), "yyyy-MM-dd HH:mm")}</span>
       {" · "}
       <span>{who}</span>{" "}
-      <HistoryRowBody
-        entry={h}
+      <AuditEventBody
+        entry={timelineEntryToRenderEntry(h)}
         lanes={lanes.data ?? []}
         teams={teams.data ?? []}
         users={users.data ?? []}
@@ -733,320 +819,6 @@ function HistoryRow({ h, allProjectsById }: { h: ProjectTimelineEntry; allProjec
       />
     </li>
   );
-}
-
-function HistoryRowBody({
-  entry,
-  lanes,
-  teams,
-  users,
-  kpis,
-  projectsById,
-}: {
-  entry: ProjectTimelineEntry;
-  lanes: { id: string; name: string }[];
-  teams: Team[];
-  users: { id: string; name: string }[];
-  kpis: { id: string; name: string }[];
-  projectsById?: Map<string, Project>;
-}) {
-  const strong = (s: string) => <b className="text-wp-ink">{s}</b>;
-
-  if (entry.kind === "create") return <>created this item.</>;
-  if (entry.kind === "archive") return <>archived this item.</>;
-  if (entry.kind === "restore") return <>restored this item.</>;
-
-  if (entry.kind === "move") {
-    const from = lanes.find((l) => l.id === entry.from_swim_lane_id)?.name ?? "—";
-    const to = lanes.find((l) => l.id === entry.to_swim_lane_id)?.name ?? "—";
-    return <>moved from {strong(from)} → {strong(to)}</>;
-  }
-
-  // edit
-  const field = entry.field ?? "";
-  const label = FIELD_LABELS[field] ?? field;
-  const from = entry.from_value;
-  const to = entry.to_value;
-
-  // KPIs are ordered: an ADD/REMOVE diff would lose the ranking
-  // change, so render the full before/after name list. Falls back to
-  // the raw id when a KPI was deleted since the event landed.
-  if (field === "kpis") {
-    const before = toStrArray(from).map((id) => kpis.find((k) => k.id === id)?.name ?? id);
-    const after = toStrArray(to).map((id) => kpis.find((k) => k.id === id)?.name ?? id);
-    if (before.length === 0 && after.length === 0) return <>touched {label}.</>;
-    if (before.length === 0) return <>set {label} to {strong(after.join(" › "))}.</>;
-    if (after.length === 0) return <>cleared {label} (was {strong(before.join(" › "))}).</>;
-    return <>changed {label} from {strong(before.join(" › "))} to {strong(after.join(" › "))}.</>;
-  }
-
-  // Nice-to-read array diffs for teams and tags: show what was added
-  // and removed rather than dumping both full arrays. For teams, an
-  // order-only change (same set, different sequence) reads better as
-  // the full ordered before/after list — same treatment as KPIs above.
-  if (field === "teams" || field === "tags") {
-    const before = toStrArray(from);
-    const after = toStrArray(to);
-    const added = after.filter((x) => !before.includes(x));
-    const removed = before.filter((x) => !after.includes(x));
-    const format = (id: string) =>
-      field === "teams" ? teams.find((t) => t.id === id)?.name ?? id : `#${id}`;
-    // Teams-only: pure reorder of an unchanged set. Render the full
-    // ordered rank so the audit trail shows exactly what the PM did.
-    if (
-      field === "teams" &&
-      added.length === 0 &&
-      removed.length === 0 &&
-      before.length > 1
-    ) {
-      return (
-        <>reordered {label} to {strong(after.map(format).join(" › "))}.</>
-      );
-    }
-    const parts: React.ReactNode[] = [];
-    if (added.length) {
-      parts.push(
-        <span key="add">
-          added {strong(added.map(format).join(", "))}
-        </span>,
-      );
-    }
-    if (removed.length) {
-      parts.push(
-        <span key="rm">
-          removed {strong(removed.map(format).join(", "))}
-        </span>,
-      );
-    }
-    if (!parts.length) return <>touched {label}.</>;
-    return (
-      <>
-        {label}: {parts.map((p, i) => (
-          <span key={i}>
-            {i > 0 ? "; " : ""}
-            {p}
-          </span>
-        ))}
-      </>
-    );
-  }
-
-  // Description edits: verbose to render inline, so just note the change.
-  if (field === "description") {
-    if (isBlank(to)) return <>cleared {label}.</>;
-    if (isBlank(from)) return <>set {label}.</>;
-    return <>edited {label}.</>;
-  }
-
-  // Owner: render display names instead of UUIDs.
-  if (field === "owner_id") {
-    const fromName = isBlank(from) ? null : users.find((u) => u.id === from)?.name ?? String(from);
-    const toName = isBlank(to) ? null : users.find((u) => u.id === to)?.name ?? String(to);
-    if (fromName == null && toName != null) return <>set {label} to {strong(toName)}.</>;
-    if (fromName != null && toName == null) return <>cleared {label}.</>;
-    return <>changed {label} from {strong(fromName ?? "—")} to {strong(toName ?? "—")}.</>;
-  }
-
-  // Parent-id edits: swap UUIDs for project titles when possible so
-  // the trail reads naturally ("re-parented under X"). Fall back to
-  // the raw id if the project isn't in the current list (e.g., deleted).
-  if (field === "parent_id") {
-    const nameFor = (v: unknown) => {
-      if (isBlank(v)) return null;
-      return projectsById?.get(String(v))?.title ?? String(v);
-    };
-    const fromName = nameFor(from);
-    const toName = nameFor(to);
-    if (fromName == null && toName != null) return <>re-parented under {strong(toName)}.</>;
-    if (fromName != null && toName == null) return <>promoted to a top-level epic (was under {strong(fromName)}).</>;
-    return <>moved from {strong(fromName ?? "—")} to {strong(toName ?? "—")}.</>;
-  }
-
-  // Hard-deadline events. field is `deadline:<lane_id>`; from/to are
-  // {deadline_date, note} objects (or null on create/delete). We look
-  // up the lane name for a friendlier read; falls back to "(deleted
-  // lane)" if the lane is gone.
-  if (field.startsWith("deadline:")) {
-    const laneId = field.slice("deadline:".length);
-    const laneName = lanes.find((l) => l.id === laneId)?.name ?? "(deleted lane)";
-    const fromD = deadlineValue(from);
-    const toD = deadlineValue(to);
-    if (!fromD && toD) return <>added {strong(laneName)} deadline on {strong(toD.deadline_date)}.</>;
-    if (fromD && !toD) return <>removed the {strong(laneName)} deadline (was {strong(fromD.deadline_date)}).</>;
-    if (fromD && toD) {
-      const parts: React.ReactNode[] = [];
-      if (fromD.deadline_date !== toD.deadline_date) {
-        parts.push(<span key="d">date from {strong(fromD.deadline_date)} to {strong(toD.deadline_date)}</span>);
-      }
-      if ((fromD.note ?? "") !== (toD.note ?? "")) {
-        parts.push(<span key="n">updated the note</span>);
-      }
-      if (!parts.length) return <>touched the {strong(laneName)} deadline.</>;
-      return (
-        <>
-          {strong(laneName)} deadline: {parts.map((p, i) => (
-            <span key={i}>{i > 0 ? "; " : ""}{p}</span>
-          ))}.
-        </>
-      );
-    }
-    return <>touched a deadline.</>;
-  }
-
-  // Dependency events. `field = "dependency:<id>"`; from/to are
-  // {project_swim_lane_id, depends_on_project_id,
-  // depends_on_swim_lane_id, note} on create/delete, or {note} for
-  // note-only patches. Uses the projectsById map for readable
-  // upstream titles and the lanes list for phase names.
-  if (field.startsWith("dependency:")) {
-    const fromD = dependencyValue(from);
-    const toD = dependencyValue(to);
-    const summarize = (d: NonNullable<ReturnType<typeof dependencyValue>>) => {
-      const thisLane = d.project_swim_lane_id
-        ? lanes.find((l) => l.id === d.project_swim_lane_id)?.name ?? "(deleted lane)"
-        : null;
-      const otherName = d.depends_on_project_id
-        ? projectsById?.get(d.depends_on_project_id)?.title ?? "(deleted project)"
-        : null;
-      const otherLane = d.depends_on_swim_lane_id
-        ? lanes.find((l) => l.id === d.depends_on_swim_lane_id)?.name ?? "(deleted lane)"
-        : null;
-      if (!thisLane || !otherName || !otherLane) return null;
-      return { thisLane, otherName, otherLane };
-    };
-    const summarizedTo = toD ? summarize(toD) : null;
-    const summarizedFrom = fromD ? summarize(fromD) : null;
-
-    if (!fromD && summarizedTo) {
-      return (
-        <>added dependency: {strong(summarizedTo.thisLane)} blocked by {strong(summarizedTo.otherName)}&rsquo;s {strong(summarizedTo.otherLane)}.</>
-      );
-    }
-    if (summarizedFrom && !toD) {
-      return (
-        <>removed dependency: {strong(summarizedFrom.thisLane)} blocked by {strong(summarizedFrom.otherName)}&rsquo;s {strong(summarizedFrom.otherLane)}.</>
-      );
-    }
-    // Note-only patch: from/to carry only `note`.
-    if (fromD && toD && "note" in fromD && "note" in toD && (fromD.note ?? "") !== (toD.note ?? "")) {
-      return <>updated a dependency note.</>;
-    }
-    return <>touched a dependency.</>;
-  }
-
-  // External-URL link events. field is `link:<link_id>`; from/to
-  // are `{label, url}` on create/delete or the before/after values
-  // on update. Compact renderers that name the label first so a
-  // reader can scan the trail without expanding each row.
-  if (field.startsWith("link:")) {
-    const fromL = linkValue(from);
-    const toL = linkValue(to);
-    if (!fromL && toL) {
-      return <>added link {strong(toL.label)} → {strong(shortenUrl(toL.url))}.</>;
-    }
-    if (fromL && !toL) {
-      return <>removed link {strong(fromL.label)} (was {shortenUrl(fromL.url)}).</>;
-    }
-    if (fromL && toL) {
-      const labelChanged = fromL.label !== toL.label;
-      const urlChanged = fromL.url !== toL.url;
-      if (labelChanged && urlChanged) {
-        return (
-          <>
-            renamed link {strong(fromL.label)} to {strong(toL.label)} and changed its URL to {strong(shortenUrl(toL.url))}.
-          </>
-        );
-      }
-      if (labelChanged) {
-        return <>renamed link {strong(fromL.label)} to {strong(toL.label)}.</>;
-      }
-      if (urlChanged) {
-        return <>changed URL for {strong(toL.label)} to {strong(shortenUrl(toL.url))}.</>;
-      }
-    }
-    return <>touched a link.</>;
-  }
-
-  // Generic scalar (dates, title, etc.).
-  if (isBlank(to)) return <>cleared {label}.</>;
-  if (isBlank(from)) return <>set {label} to {strong(String(to))}.</>;
-  return <>changed {label} from {strong(String(from))} to {strong(String(to))}.</>;
-}
-
-function dependencyValue(v: unknown):
-  | {
-      project_swim_lane_id?: string;
-      depends_on_project_id?: string;
-      depends_on_swim_lane_id?: string;
-      note?: string;
-    }
-  | null {
-  if (!v || typeof v !== "object") return null;
-  const obj = v as Record<string, unknown>;
-  const asStr = (k: string) => (typeof obj[k] === "string" ? (obj[k] as string) : undefined);
-  return {
-    project_swim_lane_id: asStr("project_swim_lane_id"),
-    depends_on_project_id: asStr("depends_on_project_id"),
-    depends_on_swim_lane_id: asStr("depends_on_swim_lane_id"),
-    note: asStr("note"),
-  };
-}
-
-/** Extract a `{label, url}` payload from a project_audit_events
- *  row for a `link:*` event. Returns null on shape mismatch so
- *  the caller can distinguish "create" (from=null) from "bad row". */
-function linkValue(v: unknown): { label: string; url: string } | null {
-  if (!v || typeof v !== "object") return null;
-  const obj = v as Record<string, unknown>;
-  const label = obj.label;
-  const url = obj.url;
-  if (typeof label !== "string" || typeof url !== "string") return null;
-  return { label, url };
-}
-
-/** Trim `https?://` for display in audit rows so long URLs don't
- *  overflow the timeline. Purely cosmetic — the full URL is
- *  available on hover via the `title` attribute on link chips
- *  above, and the audit row is prose. */
-function shortenUrl(u: string): string {
-  return u.replace(/^https?:\/\//, "").replace(/\/$/, "");
-}
-
-function deadlineValue(v: unknown): { deadline_date: string; note: string } | null {
-  if (!v || typeof v !== "object") return null;
-  const obj = v as Record<string, unknown>;
-  const d = obj.deadline_date;
-  if (typeof d !== "string") return null;
-  return { deadline_date: d, note: typeof obj.note === "string" ? obj.note : "" };
-}
-
-const FIELD_LABELS: Record<string, string> = {
-  title: "title",
-  description: "description",
-  owner_id: "owner",
-  teams: "teams",
-  tags: "tags",
-  kpis: "KPIs",
-  type: "type",
-  parent_id: "parent",
-  start_date: "discovery start",
-  target_date: "discovery target",
-  dev_start_date: "development start",
-  dev_end_date: "development end",
-  optimization_start_date: "post-dev start",
-  optimization_end_date: "post-dev end",
-  swim_lane_id: "swim lane",
-  excluded_from_capacity: "capacity opt-out",
-  dev_estimate_sourced_by_dev: "dev estimate confirmed",
-};
-
-function isBlank(v: unknown): boolean {
-  return v == null || v === "" || (Array.isArray(v) && v.length === 0);
-}
-
-function toStrArray(v: unknown): string[] {
-  if (!Array.isArray(v)) return [];
-  return v.map(String);
 }
 
 /** Compact "epic" / "subtask" chip. Colored to nudge epics as the

@@ -75,4 +75,21 @@ export const config = {
       process.env.SUPER_ADMIN_PASSWORD ||
       "waypoint-dev-unsubscribe-secret",
   },
+  /**
+   * Anthropic Claude config for the EZEstimates AI suggester. When
+   * apiKey is unset the estimator endpoint returns a 503 with a
+   * "not configured — set ANTHROPIC_API_KEY in Fly secrets" hint,
+   * so the app boots cleanly on local dev / preview envs that
+   * don't have a real key. The endpoint is the ONLY place that
+   * calls out to Anthropic — no boot-time health check, no
+   * background pings — so a missing key never delays startup.
+   *
+   * Model defaults to Claude Sonnet 4.5 (claude-sonnet-4-5-20250929).
+   * Override via ANTHROPIC_MODEL when a newer snapshot is
+   * available; the SDK validates the slug at call time.
+   */
+  anthropic: {
+    apiKey: process.env.ANTHROPIC_API_KEY ?? "",
+    model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-5-20250929",
+  },
 };

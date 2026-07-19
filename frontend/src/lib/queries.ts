@@ -1,6 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 import type {
+  AiEstimatorHealth,
+  AiReferenceEstimate,
+  AiSuggestionCached,
   Group,
   Kpi,
   PendingStatusResponse,
@@ -8,6 +11,7 @@ import type {
   ProjectComment,
   ProjectLink,
   ProjectTimelineEntry,
+  RecentAuditEventsResponse,
   Role,
   StatusReportResponse,
   SwimLane,
@@ -195,6 +199,23 @@ export function useProjectHistory(id: string) {
   });
 }
 
+/**
+ * Tenant-wide "what changed recently" feed, driving the Roadmap's
+ * Recent-changes section. Polls on the shared cadence (POLL_MS) so
+ * a change made in another user's session shows up here within a
+ * few seconds — same rhythm the Roadmap's projects / lanes / teams
+ * queries already use.
+ *
+ * `days` is passed through to the server and capped there (1..30).
+ */
+export function useRecentAuditEvents(days = 7) {
+  return useQuery({
+    queryKey: ["recentAuditEvents", days],
+    queryFn: () => api<RecentAuditEventsResponse>(`/projects/audit/recent?days=${days}`),
+    refetchInterval: POLL_MS,
+  });
+}
+
 export function useProjectStatusUpdates(id: string) {
   return useQuery({
     queryKey: ["projectStatusUpdates", id],
@@ -290,5 +311,67 @@ export function useGroupMembers(groupId: string | null, enabled = true) {
     queryFn: () => api<GroupMemberRow[]>(`/groups/${groupId}/members`),
     enabled: enabled && !!groupId,
     staleTime: 30_000,
+  });
+}
+
+/**
+ * Cached AI phase-size suggestion for a project. Backs the
+ * EZEstimates popover — reads the last-persisted response without
+ * spending a Claude token, so viewers see whatever the last writer
+ * generated. Enabled lazily (only when a caller passes a real
+ * project id) so we don't hammer the endpoint from the whole
+ * EZEstimates list.
+ *
+ * The endpoint always resolves to a `cached: true` envelope; the
+ * `suggestion` field is null when the project has never been
+ * estimated. Mutations to POST /projects/:id/ai-estimate should
+ * invalidate `["aiSuggestion", id]` on success so the popover
+ * transitions from stale to fresh without a manual refetch.
+ */
+export function useAiSuggestion(projectId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["aiSuggestion", projectId],
+    queryFn: () => api<AiSuggestionCached>(`/projects/${projectId}/ai-estimate`),
+    enabled: enabled && !!projectId,
+    // Cached suggestions don't invalidate on their own; the user
+    // clicks Regenerate when they want a new one. Long staleTime
+    // avoids background refetches for a resource that only changes
+    // in response to explicit user action.
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+/**
+ * Feature-flag ping: does the deploy have ANTHROPIC_API_KEY set?
+ * Used by the Admin → Notifications tab to render a one-line
+ * status row. Cheap — never contacts Anthropic. Stale for a full
+ * minute since a Fly secret rotation is an operator action, not
+ * a live user preference.
+ */
+export function useAiEstimatorHealth(enabled = true) {
+  return useQuery({
+    queryKey: ["aiEstimatorHealth"],
+    queryFn: () => api<AiEstimatorHealth>("/projects/ai-estimator/health"),
+    enabled,
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+/**
+ * Curated AI reference estimates for the caller's current tenant,
+ * ordered by admin-assigned `position`. Feeds the AI reference
+ * estimates admin tab; the same rows are pulled server-side by the
+ * suggester's few-shot loader (see backend/src/routes/projects.ts).
+ * Standard poll cadence so a curator's edit in another tab shows
+ * up here within a few seconds.
+ */
+export function useAiReferenceEstimates(enabled = true) {
+  return useQuery({
+    queryKey: ["aiReferenceEstimates"],
+    queryFn: () => api<AiReferenceEstimate[]>("/ai-reference-estimates"),
+    enabled,
+    refetchInterval: POLL_MS,
   });
 }

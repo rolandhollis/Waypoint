@@ -145,6 +145,28 @@ export type Kpi = {
 };
 
 /**
+ * Curated "gold-standard" reference estimate used to seed the AI
+ * suggester's few-shot pool. Distinct from a real project — admins
+ * upload / hand-enter these to teach Claude what a good estimate
+ * looks like for this tenant. Backend: migration 031 +
+ * routes/aiReferenceEstimates.ts. At least one of the three
+ * *_days fields is guaranteed non-null (CHECK constraint).
+ */
+export type AiReferenceEstimate = {
+  id: string;
+  title: string;
+  description: string;
+  discovery_days: number | null;
+  development_days: number | null;
+  post_dev_days: number | null;
+  notes: string | null;
+  source_label: string | null;
+  position: number;
+  created_at: string;
+  created_by: string | null;
+};
+
+/**
  * T-shirt sizing preset used by the EZEstimates view. Fixed
  * cardinality of 5 rows per tenant (S/M/L/XL/XXL) — admins can
  * relabel and re-size but cannot add or remove rows. See migration
@@ -281,11 +303,46 @@ export type Project = {
    * which parts of the timeline are still best-guesses.
    */
   dev_estimate_sourced_by_dev: boolean;
+  /**
+   * Per-phase estimate provenance columns added by migration 032.
+   * Populated whenever the phase's date pair actually moved on a
+   * write; NULL until the first update after the migration lands.
+   *
+   * `_source` is one of the values in `EstimateSource` — the CHECK
+   * constraint on the column encodes the same set. `'cascade'` is
+   * only ever set by the server (never accepted from the wire) and
+   * flags a phase that was shifted by an upstream pick rather than
+   * directly edited.
+   *
+   * The EZEstimates row uses the max of the three `_updated_at`
+   * values to render a "Updated <date> · <source>" chip; the
+   * detail-panel audit trail continues to source per-field history
+   * from `project_audit_events`, so these columns are UI hints
+   * only, not the source of truth for what changed.
+   */
+  discovery_updated_at: string | null;
+  discovery_updated_by_user_id: string | null;
+  discovery_updated_source: EstimateSource | null;
+  development_updated_at: string | null;
+  development_updated_by_user_id: string | null;
+  development_updated_source: EstimateSource | null;
+  post_dev_updated_at: string | null;
+  post_dev_updated_by_user_id: string | null;
+  post_dev_updated_source: EstimateSource | null;
   deleted_at: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
 };
+
+/**
+ * Allowed values for `<phase>_updated_source`. Mirrors the CHECK
+ * constraint in migration 032 (backend/src/db/migrations/032_*).
+ * `'cascade'` is only ever authored server-side — the router
+ * derives it when an upstream phase-date pick implicitly shifted
+ * this phase's dates.
+ */
+export type EstimateSource = "user" | "claude" | "csv" | "cascade";
 
 export type StatusHistoryEntry = {
   id: string;
@@ -326,6 +383,115 @@ export type ProjectTimelineEntry = {
   field: string | null;
   from_value: unknown;
   to_value: unknown;
+};
+
+/**
+ * One row of the Roadmap's "Recent changes" feed. Backed by
+ * GET /projects/audit/recent — a flat, tenant-wide list of the last
+ * N days of project mutations. `kind` discriminates the source table
+ * so the shared audit renderer can pick between "lane move" (from
+ * status_history) and "field edit" (from project_audit_events).
+ *
+ * `root_epic_id` is the top-most ancestor reachable from the changed
+ * project via the parent_id chain at query time — used by the client
+ * to group entries by root epic without re-walking the hierarchy.
+ * Standalone projects (no parent) are their own root.
+ *
+ * `in_archive` is TRUE when the project currently sits in a lane
+ * flagged is_archive; the UI chips those entries so viewers know
+ * why the corresponding card no longer appears on the roadmap.
+ */
+export type RecentAuditEvent = {
+  id: string;
+  kind: "audit" | "move";
+  project_id: string;
+  project_title: string;
+  project_type: ProjectType;
+  root_epic_id: string;
+  root_epic_title: string;
+  user_id: string | null;
+  user_name: string | null;
+  action: string;
+  field: string | null;
+  from_value: unknown;
+  to_value: unknown;
+  occurred_at: string;
+  in_archive: boolean;
+};
+
+export type RecentAuditEventsResponse = {
+  events: RecentAuditEvent[];
+  days: number;
+  truncated: boolean;
+};
+
+/**
+ * One-phase slice of a Claude-generated AI suggestion. The `size`
+ * is a T-shirt catalog label (whatever the admin has renamed the
+ * bucket to — never hard-code S/M/L/XL/XXL); `confidence` is
+ * always one of low/medium/high; `reasoning` is a short (~1–2
+ * sentences) natural-language justification that references the
+ * historical evidence the model weighed.
+ */
+export type AiPhaseSuggestion = {
+  size: string;
+  confidence: "low" | "medium" | "high";
+  reasoning: string;
+};
+
+/**
+ * Full response persisted at `projects.ai_suggestion`. Includes
+ * token counts so a future admin dashboard can surface spend, and
+ * the model slug so a re-run after ANTHROPIC_MODEL was rotated is
+ * still identifiable in the audit trail.
+ *
+ * The three phase keys match the estimator module's PhaseKey enum:
+ * `discovery`, `development`, `post_dev`. The EZEstimates popover
+ * maps them onto the same phase definitions the cascade helper
+ * uses (see `EZEstimatesView.tsx`).
+ */
+export type AiSuggestion = {
+  discovery: AiPhaseSuggestion;
+  development: AiPhaseSuggestion;
+  post_dev: AiPhaseSuggestion;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+};
+
+/**
+ * Response shape from GET /projects/:id/ai-estimate. `cached: true`
+ * with a null `suggestion` means the project has never had a
+ * suggestion generated — the frontend renders that as a plain
+ * "click Suggest" prompt. When populated, `generated_at` is the
+ * timestamp on `projects.ai_suggested_at` so the popover can show
+ * "generated {time-ago}".
+ */
+export type AiSuggestionCached = {
+  suggestion: AiSuggestion | null;
+  cached: true;
+  generated_at: string | null;
+};
+
+/**
+ * Response shape from POST /projects/:id/ai-estimate on success.
+ * `cached: false` marks the freshly-generated payload so the popover
+ * can drop the "generated {time-ago}" line for the newly-computed
+ * answer.
+ */
+export type AiSuggestionFresh = {
+  suggestion: AiSuggestion;
+  cached: false;
+};
+
+/**
+ * Response shape from GET /projects/ai-estimator/health. `configured`
+ * is true when ANTHROPIC_API_KEY is set on the server. The endpoint
+ * never contacts Anthropic itself, so this is a cheap admin-page ping.
+ */
+export type AiEstimatorHealth = {
+  configured: boolean;
+  model: string | null;
 };
 
 export type HealthFlag = "white" | "green" | "yellow" | "red";

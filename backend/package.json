@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.3",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "csv-parse": "^7.0.1",

@@ -1,12 +1,13 @@
 import { useRef, useState } from "react";
 import { FileDown, Wand2 } from "lucide-react";
-import { useCanWrite, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { useCanWrite, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { applyFilters } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { FilterBar } from "../components/FilterBar";
 import { GanttTimeline } from "../components/GanttTimeline";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
+import { RecentChanges } from "../components/RecentChanges";
 import { UnscheduledList } from "../components/UnscheduledList";
 import { PhaseLegend } from "../components/PhaseLegend";
 import { ColorLegend } from "../components/ColorLegend";
@@ -17,6 +18,13 @@ export function RoadmapView() {
   const lanes = useSwimLanes();
   const teams = useTeams();
   const users = useUsers();
+  // Recent-changes feed for the section below the Gantt. Fetched at
+  // the view level (not inside <RecentChanges />) so the query stays
+  // active across section-collapse and doesn't restart on toggle;
+  // 7-day window is the roadmap default. Kept above any early return
+  // per the hook-order rule the previous blank-screen bug landed us
+  // on (commit 21de7b1).
+  const recentChanges = useRecentAuditEvents(7);
   const filters = useViewStore((s) => s.roadmap.filters);
   const colorBy = useViewStore((s) => s.roadmap.colorBy);
   const groupBy = useViewStore((s) => s.roadmap.groupBy);
@@ -155,15 +163,29 @@ export function RoadmapView() {
             </div>
           )}
 
-          {unscheduled.length ? (
-            <UnscheduledList
-              projects={unscheduled}
-              lanes={lanes.data ?? []}
-              users={users.data ?? []}
-              teams={teams.data ?? []}
-              onOpen={setSelectedId}
-            />
-          ) : null}
+          {/* Recent-changes section sits between the Gantt and the
+              Unscheduled list. Rendered unconditionally — the empty
+              state is still informative ("No changes in the last 7
+              days") and dropping the section entirely would leave
+              users wondering whether the view is broken. */}
+          <RecentChanges
+            events={recentChanges.data?.events ?? []}
+            days={recentChanges.data?.days ?? 7}
+            truncated={recentChanges.data?.truncated ?? false}
+            onOpenProject={setSelectedId}
+          />
+
+          {/* Rendered unconditionally so the collapsed header (with
+              its count summary) always confirms the section exists,
+              even when there are zero unscheduled items. Mirrors the
+              treatment of the Recent-changes section above. */}
+          <UnscheduledList
+            projects={unscheduled}
+            lanes={lanes.data ?? []}
+            users={users.data ?? []}
+            teams={teams.data ?? []}
+            onOpen={setSelectedId}
+          />
         </div>
       </div>
 

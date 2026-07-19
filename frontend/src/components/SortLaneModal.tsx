@@ -16,10 +16,12 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronDown, ChevronUp, GripVertical, X } from "lucide-react";
+import { ChevronDown, GripVertical, X } from "lucide-react";
 import { api } from "../lib/api";
+import { cn } from "../lib/cn";
 import { readableOn, tint } from "../lib/colors";
 import type { Project, SwimLane, Team } from "../lib/types";
+import { Collapsible } from "./Collapsible";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 
 /**
@@ -280,23 +282,35 @@ function SortRow({
               title={`${expanded ? "Collapse" : "Expand"} description of ${project.title}`}
               className="btn-ghost mt-0.5 shrink-0 !p-0.5 text-wp-slate"
             >
-              {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              <ChevronDown
+                size={13}
+                className={cn(
+                  "transition-transform duration-200 ease-out motion-reduce:transition-none",
+                  expanded && "rotate-180",
+                )}
+              />
             </button>
           ) : null}
         </div>
         {hasDescription ? (
-          expanded ? (
-            <span className="whitespace-pre-wrap text-xs text-wp-slate">
-              {project.description}
-            </span>
-          ) : (
-            <span
-              className="truncate text-xs text-wp-slate"
-              title={project.description}
-            >
-              {project.description}
-            </span>
-          )
+          <>
+            {/* Two paired Collapsibles — the truncated preview and
+                the full pre-wrapped copy cross-fade via height so
+                the row's overall height still animates smoothly. */}
+            <Collapsible open={!expanded}>
+              <span
+                className="block truncate text-xs text-wp-slate"
+                title={project.description}
+              >
+                {project.description}
+              </span>
+            </Collapsible>
+            <Collapsible open={expanded}>
+              <span className="block whitespace-pre-wrap text-xs text-wp-slate">
+                {project.description}
+              </span>
+            </Collapsible>
+          </>
         ) : null}
       </div>
     </li>

@@ -162,6 +162,19 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
       actual_completion_date: null,
       excluded_from_capacity: !countsForCapacity,
       dev_estimate_sourced_by_dev: devEstimateConfirmed,
+      // No provenance stamped in the preview object — this row
+      // never lands in the DB (it's fed to the capacity sweep only).
+      // Real inserts get their `<phase>_updated_*` columns filled by
+      // the POST /projects handler in the backend.
+      discovery_updated_at: null,
+      discovery_updated_by_user_id: null,
+      discovery_updated_source: null,
+      development_updated_at: null,
+      development_updated_by_user_id: null,
+      development_updated_source: null,
+      post_dev_updated_at: null,
+      post_dev_updated_by_user_id: null,
+      post_dev_updated_source: null,
       deleted_at: null,
       created_by: me.data?.id ?? null,
       created_at: new Date().toISOString(),
