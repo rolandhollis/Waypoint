@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { FileDown, Wand2 } from "lucide-react";
 import { useCanWrite, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { applyFilters } from "../lib/filtering";
@@ -41,6 +41,32 @@ export function RoadmapView() {
   const exportRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
 
+  // Roadmap-scoped visibility filter. Items in the Archive
+  // (`is_archive` schema flag) or Parking Lot (case-insensitive
+  // name match — the same soft convention BoardView and
+  // EZEstimatesView use) are hidden from the Gantt, the
+  // Unscheduled list, the Recent-changes feed, AND the
+  // Auto-schedule picker. Applied ONCE here so every derived
+  // list downstream reads from the same pre-filtered set.
+  //
+  // Kept above the loading early-return per the hook-order rule
+  // enforced elsewhere in this component.
+  const visibleProjects = useMemo(() => {
+    const laneById = new Map((lanes.data ?? []).map((l) => [l.id, l] as const));
+    return (projects.data ?? []).filter((p) => {
+      if (!p.swim_lane_id) return true;
+      const lane = laneById.get(p.swim_lane_id);
+      if (!lane) return true;
+      if (lane.is_archive) return false;
+      if (lane.name.trim().toLowerCase() === "parking lot") return false;
+      return true;
+    });
+  }, [projects.data, lanes.data]);
+  const visibleProjectIds = useMemo(
+    () => new Set(visibleProjects.map((p) => p.id)),
+    [visibleProjects],
+  );
+
   async function handleExportPdf() {
     if (!exportRef.current || exporting) return;
     setExporting(true);
@@ -64,7 +90,7 @@ export function RoadmapView() {
 
   if (projects.isLoading) return <div className="p-6 text-sm text-wp-slate">Loading roadmap…</div>;
 
-  const filtered = projects.data ? applyFilters(projects.data, filters) : [];
+  const filtered = applyFilters(visibleProjects, filters);
   const scheduled = filtered.filter((p) => computePhases(p).scheduled);
   const unscheduled = filtered.filter((p) => !computePhases(p).scheduled);
 
@@ -173,6 +199,7 @@ export function RoadmapView() {
             days={recentChanges.data?.days ?? 7}
             truncated={recentChanges.data?.truncated ?? false}
             onOpenProject={setSelectedId}
+            visibleProjectIds={visibleProjectIds}
           />
 
           {/* Rendered unconditionally so the collapsed header (with
@@ -206,7 +233,7 @@ export function RoadmapView() {
 
       {helperOpen ? (
         <RoadmapHelper
-          projects={projects.data ?? []}
+          projects={visibleProjects}
           lanes={lanes.data ?? []}
           users={users.data ?? []}
           teams={teams.data ?? []}

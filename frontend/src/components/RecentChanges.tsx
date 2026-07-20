@@ -37,6 +37,7 @@ export function RecentChanges({
   days = 7,
   truncated = false,
   onOpenProject,
+  visibleProjectIds,
 }: {
   events: RecentAuditEvent[];
   days?: number;
@@ -48,6 +49,14 @@ export function RecentChanges({
    * component can be used in read-only contexts too.
    */
   onOpenProject?: (id: string) => void;
+  /**
+   * Optional whitelist of project ids the panel is allowed to show.
+   * Events whose `project_id` is not in this set are dropped before
+   * grouping/counting so the roadmap can hide activity for lanes it
+   * excludes from the rest of the view (Archive, Parking Lot).
+   * Omit the prop to show every event.
+   */
+  visibleProjectIds?: ReadonlySet<string>;
 }) {
   const lanes = useSwimLanes();
   const teams = useTeams();
@@ -81,6 +90,14 @@ export function RecentChanges({
     });
   };
 
+  // Apply the caller-supplied project whitelist first so every
+  // downstream number (group count, event count, empty-state copy)
+  // matches what actually renders.
+  const visibleEvents = useMemo(() => {
+    if (!visibleProjectIds) return events;
+    return events.filter((e) => visibleProjectIds.has(e.project_id));
+  }, [events, visibleProjectIds]);
+
   // Group events by root_epic_id, then sort:
   //   * Groups alphabetically by root-epic title (case-insensitive),
   //     with id as a stable tiebreaker for duplicate titles.
@@ -89,7 +106,7 @@ export function RecentChanges({
   //     in case the payload was reordered upstream.
   const groups = useMemo(() => {
     const byRoot = new Map<string, { title: string; events: RecentAuditEvent[] }>();
-    for (const e of events) {
+    for (const e of visibleEvents) {
       const existing = byRoot.get(e.root_epic_id);
       if (existing) {
         existing.events.push(e);
@@ -108,7 +125,7 @@ export function RecentChanges({
       return a.root_epic_id.localeCompare(b.root_epic_id);
     });
     return list;
-  }, [events]);
+  }, [visibleEvents]);
 
   // Per-group visual annotations for the header row: a "NEW" badge when
   // the root epic itself was created inside the current window, and a
@@ -133,7 +150,7 @@ export function RecentChanges({
     return meta;
   }, [groups, projectsById, days]);
 
-  const totalEvents = events.length;
+  const totalEvents = visibleEvents.length;
   const totalItems = groups.length;
 
   return (

@@ -36,8 +36,11 @@ import { cn } from "../lib/cn";
  *   3. Click [Accept …] → calls the parent's cascade helper for
  *      the matching phase; popover stays open so a PM can chain
  *      per-phase accepts.
- *   4. Click [Accept all] → sequentially fires the cascade for
- *      Discovery, Development, Post-Dev then closes the popover.
+ *   4. Click [Accept all] → fires ONE batched cascade for every
+ *      suggested phase whose size is in the catalog, then closes
+ *      the popover. The batch is issued as a single PATCH by the
+ *      parent so the three phases can never observe each other
+ *      mid-flight (see AiSuggestBatchCascade below).
  *
  * Failure surface:
  *
@@ -50,15 +53,41 @@ import { cn } from "../lib/cn";
  */
 
 /**
- * Cascade callback contract. Fires the parent's PATCH pipeline
- * exactly like `PhaseSizePicker.onPickSize` does for the manual
- * flow, so downstream phases shift correctly and only ONE audit
- * event is written per phase pick. Returning a promise so
- * `onAcceptAll` can await each phase's optimistic transition.
+ * Per-phase cascade callback contract. Fires the parent's PATCH
+ * pipeline exactly like `PhaseSizePicker.onPickSize` does for the
+ * manual flow, so downstream phases shift correctly and only ONE
+ * audit event is written per phase pick. Used by the row-level
+ * `[Accept]` buttons — single mutations are race-free by
+ * construction.
  */
 export type AiSuggestPhaseCascade = (
   phaseKey: "discovery" | "development" | "post_dev",
   days: number,
+) => Promise<void> | void;
+
+/**
+ * Batch-cascade callback contract for the "Accept all" action.
+ * The parent walks the phases in order with a running "virtual
+ * project" so each phase's cascade sees the previous phases' new
+ * dates, then dispatches ONE atomic PATCH containing every date
+ * change plus a `_meta.editedPhases` array covering the directly-
+ * picked phases.
+ *
+ * Why not just loop per-phase like the manual flow does? Because
+ * the row's `onAcceptAll` closure captures a snapshot of the
+ * `project` at render time, and the manual `.mutate()` is fire-
+ * and-forget. Looping fired three concurrent mutations whose
+ * subsequent server-side chain-validation ran against the freshly
+ * updated row — Post-Dev's `optimization_start_date`, computed
+ * from the stale `target_date`, was then rejected because
+ * Development's in-flight PATCH had already pushed `dev_end_date`
+ * far past `target_date`.
+ */
+export type AiSuggestBatchCascade = (
+  phases: ReadonlyArray<{
+    phaseKey: "discovery" | "development" | "post_dev";
+    days: number;
+  }>,
 ) => Promise<void> | void;
 
 type AiPhaseKey = "discovery" | "development" | "post_dev";
@@ -85,7 +114,7 @@ export function AiSuggestPopover({
   project: Pick<Project, "id" | "title">;
   sizes: TshirtSize[] | undefined;
   onAcceptPhase: AiSuggestPhaseCascade;
-  onAcceptAll: AiSuggestPhaseCascade;
+  onAcceptAll: AiSuggestBatchCascade;
 }) {
   const canWrite = useCanWrite();
   const qc = useQueryClient();
@@ -146,10 +175,22 @@ export function AiSuggestPopover({
 
   async function handleAcceptAll() {
     if (!suggestion) return;
+    // Build the full list in one go and hand it to the parent as a
+    // single call. The parent (EZEstimatesView) threads a running
+    // virtual project through `computeCascadePatch` per phase and
+    // dispatches ONE atomic PATCH — this avoids the concurrent-
+    // mutation race where Post-Dev's PATCH landed with an
+    // `optimization_start_date` computed from the stale
+    // `target_date` while Development's in-flight PATCH had already
+    // pushed `dev_end_date` past that boundary.
+    const phases: Array<{ phaseKey: AiPhaseKey; days: number }> = [];
     for (const key of PHASE_ORDER) {
       const days = daysFor(suggestion[key].size);
       if (days == null) continue;
-      await onAcceptAll(key, days);
+      phases.push({ phaseKey: key, days });
+    }
+    if (phases.length > 0) {
+      await onAcceptAll(phases);
     }
     setOpen(false);
   }

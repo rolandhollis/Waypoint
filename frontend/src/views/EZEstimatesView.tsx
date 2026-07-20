@@ -1,7 +1,11 @@
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight } from "lucide-react";
-import { AiSuggestPopover, type AiSuggestPhaseCascade } from "../components/AiSuggestPopover";
+import {
+  AiSuggestPopover,
+  type AiSuggestBatchCascade,
+  type AiSuggestPhaseCascade,
+} from "../components/AiSuggestPopover";
 import { Collapsible } from "../components/Collapsible";
 import { EstimateProvenanceChip } from "../components/EstimateProvenanceChip";
 import { FilterBar } from "../components/FilterBar";
@@ -488,6 +492,85 @@ export function EZEstimatesView() {
     };
   }
 
+  /**
+   * Batch-accept handler for the AiSuggestPopover's "Accept all"
+   * button. Walks the requested phases in order threading a
+   * running "virtual project" through {@link computeCascadePatch}
+   * so each phase's cascade sees the previous phases' new dates,
+   * then dispatches ONE atomic PATCH covering every phase-date
+   * that actually changed.
+   *
+   * Fixes the race the previous per-phase loop had: three fire-
+   * and-forget mutations dispatched from a captured `project`
+   * snapshot, arriving at the server near-simultaneously. Post-
+   * Dev's `optimization_start_date`, computed from the stale
+   * `target_date`, was rejected by the non-decreasing chain
+   * validator because Development's in-flight PATCH had already
+   * pushed `dev_end_date` past that boundary — silently breaking
+   * every Accept-All that included Post-Dev on a project with
+   * no persisted dev dates. Single-phase Accept was fine because
+   * only one mutation flew.
+   *
+   * `_meta.editedPhases` lists every phase whose date pair
+   * actually moved in this PATCH so the backend stamps them as
+   * `source` (typically 'claude'). Phases skipped for having a
+   * same-size suggestion don't get stamped, matching the manual
+   * `handlePickSize` behavior for no-op picks.
+   */
+  function makeAiAcceptAllCascade(
+    project: Project,
+    source: "user" | "claude",
+  ): AiSuggestBatchCascade {
+    return (phases) => {
+      let running: Project = project;
+      let combined: PhaseDatePatch = {};
+      const edited: ("discovery" | "development" | "post_dev")[] = [];
+      for (const { phaseKey, days } of phases) {
+        const ezKey = AI_TO_EZ_PHASE[phaseKey];
+        const patch = computeCascadePatch(running, ezKey, days);
+        if (Object.keys(patch).length === 0) continue;
+        combined = { ...combined, ...patch };
+        running = { ...running, ...patch };
+        edited.push(phaseKey);
+      }
+      if (edited.length === 0) return;
+      const before: ViolationSet = computeProjectViolations(
+        project,
+        lanesById,
+        projectsById,
+      );
+      patchProject.mutate(
+        {
+          projectId: project.id,
+          body: {
+            ...combined,
+            _meta: { source, editedPhases: edited },
+          },
+        },
+        {
+          onSuccess: (updated) => {
+            const nextProjectsById = new Map(projectsById);
+            nextProjectsById.set(updated.id, updated);
+            const after = computeProjectViolations(
+              updated,
+              lanesById,
+              nextProjectsById,
+            );
+            const delta = diffViolations(before, after);
+            if (!hasDelta(delta)) return;
+            setToasts((prev) => ({
+              ...prev,
+              [updated.id]: {
+                delta,
+                nonce: (prev[updated.id]?.nonce ?? 0) + 1,
+              },
+            }));
+          },
+        },
+      );
+    };
+  }
+
   function toggleExpanded(id: string) {
     setExpandedIds((prev) => {
       const next = new Set(prev);
@@ -612,7 +695,7 @@ export function EZEstimatesView() {
                         project={project}
                         sizes={sizes.data}
                         onAcceptPhase={makeAiCascade(project, handlePickSize, "claude")}
-                        onAcceptAll={makeAiCascade(project, handlePickSize, "claude")}
+                        onAcceptAll={makeAiAcceptAllCascade(project, "claude")}
                       />
                     </div>
                     {/* Provenance chip — "Updated <M/D/YY> · <source>".

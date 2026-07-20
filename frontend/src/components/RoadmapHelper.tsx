@@ -93,8 +93,23 @@ export function RoadmapHelper({
   // Universe = every eligible root project (subtasks aren't part of
   // roadmap capacity counting or the roadmap view itself). We keep
   // them out of the picker so users don't get confused.
+  //
+  // Archive lanes are already excluded via isSchedulable's
+  // `is_archive` check. Parking Lot is a soft naming convention
+  // (case-insensitive) — same pattern BoardView + EZEstimatesView
+  // + the Roadmap view itself use — so filter it here too.
+  // Caller (RoadmapView) already pre-filters via `visibleProjects`;
+  // the redundant check keeps this component correct for any
+  // future caller that passes an unfiltered list.
   const eligible = useMemo(
-    () => projects.filter((p) => !p.parent_id && isSchedulable(p, lanesById)),
+    () =>
+      projects.filter((p) => {
+        if (p.parent_id) return false;
+        if (!isSchedulable(p, lanesById)) return false;
+        const lane = p.swim_lane_id ? lanesById.get(p.swim_lane_id) : null;
+        if (lane && lane.name.trim().toLowerCase() === "parking lot") return false;
+        return true;
+      }),
     [projects, lanesById],
   );
 
