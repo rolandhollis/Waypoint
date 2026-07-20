@@ -444,6 +444,15 @@ export function ProjectDetailPanel({
           </div>
 
           <div className="flex-1 overflow-y-auto px-5 py-4">
+            <Field label="Description" className="mb-3">
+              <textarea
+                className="input min-h-[8rem]"
+                disabled={!canWrite}
+                value={merged.description}
+                onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+              />
+            </Field>
+
             <div className="grid grid-cols-2 gap-3">
               <Field label="Owner">
                 <select className="input" disabled={!canWrite} value={merged.owner_id ?? ""} onChange={(e) => setDraft((d) => ({ ...d, owner_id: e.target.value || null }))}>
@@ -646,15 +655,6 @@ export function ProjectDetailPanel({
                 </label>
               </Field>
             </div>
-
-            <Field label="Description" className="mt-4">
-              <textarea
-                className="input min-h-[8rem]"
-                disabled={!canWrite}
-                value={merged.description}
-                onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
-              />
-            </Field>
 
             <section className="mt-5">
               <h3 className="text-sm font-semibold text-wp-ink">Predicted timeline</h3>
