@@ -1,9 +1,12 @@
 import { useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { FileDown, Wand2 } from "lucide-react";
 import { useCanWrite, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { applyFilters } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
+import { indexById } from "../lib/hierarchy";
+import { isProjectInRoadmapViewport, type Zoom } from "../lib/roadmapViewport";
 import { FilterBar } from "../components/FilterBar";
 import { GanttTimeline } from "../components/GanttTimeline";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
@@ -31,7 +34,7 @@ export function RoadmapView() {
 
   const canWrite = useCanWrite();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [zoom, setZoom] = useState<"3mo" | "6mo" | "1yr">("6mo");
+  const [zoom, setZoom] = useState<Zoom>("6mo");
   const [helperOpen, setHelperOpen] = useState(false);
   // Ref-bound to the roadmap "content" wrapper — everything except
   // the FilterBar. Passed to the PDF exporter so the download
@@ -40,6 +43,16 @@ export function RoadmapView() {
   // static artefact).
   const exportRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
+  // Toggled on immediately before the PDF snapshot and off after
+  // it resolves. When true, GanttTimeline clamps its chart to
+  // `today - 30 days` and paints a soft left-edge fade on bars
+  // whose real span extends earlier. Interactive rendering is
+  // unaffected because this flag is false the rest of the time.
+  // The state has to live above <GanttTimeline /> (not inside the
+  // exporter) so React's reconciliation actually re-renders the
+  // chart with the PDF viewport before html-to-image serialises
+  // the DOM — see `handleExportPdf` for the flushSync bookend.
+  const [pdfMode, setPdfMode] = useState(false);
 
   // Roadmap-scoped visibility filter. Items in the Archive
   // (`is_archive` schema flag) or Parking Lot (case-insensitive
@@ -76,7 +89,19 @@ export function RoadmapView() {
       // is the app's most-hit tab, so the initial-render cost matters
       // more than the ~200ms lazy fetch on first export.
       const { exportRoadmapToPdf } = await import("../lib/exportRoadmapPdf");
-      await exportRoadmapToPdf({ root: exportRef.current });
+      // flushSync forces React to commit the pdfMode=true render
+      // synchronously — without it, `setPdfMode(true)` would batch
+      // and the exporter might snapshot the pre-PDF DOM. The `try`
+      // guarantees pdfMode is turned back off even if the exporter
+      // throws (e.g. cross-origin image, out-of-memory canvas), so
+      // the interactive view can't get stuck in the trimmed-viewport
+      // state after a failed export.
+      flushSync(() => setPdfMode(true));
+      try {
+        await exportRoadmapToPdf({ root: exportRef.current });
+      } finally {
+        flushSync(() => setPdfMode(false));
+      }
     } catch (err) {
       // Surface a plain alert; the export path has no in-flight
       // mutation state to hang a banner on. Logs the underlying
@@ -93,6 +118,48 @@ export function RoadmapView() {
   const filtered = applyFilters(visibleProjects, filters);
   const scheduled = filtered.filter((p) => computePhases(p).scheduled);
   const unscheduled = filtered.filter((p) => !computePhases(p).scheduled);
+
+  // Viewport filter: hide scheduled rows whose entire span sits
+  // outside the currently-visible timeframe. Keeps the Gantt from
+  // wasting vertical space on rows the PM has to scroll past to
+  // see. Only affects the Gantt — the Unscheduled list, Recent
+  // Changes, and Auto-scheduler picker still see the full
+  // `visibleProjects` / `scheduled` / `unscheduled` sets.
+  //
+  // Edge case: an epic that's itself out-of-range but has any
+  // in-range subtask is kept so those subtask rows still have a
+  // parent to render under. The `expandedEpicIds` state decides
+  // whether the subtasks are actually visible; if all of an epic's
+  // subtasks fall out of the viewport the epic simply loses its
+  // chevron affordance (hasChildren derives from the passed list
+  // inside GanttTimeline). See the file-header notes in
+  // `lib/roadmapViewport.ts` for the precise date-range predicate.
+  //
+  // When zoom === "all" `isProjectInRoadmapViewport` short-circuits
+  // to true, so this filter naturally becomes a no-op.
+  const scheduledById = indexById(scheduled);
+  const inRangeIds = new Set<string>();
+  for (const p of scheduled) {
+    if (isProjectInRoadmapViewport(p, zoom)) inRangeIds.add(p.id);
+  }
+  const finalIds = new Set(inRangeIds);
+  for (const id of inRangeIds) {
+    // Walk up parents that are also in the scheduled set. An
+    // out-of-range epic whose in-range subtask lives underneath it
+    // still needs to render so the row hierarchy is preserved.
+    const seed = scheduledById.get(id);
+    let parentId = seed?.parent_id ?? null;
+    let hops = 0;
+    while (parentId && hops < 32) {
+      if (finalIds.has(parentId)) break;
+      const parent = scheduledById.get(parentId);
+      if (!parent) break;
+      finalIds.add(parent.id);
+      parentId = parent.parent_id ?? null;
+      hops++;
+    }
+  }
+  const scheduledInViewport = scheduled.filter((p) => finalIds.has(p.id));
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -126,6 +193,13 @@ export function RoadmapView() {
                   onClick={() => setZoom("1yr")}
                 >
                   1 year
+                </button>
+                <button
+                  className={`border-l border-wp-stone px-2 py-1 ${zoom === "all" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                  onClick={() => setZoom("all")}
+                  title="Fit the entire scheduled roadmap on one screen"
+                >
+                  All
                 </button>
               </div>
             </div>
@@ -163,7 +237,7 @@ export function RoadmapView() {
             lanes={lanes.data ?? []}
             teams={teams.data ?? []}
             users={users.data ?? []}
-            scopedProjects={scheduled}
+            scopedProjects={scheduledInViewport}
           />
           {/* Row 3: phase legend (static reference for the bar
               styling; separated so the two legends don't compete
@@ -172,9 +246,9 @@ export function RoadmapView() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          {scheduled.length ? (
+          {scheduledInViewport.length ? (
             <GanttTimeline
-              projects={scheduled}
+              projects={scheduledInViewport}
               lanes={lanes.data ?? []}
               teams={teams.data ?? []}
               users={users.data ?? []}
@@ -182,10 +256,19 @@ export function RoadmapView() {
               groupBy={groupBy}
               zoom={zoom}
               onOpen={setSelectedId}
+              pdfMode={pdfMode}
             />
           ) : (
+            // Two distinct empty states: nothing scheduled at all vs.
+            // things scheduled but none in the current viewport. The
+            // second case is common on tight zooms — telling the PM
+            // "no items in this timeframe" (rather than "no items
+            // period") avoids sending them to add dates that already
+            // exist.
             <div className="p-6 text-sm text-wp-slate">
-              No scheduled projects match the current filters. Add start/target dates and duration estimates to plot a project.
+              {scheduled.length === 0
+                ? "No scheduled projects match the current filters. Add start/target dates and duration estimates to plot a project."
+                : "No scheduled projects fall inside this timeframe. Widen the zoom (or pick All) to see items outside the current window."}
             </div>
           )}
 

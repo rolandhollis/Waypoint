@@ -1,6 +1,6 @@
 import type React from "react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { addDays, addMonths, differenceInCalendarDays, endOfMonth, format, min, max, parseISO, startOfMonth } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -18,10 +18,17 @@ import { computePhases } from "../lib/phaseCompute";
 import { computeEpicSubtaskSegments, type EpicSubtaskSegment } from "../lib/epicSegments";
 import { useCanWrite, useKpis, useProjects } from "../lib/queries";
 import { childrenByParent, descendants, indexById, rootEpic } from "../lib/hierarchy";
+import {
+  ALL_ZOOM_FALLBACK_DAY_PX,
+  ALL_ZOOM_MAX_DAY_PX,
+  ALL_ZOOM_MIN_DAY_PX,
+  DAY_PX,
+  TIMEFRAME_MONTHS,
+  TODAY_LEFT_OFFSET_PX,
+  type Zoom,
+} from "../lib/roadmapViewport";
 import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore, type ColorBy, type GroupBy } from "../lib/viewState";
-
-type Zoom = "3mo" | "6mo" | "1yr";
 
 type Props = {
   projects: Project[];
@@ -47,18 +54,23 @@ type Props = {
    * than the persisted one.
    */
   contextProjects?: Project[];
+  /**
+   * When true, render for a PDF snapshot: clamp the left edge of the
+   * chart to `today - 30 days` (regardless of zoom) so the exported
+   * artefact focuses on the future, and fade the leftmost pixels of
+   * any bar whose real span begins earlier than that so PDF readers
+   * can see "this item extends off the visible history". Runs
+   * alongside — not in place of — the zoom's normal range logic; the
+   * `pdfMode` branch just overrides the resulting `start` after the
+   * per-zoom `end` has been derived.
+   *
+   * PDF-only. The interactive roadmap must never set this so the
+   * on-screen viewport (with the today-anchored past-inch buffer,
+   * zoom-driven forward window, and interactive scroll) stays
+   * unchanged.
+   */
+  pdfMode?: boolean;
 };
-
-const TIMEFRAME_MONTHS: Record<Zoom, number> = { "3mo": 3, "6mo": 6, "1yr": 12 };
-const DAY_PX: Record<Zoom, number> = { "3mo": 16, "6mo": 8, "1yr": 3.5 };
-/**
- * Approximate CSS-inch of past chart room we always keep to the left
- * of today, both when computing the chart's left bound (so the scroll
- * position we set on mount / zoom-change is actually reachable) and
- * when placing "today" horizontally inside the viewport. 96px ≈ 1in
- * because CSS defines 1in = 96px regardless of the physical display.
- */
-const TODAY_LEFT_OFFSET_PX = 96;
 
 const ROW_HEIGHT = 34;
 const HEADER_HEIGHT = 48;
@@ -117,7 +129,7 @@ type DragState = {
 };
 
 export function GanttTimeline(props: Props) {
-  const { projects, lanes, teams, users, colorBy, groupBy, zoom, onOpen, readOnly, contextProjects } = props;
+  const { projects, lanes, teams, users, colorBy, groupBy, zoom, onOpen, readOnly, contextProjects, pdfMode } = props;
   // Per-tenant write gate: a user who's owner in RMN but viewer in
   // VC loses drag-to-edit as soon as they switch groups.
   // `readOnly` short-circuits that so the auto-schedule preview
@@ -130,12 +142,61 @@ export function GanttTimeline(props: Props) {
   const collapseAllEpics = useViewStore((s) => s.collapseAllEpics);
   const expandedSet = useMemo(() => new Set(expandedEpicIds), [expandedEpicIds]);
 
-  const dayPx = DAY_PX[zoom];
+  // "all" mode is dynamic: the chart spans from the earliest
+  // scheduled item to the latest (inclusive of today), and dayPx is
+  // computed from the scroll container's measured width divided by
+  // the total span so everything fits without horizontal scroll.
+  // The three fixed zooms keep their static dayPx from
+  // `roadmapViewport`. `timeframeMonths` is null in "all" so
+  // `computeRange` skips the "start = today, end = today +
+  // timeframe" widening and anchors purely on project dates.
+  const timeframeMonths: number | null = zoom === "all" ? null : TIMEFRAME_MONTHS[zoom];
+
+  // Scroll container ref is bound below on the chart div. We
+  // measure it here (via a ResizeObserver so the "all" zoom stays
+  // responsive when the sidebar collapses / window resizes) so the
+  // dayPx below can react to viewport-width changes. `null` until
+  // the first layout effect fires — the fallback dayPx below covers
+  // that window.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [containerWidth, setContainerWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setContainerWidth(el.clientWidth);
+    // Only "all" zoom cares about width, but subscribing
+    // unconditionally keeps the effect simple and avoids re-hooking
+    // on every zoom flip. The observer is cheap.
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // For non-"all" zooms, dayPx is static and the range widens by an
+  // inch of past chart. For "all" we compute range first without
+  // that widening (dayPx passed here is irrelevant), then derive
+  // dayPx from the resulting span + measured container width.
+  const rangeDayPxHint = zoom === "all" ? ALL_ZOOM_FALLBACK_DAY_PX : DAY_PX[zoom];
   const { start, end } = useMemo(
-    () => computeRange(projects, TIMEFRAME_MONTHS[zoom], dayPx),
-    [projects, zoom, dayPx],
+    () => computeRange(projects, timeframeMonths, rangeDayPxHint, pdfMode ?? false),
+    [projects, timeframeMonths, rangeDayPxHint, pdfMode],
   );
   const totalDays = Math.max(1, differenceInCalendarDays(end, start));
+  const dayPx = useMemo(() => {
+    if (zoom !== "all") return DAY_PX[zoom];
+    if (containerWidth == null || containerWidth <= 0) {
+      return ALL_ZOOM_FALLBACK_DAY_PX;
+    }
+    // clientWidth / spanDays gives "everything fits" density.
+    // Clamp so bars never go sub-pixel (unreadable) or absurdly
+    // wide (single item stretched across a laptop screen).
+    const raw = containerWidth / totalDays;
+    return Math.max(ALL_ZOOM_MIN_DAY_PX, Math.min(ALL_ZOOM_MAX_DAY_PX, raw));
+  }, [zoom, containerWidth, totalDays]);
   const chartWidth = totalDays * dayPx;
 
   const months = useMemo(() => {
@@ -265,8 +326,19 @@ export function GanttTimeline(props: Props) {
   // scroll into past dates. Depending on `todayX` (rather than `zoom`
   // directly) keeps the snap correct if the range recomputes for any
   // reason — memoization already prevents needless work.
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  //
+  // For "all" zoom the earliest project date is often less than an
+  // inch of past chart from today; the `Math.max(0, ...)` clamp
+  // gracefully collapses the offset to 0 in that case (rather than
+  // producing a negative scrollLeft the browser would ignore
+  // anyway).
   useEffect(() => {
+    // PDF snapshotting captures scrollWidth (the full SVG) regardless
+    // of the container's scrollLeft, so touching scroll here would
+    // just risk a visible jump in the interactive view if pdfMode
+    // ever toggled with the component mounted. Skip the effect
+    // entirely in that mode.
+    if (pdfMode) return;
     const el = scrollRef.current;
     if (!el) return;
     const target = Math.max(0, todayX - TODAY_LEFT_OFFSET_PX);
@@ -540,6 +612,21 @@ export function GanttTimeline(props: Props) {
                   <rect width="7" height="7" fill="transparent" />
                   <circle cx="3.5" cy="3.5" r="1.4" fill="rgba(255,255,255,0.8)" />
                 </pattern>
+                {/* PDF-only left-edge fade. Overlaid as a white →
+                    transparent gradient on the leftmost ~16px of any
+                    bar whose real span extends earlier than the PDF
+                    viewport start (today - 30d), so readers see the
+                    bar visually dissolving into the page rather than
+                    a hard cut. Defined here rather than per-Bar so
+                    every affected row references the same gradient
+                    id — de-duplicates the paint server and keeps the
+                    exporter's html-to-image serialisation compact.
+                    Interactive (non-PDF) rendering never references
+                    it, so its presence in every SVG is a no-op cost. */}
+                <linearGradient id="pdf-fade-left" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0" stopColor="#ffffff" stopOpacity="1" />
+                  <stop offset="1" stopColor="#ffffff" stopOpacity="0" />
+                </linearGradient>
               </defs>
 
               <g>
@@ -548,8 +635,14 @@ export function GanttTimeline(props: Props) {
                   return (
                     <g key={i}>
                       <line x1={x} y1={0} x2={x} y2={HEADER_HEIGHT} stroke="#E4E7EB" />
+                      {/* Header labels compress as the timeframe widens.
+                          "3mo" / "6mo" have room for "MMM d"; "1yr" is
+                          too dense so we drop the day and add the year.
+                          "all" also uses "MMM yyyy" because the span
+                          can easily cover multiple years, and a bare
+                          "Jan" without a year would be ambiguous. */}
                       <text x={x + 4} y={18} fontSize={11} fill="#475467">
-                        {format(m, zoom === "1yr" ? "MMM yyyy" : "MMM d")}
+                        {format(m, (zoom === "1yr" || zoom === "all") ? "MMM yyyy" : "MMM d")}
                       </text>
                       {zoom === "6mo" ? (
                         <text x={x + 4} y={34} fontSize={9} fill="#98A2B3">
@@ -668,6 +761,7 @@ export function GanttTimeline(props: Props) {
                         dependencyStatuses={dependencyStatusByProject.get(p.id) ?? []}
                         isSubtask={row.depth > 0}
                         kids={kids}
+                        pdfMode={pdfMode ?? false}
                       />
                     );
                   });
@@ -883,11 +977,21 @@ function Bar(props: {
    * epic bars fall back to their own phase rendering.
    */
   kids?: Map<string, Project[]>;
+  /**
+   * PDF snapshot mode. When true and the bar's first plotted date is
+   * earlier than `chartStart` (which the parent has already clamped
+   * to today - 30d in PDF mode), Bar draws a soft left-edge fade +
+   * chevron glyph so the exported artefact signals "this item
+   * continues off the visible history". Interactive rendering must
+   * always pass false — the fade would misrepresent bars in the
+   * live view where the past is fully scrollable.
+   */
+  pdfMode?: boolean;
 }) {
   const {
     project: p, y, chartStart, dayPx, lanes, teams, users, colorBy,
     canEdit, activeDrag, onStartDrag, onOpen,
-    deadlineStatuses, dependencyStatuses, isSubtask, kids,
+    deadlineStatuses, dependencyStatuses, isSubtask, kids, pdfMode,
   } = props;
   const phases = computePhases(p);
   if (!phases.scheduled) return null;
@@ -1322,6 +1426,47 @@ function Bar(props: {
           </g>
         );
       })()}
+
+      {/* PDF-only left-edge fade. Only applies when:
+            1. pdfMode is on (interactive view never renders this), AND
+            2. the bar's earliest plotted date sits before the PDF's
+               clamped left edge — i.e. `firstStartX < 0`, meaning
+               the bar's real span extends off the visible history.
+          The overlay is painted LAST inside the Bar's outer <g> so
+          it sits above every phase segment, awaiting-dev hatch,
+          dev-estimate outline, and drag preview label — those all
+          need to be visually softened at the leftmost edge so the
+          "continues earlier" message reads cleanly. Alerts / dep
+          icons sit past `overallEndX` and are untouched.
+
+          Width is clamped to the visible bar width so a very short
+          tail (a bar that ends soon after today-30) doesn't spill
+          past its own right edge. The chevron label is suppressed
+          when the visible portion is narrower than the label would
+          need, keeping the fade tidy for tail-end bars. */}
+      {pdfMode && firstStartX < 0 && overallEndX > 0 ? (
+        <g pointerEvents="none">
+          <rect
+            x={0}
+            y={barY}
+            width={Math.min(16, overallEndX)}
+            height={barH}
+            fill="url(#pdf-fade-left)"
+            rx={3}
+          />
+          {overallEndX >= 22 ? (
+            <text
+              x={2}
+              y={barY + barH / 2 + 3}
+              fontSize={9}
+              fill="#475569"
+              fontWeight={600}
+            >
+              ◄
+            </text>
+          ) : null}
+        </g>
+      ) : null}
     </g>
   );
 }
@@ -1440,7 +1585,12 @@ function SegmentLabel({ x, width, y, h, short, long }: {
   );
 }
 
-function computeRange(projects: Project[], timeframeMonths: number, dayPx: number) {
+function computeRange(
+  projects: Project[],
+  timeframeMonths: number | null,
+  dayPx: number,
+  pdfMode: boolean = false,
+) {
   const dates: Date[] = [];
   for (const p of projects) {
     const phases = computePhases(p);
@@ -1448,6 +1598,33 @@ function computeRange(projects: Project[], timeframeMonths: number, dayPx: numbe
       dates.push(phases.firstStart, phases.overallEnd);
     }
   }
+  const today = new Date();
+
+  // "All" zoom: span from the earliest scheduled item to the latest,
+  // inclusive of today. No forward "timeframe" widening, no past-inch
+  // buffer — the visible window IS the project set. Falls back to a
+  // 6-month-around-today range if there are no scheduled items (which
+  // shouldn't happen: RoadmapView renders an empty state instead of
+  // GanttTimeline when nothing is scheduled). `dayPx` is unused in
+  // this branch because the caller derives it from the resulting span
+  // and the container's measured width, not from a fixed constant.
+  if (timeframeMonths === null) {
+    void dayPx;
+    const anchors: Date[] = dates.length > 0
+      ? [today, ...dates]
+      : [startOfMonth(today), endOfMonth(addMonths(startOfMonth(today), 5))];
+    const end = endOfMonth(max(anchors));
+    // PDF mode clamps the left edge to exactly `today - 30 days` so
+    // long-tail history doesn't dominate the exported artefact. We
+    // deliberately do NOT snap to month start here — the leftmost
+    // visible date must be *exactly* today-30 per the PDF spec, so
+    // any earlier month labels simply render at negative x and get
+    // clipped by the SVG viewport.
+    if (pdfMode) return { start: addDays(today, -30), end };
+    const start = startOfMonth(min(anchors));
+    return { start, end };
+  }
+
   // Anchor the visible window to the selected timeframe starting today, then
   // widen if any project falls outside so bars are never clipped.
   //
@@ -1456,13 +1633,16 @@ function computeRange(projects: Project[], timeframeMonths: number, dayPx: numbe
   // effect that lands today ~1in from the viewport left always has
   // real chart to reveal there. Without this, the 1yr zoom (dayPx=3.5)
   // wouldn't have enough past chart room to place today at 96px in.
-  const today = new Date();
   const pastDaysForInch = Math.ceil(TODAY_LEFT_OFFSET_PX / dayPx);
   const minStart = startOfMonth(addDays(today, -pastDaysForInch));
   const minEnd = endOfMonth(addMonths(startOfMonth(today), timeframeMonths - 1));
   const allDates = [minStart, minEnd, ...dates];
-  const start = startOfMonth(min(allDates));
   const end = endOfMonth(max(allDates));
+  // See the "all" branch above for the pdfMode rationale — the forward
+  // end still comes from the zoom's own forward window (widened for
+  // project spans), but the left bound is fixed at today-30.
+  if (pdfMode) return { start: addDays(today, -30), end };
+  const start = startOfMonth(min(allDates));
   return { start, end };
 }
 
