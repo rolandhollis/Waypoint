@@ -61,8 +61,28 @@ export type Group = {
   name: string;
   color: string | null;
   created_by: string | null;
+  /**
+   * Admin-editable runtime "constants" for this tenant. See
+   * `AppConstants` — today only `app_name` is recognized, more keys
+   * will accrete over time. Always present (`{}` when the admin
+   * hasn't customized anything) so consumers never have to check
+   * whether the bag itself exists.
+   */
+  constants: AppConstants;
   created_at: string;
   updated_at: string;
+};
+
+/**
+ * Stable-shape mirror of the backend `AppConstants` type. Every
+ * key is optional; a `null` value means "admin explicitly cleared
+ * this back to the built-in default" and undefined means "never
+ * set". Consumers treat both the same way — fall back to the
+ * hardcoded default (e.g. "Waypoint" for `app_name`).
+ */
+export type AppConstants = {
+  /** Tenant-visible product name shown in navbar / document title. */
+  app_name?: string | null;
 };
 
 /**

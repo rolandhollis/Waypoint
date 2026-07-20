@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { useHealth, useIsAdmin, useMe, useMockRoster } from "./lib/queries";
+import { useAppName, useHealth, useIsAdmin, useMe, useMockRoster } from "./lib/queries";
 import { useMockUserStore } from "./lib/mockUser";
 import { setUnauthorizedHandler } from "./lib/api";
 import { cn } from "./lib/cn";
@@ -113,6 +113,7 @@ export function App() {
     <div className="min-h-screen flex flex-col">
       {isMockMode ? <MockAuthBanner /> : null}
       <TopBar />
+      <DocumentTitleSync />
       <ReminderBanner />
       <main className="flex-1 overflow-hidden">
         <Routes>
@@ -209,11 +210,15 @@ function TopBar() {
   // RMN but only owner in VC sees the Admin tab appear/disappear
   // as they switch tenants via the group dropdown.
   const isAdmin = useIsAdmin();
+  // Per-tenant app name — an admin can rebrand their group via
+  // Admin → Constants without a redeploy. Falls back to the built-in
+  // default ("Waypoint") when no override is set.
+  const appName = useAppName();
   return (
     <header className="flex items-center justify-between border-b border-wp-stone bg-white px-5 py-2.5">
       <div className="flex items-center gap-6">
         <div className="flex items-baseline gap-2">
-          <span className="text-lg font-bold text-wp-red">Waypoint</span>
+          <span className="text-lg font-bold text-wp-red">{appName}</span>
         </div>
         <nav className="flex items-center gap-1">
           <NavItem to="/board" active={location.pathname.startsWith("/board")}>Board</NavItem>
@@ -247,4 +252,23 @@ function NavItem({ to, active, children }: { to: string; active: boolean; childr
       {children}
     </NavLink>
   );
+}
+
+/**
+ * Zero-DOM sync helper: keeps the browser tab / bookmark title in
+ * lock-step with the current group's `app_name` constant. Rendered
+ * inside the authenticated shell so we never touch the pre-auth
+ * title (the static one from index.html is the correct fallback
+ * for the login screen — it has no group context to key off of).
+ *
+ * Original suffix ("— Product Backlog & Roadmap") is preserved so
+ * a rebrand only swaps the leading brand slug, not the descriptive
+ * subtitle that helps returning users identify the pinned tab.
+ */
+function DocumentTitleSync() {
+  const appName = useAppName();
+  useEffect(() => {
+    document.title = `${appName} — Product Backlog & Roadmap`;
+  }, [appName]);
+  return null;
 }

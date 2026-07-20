@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { FileDown, Wand2 } from "lucide-react";
 import { useCanWrite, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
@@ -31,6 +31,26 @@ export function RoadmapView() {
   const filters = useViewStore((s) => s.roadmap.filters);
   const colorBy = useViewStore((s) => s.roadmap.colorBy);
   const groupBy = useViewStore((s) => s.roadmap.groupBy);
+  // Roadmap Gantt's left label column width is user-controlled via
+  // a divider between the label and chart columns. The persisted
+  // value lives in the zustand store (survives reloads); we mirror
+  // it into local state during a drag so the resizer can update the
+  // layout at pointer-frame cadence without hammering the persist
+  // middleware once per pixel. On drag commit, `persistLabelColumnPx`
+  // writes the final clamped value back to the store; an aborted
+  // drag (Escape / pointercancel) rewinds the local state to the
+  // pre-drag width without touching the store.
+  const persistedLabelColumnPx = useViewStore((s) => s.roadmapLabelColumnPx);
+  const persistLabelColumnPx = useViewStore((s) => s.setRoadmapLabelColumnPx);
+  const [labelColumnPx, setLabelColumnPx] = useState(persistedLabelColumnPx);
+  // If the persisted value changes out-of-band (persist rehydration
+  // after mount, another tab writing via storage events, migration
+  // clamp on load), pull it back in. Not fighting the user's live
+  // drag: during a drag the store isn't touched, so this effect only
+  // syncs when nothing local is in flight.
+  useEffect(() => {
+    setLabelColumnPx(persistedLabelColumnPx);
+  }, [persistedLabelColumnPx]);
 
   const canWrite = useCanWrite();
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -245,7 +265,12 @@ export function RoadmapView() {
           <PhaseLegend />
         </div>
 
-        <div className="flex-1 overflow-auto">
+        {/* Interactive rendering scrolls this pane; PDF mode drops
+            the overflow clip so the exporter captures the full
+            chart width + all recent/unscheduled rows without
+            html-to-image's foreignObject clone silently cropping
+            the SVG's tail to the visible viewport. */}
+        <div className={pdfMode ? "flex-1" : "flex-1 overflow-auto"}>
           {scheduledInViewport.length ? (
             <GanttTimeline
               projects={scheduledInViewport}
@@ -257,6 +282,9 @@ export function RoadmapView() {
               zoom={zoom}
               onOpen={setSelectedId}
               pdfMode={pdfMode}
+              labelColumnPx={labelColumnPx}
+              onLabelColumnPxChange={setLabelColumnPx}
+              onLabelColumnPxCommit={persistLabelColumnPx}
             />
           ) : (
             // Two distinct empty states: nothing scheduled at all vs.

@@ -27,6 +27,7 @@ import {
   useUsers,
 } from "../lib/queries";
 import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, TshirtSize, User } from "../lib/types";
+import { AdminConstants } from "../components/AdminConstants";
 import { AiReferenceEstimatesAdmin } from "../components/AiReferenceEstimatesAdmin";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
@@ -36,36 +37,86 @@ import { passwordIsValid } from "../lib/password";
 import { GROUP_PALETTE, KPI_PALETTE, SWIM_LANE_PALETTE, TEAM_PALETTE, USER_PALETTE } from "../lib/colors";
 import { useAutoColor } from "../lib/useAutoColor";
 import { RevealPasswordCard } from "../components/RevealPasswordCard";
+import { useViewStore, type AdminSubTabState, type AdminTopTabKey } from "../lib/viewState";
 import { X } from "lucide-react";
 
-type TabKey = "lanes" | "teams" | "kpis" | "tshirt-sizes" | "ai-reference-estimates" | "users" | "groups" | "import" | "export" | "notifications" | "archived";
+type TopTabDef = {
+  key: AdminTopTabKey;
+  label: string;
+  /** Render function for tabs with no sub-tabs. `subTabs` overrides this. */
+  render?: () => JSX.Element;
+  /** SuperUser-only tabs are filtered out of the tablist for
+   *  everyone else (i.e. hidden, not just disabled). Set on the sub-
+   *  tab where the gating is granular. */
+  superUserOnly?: boolean;
+  /** Two-level tabs. When present, the panel renders a sub-tab
+   *  nav strip whose items follow the same shape. */
+  subTabs?: SubTabDef[];
+};
 
-type TabDef = {
-  key: TabKey;
+type SubTabDef = {
+  key: string;
   label: string;
   render: () => JSX.Element;
-  /** SuperUser-only tabs are filtered out of the tablist for
-   *  everyone else (i.e. hidden, not just disabled). */
   superUserOnly?: boolean;
 };
 
-// Note: the tab key stays "archived" for URL back-compat with older
-// bookmarks, but the label reads "Deleted cards" now that we have a
-// distinct Archive swim-lane concept — this tab is only about the
-// hard-delete (soft-delete via deleted_at) flow.
-const ALL_TABS: TabDef[] = [
-  { key: "lanes",    label: "Swim lanes",    render: () => <SwimLanesAdmin /> },
-  { key: "teams",    label: "Teams",         render: () => <TeamsAdmin /> },
-  { key: "kpis",     label: "KPIs",          render: () => <KpisAdmin /> },
-  { key: "tshirt-sizes", label: "T-Shirt Sizes", render: () => <TshirtSizesAdmin /> },
+// The Groups admin (previously a top-level tab) now lives as a
+// sub-tab under "Workspace" alongside the other tenant-catalog
+// screens. Keeping the CSV Import/Export together too — they share
+// the same file/data-plumbing story so they cluster naturally.
+const TOP_TABS: TopTabDef[] = [
+  {
+    key: "workspace",
+    label: "Workspace",
+    subTabs: [
+      { key: "groups", label: "Groups",     render: () => <GroupsAdmin />, superUserOnly: true },
+      { key: "lanes",  label: "Swim lanes", render: () => <SwimLanesAdmin /> },
+      { key: "teams",  label: "Teams",      render: () => <TeamsAdmin /> },
+      { key: "kpis",   label: "KPIs",       render: () => <KpisAdmin /> },
+    ],
+  },
+  { key: "users",                  label: "Users",                 render: () => <UsersAdmin /> },
+  // Note: the underlying tab key stays "archived" so old
+  // `?tab=archived` bookmarks continue to resolve, but the label
+  // reads "Deleted cards" now that we have a distinct Archive
+  // swim-lane concept — this tab is only about the hard-delete
+  // (soft-delete via deleted_at) flow.
+  { key: "archived",               label: "Deleted cards",         render: () => <ArchivedProjectsAdmin /> },
+  { key: "notifications",          label: "Notifications",         render: () => <NotificationsAdmin /> },
+  { key: "tshirt-sizes",           label: "T-Shirt Sizes",         render: () => <TshirtSizesAdmin /> },
   { key: "ai-reference-estimates", label: "AI reference estimates", render: () => <AiReferenceEstimatesAdmin /> },
-  { key: "users",    label: "Users",         render: () => <UsersAdmin /> },
-  { key: "groups",   label: "Groups",        render: () => <GroupsAdmin />, superUserOnly: true },
-  { key: "import",   label: "Import CSV",    render: () => <CsvImportAdmin /> },
-  { key: "export",   label: "Export CSV",    render: () => <CsvExportAdmin /> },
-  { key: "notifications", label: "Notifications", render: () => <NotificationsAdmin /> },
-  { key: "archived", label: "Deleted cards", render: () => <ArchivedProjectsAdmin /> },
+  {
+    key: "csv",
+    label: "CSV",
+    subTabs: [
+      { key: "import", label: "Import", render: () => <CsvImportAdmin /> },
+      { key: "export", label: "Export", render: () => <CsvExportAdmin /> },
+    ],
+  },
+  // Constants slots in at the end because it's the most niche of the
+  // set — new admins meet it after every other more-frequently-used
+  // panel. Left-of-CSV would have separated it from the "adjust
+  // knobs" cluster (Notifications / Sizes / Estimates) it's most
+  // conceptually adjacent to, so it lands right of them but past
+  // CSV, which is a distinct "data plumbing" concern.
+  { key: "constants", label: "Constants", render: () => <AdminConstants /> },
 ];
+
+/**
+ * Map from a legacy flat-tab URL key (`?tab=lanes`) to the new
+ * parent tab so old bookmarks / Slack links deep-link into the
+ * correct nested panel without silently landing on the default.
+ * The pair `{ parent, sub }` is applied by the resolver below.
+ */
+const LEGACY_TAB_TO_PARENT: Record<string, { parent: AdminTopTabKey; sub: string }> = {
+  lanes:  { parent: "workspace", sub: "lanes" },
+  teams:  { parent: "workspace", sub: "teams" },
+  kpis:   { parent: "workspace", sub: "kpis" },
+  groups: { parent: "workspace", sub: "groups" },
+  import: { parent: "csv",       sub: "import" },
+  export: { parent: "csv",       sub: "export" },
+};
 
 // -----------------------------------------------------------------
 // Alphabetize an id-list by display name using locale-aware,
@@ -95,14 +146,64 @@ export function AdminSettingsView() {
   const isAdmin = useIsAdmin();
   const isSuperUser = useIsSuperUser();
   const [params, setParams] = useSearchParams();
-  // Filter out super-user-only tabs for regular admins; the Groups
-  // tab is only useful to the platform super-user.
-  const tabs = ALL_TABS.filter((t) => !t.superUserOnly || isSuperUser);
-  // ?tab= persists the active section across reloads and is deep-linkable
-  // (e.g. Slack messages like "check /admin?tab=users"). Falls back to
-  // the first tab whenever the URL contains an unknown value.
+
+  // Filter out super-user-only tabs (nothing at the top level today,
+  // but the shape leaves room) and drop any super-user-only sub-tab
+  // from every parent's sub-tab list for regular admins.
+  const tabs = useMemo(() => {
+    return TOP_TABS
+      .filter((t) => !t.superUserOnly || isSuperUser)
+      .map((t) => t.subTabs
+        ? { ...t, subTabs: t.subTabs.filter((s) => !s.superUserOnly || isSuperUser) }
+        : t);
+  }, [isSuperUser]);
+
+  const storedTop = useViewStore((s) => s.adminActiveTab);
+  const storedSubs = useViewStore((s) => s.adminSubTabs);
+  const setStoredTop = useViewStore((s) => s.setAdminActiveTab);
+  const setStoredSub = useViewStore((s) => s.setAdminSubTab);
+
+  // ?tab= (and ?subtab=) persist the active section across reloads and
+  // are deep-linkable (e.g. Slack messages like
+  // "check /admin?tab=workspace&subtab=teams"). The URL wins over the
+  // persisted store when it carries a valid pick; falling back to the
+  // stored pick, then to the first visible tab. Old flat-tab URLs
+  // (?tab=lanes) get transparently upgraded to their parent+sub pair.
   const rawTab = params.get("tab") ?? "";
-  const active: TabKey = (tabs.find((t) => t.key === rawTab)?.key ?? tabs[0]!.key);
+  const rawSub = params.get("subtab") ?? "";
+
+  let activeTop: AdminTopTabKey;
+  let urlSub: string | null = rawSub || null;
+  const legacy = LEGACY_TAB_TO_PARENT[rawTab];
+  if (legacy && tabs.find((t) => t.key === legacy.parent)) {
+    activeTop = legacy.parent;
+    urlSub = urlSub ?? legacy.sub;
+  } else if (tabs.find((t) => t.key === (rawTab as AdminTopTabKey))) {
+    activeTop = rawTab as AdminTopTabKey;
+  } else if (storedTop && tabs.find((t) => t.key === storedTop)) {
+    activeTop = storedTop;
+  } else {
+    activeTop = tabs[0]!.key;
+  }
+
+  const activeTopDef = tabs.find((t) => t.key === activeTop)!;
+  const subTabs = activeTopDef.subTabs ?? [];
+
+  // Sub-tab resolution mirrors the parent: URL first, then store,
+  // then the first visible sub-tab. Only meaningful when the parent
+  // actually has sub-tabs; single-panel parents just ignore this.
+  let activeSub: string | null = null;
+  if (subTabs.length > 0) {
+    const parentKey = activeTop as keyof AdminSubTabState;
+    const stored = storedSubs[parentKey];
+    if (urlSub && subTabs.find((s) => s.key === urlSub)) {
+      activeSub = urlSub;
+    } else if (stored && subTabs.find((s) => s.key === stored)) {
+      activeSub = stored;
+    } else {
+      activeSub = subTabs[0]!.key;
+    }
+  }
 
   // Admin access is per-group; a user who's viewer in the current
   // group but admin in another tenant sees "Admin access required"
@@ -111,57 +212,161 @@ export function AdminSettingsView() {
     return <div className="p-6 text-sm text-wp-slate">Admin access required.</div>;
   }
 
-  function setActive(key: TabKey) {
+  function setActive(key: AdminTopTabKey) {
     const next = new URLSearchParams(params);
     next.set("tab", key);
+    // Reset ?subtab when switching parents so we don't carry a stale
+    // sub id from the previous parent into a resolver that doesn't
+    // recognize it (and would otherwise fall back to the default
+    // silently).
+    next.delete("subtab");
     setParams(next, { replace: true });
+    setStoredTop(key);
   }
+
+  function setSub(parentKey: AdminTopTabKey, subKey: string) {
+    const next = new URLSearchParams(params);
+    next.set("tab", parentKey);
+    next.set("subtab", subKey);
+    setParams(next, { replace: true });
+    // Only parents with sub-tabs are recorded; the type guard on the
+    // store's setter enforces that at the type level too.
+    if (parentKey === "workspace" || parentKey === "csv") {
+      setStoredSub(parentKey, subKey);
+    }
+  }
+
+  const activeSubDef = activeSub ? subTabs.find((s) => s.key === activeSub) : null;
 
   return (
     <div className="mx-auto max-w-5xl p-6">
       <h1 className="text-xl font-semibold text-wp-ink">Admin Settings</h1>
 
-      <div
-        role="tablist"
-        aria-label="Admin sections"
-        className="mt-4 flex gap-1 border-b border-wp-stone"
-      >
-        {tabs.map((t) => {
-          const isActive = t.key === active;
-          return (
-            <button
-              key={t.key}
-              role="tab"
-              type="button"
-              aria-selected={isActive}
-              aria-controls={`admin-panel-${t.key}`}
-              id={`admin-tab-${t.key}`}
-              tabIndex={isActive ? 0 : -1}
-              onClick={() => setActive(t.key)}
-              className={
-                "-mb-px cursor-pointer border-b-2 px-3 py-2 text-sm font-medium transition " +
-                (isActive
-                  ? "border-wp-red text-wp-ink"
-                  : "border-transparent text-wp-slate hover:text-wp-ink")
-              }
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
+      <TabNav
+        ariaLabel="Admin sections"
+        tabs={tabs.map((t) => ({ key: t.key, label: t.label }))}
+        activeKey={activeTop}
+        onSelect={(k) => setActive(k as AdminTopTabKey)}
+        tabIdPrefix="admin-tab"
+        panelIdPrefix="admin-panel"
+      />
 
       <div
         role="tabpanel"
-        id={`admin-panel-${active}`}
-        aria-labelledby={`admin-tab-${active}`}
+        id={`admin-panel-${activeTop}`}
+        aria-labelledby={`admin-tab-${activeTop}`}
         className="mt-6"
       >
-        {tabs.find((t) => t.key === active)!.render()}
+        {subTabs.length > 0 ? (
+          <>
+            <TabNav
+              ariaLabel={`${activeTopDef.label} sub-sections`}
+              tabs={subTabs.map((s) => ({ key: s.key, label: s.label }))}
+              activeKey={activeSub!}
+              onSelect={(k) => setSub(activeTop, k)}
+              tabIdPrefix={`admin-subtab-${activeTop}`}
+              panelIdPrefix={`admin-subpanel-${activeTop}`}
+              variant="sub"
+            />
+            <div
+              role="tabpanel"
+              id={`admin-subpanel-${activeTop}-${activeSub}`}
+              aria-labelledby={`admin-subtab-${activeTop}-${activeSub}`}
+              className="mt-6"
+            >
+              {activeSubDef ? activeSubDef.render() : null}
+            </div>
+          </>
+        ) : activeTopDef.render ? (
+          activeTopDef.render()
+        ) : null}
       </div>
     </div>
   );
 }
+
+/**
+ * Shared tab-nav strip used at both the top-level and sub-tab
+ * levels of the Admin view. Keeping this local to the file (rather
+ * than in `frontend/src/components/`) because it is *only* used
+ * here — every other view in the app either uses no tabs or has
+ * bespoke navigation. If a second call site appears, promote this
+ * to a shared component.
+ *
+ * `variant`:
+ *   * `"top"` (default) — the underline-bar strip that sits under
+ *     the page title. Matches the pre-nesting Admin tab styling
+ *     exactly so the shell doesn't look different post-refactor.
+ *   * `"sub"` — the nested strip inside a parent panel. Same
+ *     underline idiom (for visual consistency with the top level)
+ *     but rendered a step smaller and against a lighter divider so
+ *     the two levels are still visually distinguishable.
+ */
+function TabNav({
+  ariaLabel,
+  tabs,
+  activeKey,
+  onSelect,
+  tabIdPrefix,
+  panelIdPrefix,
+  variant = "top",
+}: {
+  ariaLabel: string;
+  tabs: Array<{ key: string; label: string }>;
+  activeKey: string;
+  onSelect: (key: string) => void;
+  /** Prefix used to build each tab button's DOM id (`{prefix}-{key}`).
+   *  Matches the id caller uses for the tab's `aria-labelledby` on the
+   *  panel — kept separate from `panelIdPrefix` because the tab and
+   *  panel ids can't collide. */
+  tabIdPrefix: string;
+  /** Prefix used to build each tab's `aria-controls` (`{prefix}-{key}`).
+   *  Must match the DOM id the caller renders on the corresponding
+   *  `role="tabpanel"` element. */
+  panelIdPrefix: string;
+  variant?: "top" | "sub";
+}) {
+  const isTop = variant === "top";
+  return (
+    <div
+      role="tablist"
+      aria-label={ariaLabel}
+      className={
+        isTop
+          ? "mt-4 flex gap-1 border-b border-wp-stone"
+          : "flex gap-1 border-b border-wp-stone/60"
+      }
+    >
+      {tabs.map((t) => {
+        const isActive = t.key === activeKey;
+        return (
+          <button
+            key={t.key}
+            role="tab"
+            type="button"
+            aria-selected={isActive}
+            aria-controls={`${panelIdPrefix}-${t.key}`}
+            id={`${tabIdPrefix}-${t.key}`}
+            tabIndex={isActive ? 0 : -1}
+            onClick={() => onSelect(t.key)}
+            className={
+              "-mb-px cursor-pointer border-b-2 transition " +
+              (isTop
+                ? "px-3 py-2 text-sm font-medium "
+                : "px-2.5 py-1.5 text-xs font-medium ") +
+              (isActive
+                ? "border-wp-red text-wp-ink"
+                : "border-transparent text-wp-slate hover:text-wp-ink")
+            }
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 
 // -----------------------------------------------------------------
 // Notifications admin — ad-hoc trigger for the weekly status

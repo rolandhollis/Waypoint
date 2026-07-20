@@ -3,7 +3,7 @@ import { z } from "zod";
 import { query, withTransaction } from "../db/pool.js";
 import { requireSuperUser } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
-import type { GroupRow, Role } from "../types.js";
+import type { AppConstants, GroupRow, Role } from "../types.js";
 
 /**
  * Groups (tenants) CRUD + membership management.
@@ -25,6 +25,43 @@ const GROUP_COLOR_PALETTE = [
 ];
 
 /**
+ * Normalize whatever's in `groups.constants` (JSONB, freeform) into
+ * the narrow `AppConstants` surface every consumer expects. We do
+ * this on read so the frontend never has to reason about missing
+ * keys, non-string values, or leftover keys from earlier schema
+ * ideas.
+ *
+ * Rules:
+ *   * Missing key → the field is omitted (undefined). Consumers
+ *     treat undefined as "not set — fall back to built-in default".
+ *   * Explicit null → preserved as null. Same practical effect as
+ *     undefined for defaults, but distinguishes "admin cleared it"
+ *     from "never set" if a future audit surface wants to show that.
+ *   * Non-string value → dropped. The zod schema on the PATCH path
+ *     stops these from being written today, but tolerating garbage
+ *     on read means a pre-existing stray value can't break every
+ *     group's `/constants` GET.
+ */
+function deriveConstants(raw: unknown): AppConstants {
+  const bag = (raw && typeof raw === "object" && !Array.isArray(raw))
+    ? (raw as Record<string, unknown>)
+    : {};
+  const out: AppConstants = {};
+  if ("app_name" in bag) {
+    const v = bag.app_name;
+    if (v === null) out.app_name = null;
+    else if (typeof v === "string") out.app_name = v;
+  }
+  return out;
+}
+
+/** Wrap a raw `groups` row so `constants` is always the derived
+ *  shape (never a raw JSONB blob) before we ship it over the wire. */
+function scrubGroup<T extends { constants: unknown }>(row: T): Omit<T, "constants"> & { constants: AppConstants } {
+  return { ...row, constants: deriveConstants(row.constants) };
+}
+
+/**
  * List groups the caller can see. SuperUsers see all groups;
  * regular users see just the ones they belong to.
  */
@@ -39,7 +76,7 @@ groupsRouter.get("/", async (req, res) => {
           ORDER BY g.name ASC`,
     user.is_super_user ? [] : [user.id],
   );
-  res.json(rows);
+  res.json(rows.map(scrubGroup));
 });
 
 const createSchema = z.object({
@@ -60,7 +97,7 @@ groupsRouter.post("/", requireSuperUser, async (req, res) => {
       `INSERT INTO groups (name, color, created_by) VALUES ($1, $2, $3) RETURNING *`,
       [body.name.trim(), color, req.user!.id],
     );
-    const group = rows[0]!;
+    const group = scrubGroup(rows[0]!);
 
     // Every super-user is auto-enrolled as admin in the new group
     // so nobody accidentally locks themselves out by creating an
@@ -126,7 +163,7 @@ groupsRouter.patch("/:id", requireSuperUser, async (req, res) => {
   if (!fields.length) {
     const { rows } = await query<GroupRow>(`SELECT * FROM groups WHERE id = $1`, [req.params.id]);
     if (!rows[0]) throw new HttpError(404, "group not found");
-    res.json(rows[0]);
+    res.json(scrubGroup(rows[0]));
     return;
   }
   values.push(req.params.id);
@@ -135,7 +172,7 @@ groupsRouter.patch("/:id", requireSuperUser, async (req, res) => {
     values,
   );
   if (!rows[0]) throw new HttpError(404, "group not found");
-  res.json(rows[0]);
+  res.json(scrubGroup(rows[0]));
 });
 
 /**
@@ -177,6 +214,113 @@ groupsRouter.delete("/:id", requireSuperUser, async (req, res) => {
     if (!rows[0]) throw new HttpError(404, "group not found");
     return { deleted: rows[0].id };
   });
+  res.json(result);
+});
+
+// -------------------------------------------------------------------
+// Runtime constants (per-tenant)
+// -------------------------------------------------------------------
+
+/**
+ * Look up the caller's role in a specific group. SuperUsers are
+ * treated as implicit admins of every tenant — same rule the
+ * `groupScope` middleware applies for the scoped routers. Returns
+ * `null` for a non-member.
+ *
+ * Kept inline (not shared with `groupScope`) because the constants
+ * endpoints operate on an id from the URL, not on the caller's
+ * currently-selected group, so we can't reuse the middleware.
+ */
+async function roleInGroup(userId: string, groupId: string, isSuperUser: boolean): Promise<Role | null> {
+  if (isSuperUser) return "admin";
+  const { rows } = await query<{ role: Role }>(
+    `SELECT role FROM user_groups WHERE user_id = $1 AND group_id = $2`,
+    [userId, groupId],
+  );
+  return rows[0]?.role ?? null;
+}
+
+/**
+ * Read the derived constants for a group. Any member of the group
+ * (or a super-user) can call this — the frontend uses it to hydrate
+ * the "current app name" for the navbar even for viewers who can't
+ * edit the value.
+ *
+ * 403 (not 404) for non-members so we don't leak group existence,
+ * matching the members-list endpoint above.
+ */
+groupsRouter.get("/:id/constants", async (req, res) => {
+  const groupId = String(req.params.id);
+  const user = req.user!;
+  const role = await roleInGroup(user.id, groupId, user.is_super_user);
+  if (!role) throw new HttpError(403, "not a member of this group");
+
+  const { rows } = await query<{ constants: unknown }>(
+    `SELECT constants FROM groups WHERE id = $1`,
+    [groupId],
+  );
+  if (!rows[0]) throw new HttpError(404, "group not found");
+  res.json(deriveConstants(rows[0].constants));
+});
+
+/**
+ * Patch one or more constants for a group. Admin-only for that
+ * specific group (super-users implicitly admin everywhere).
+ *
+ * Body is a *partial* — only the keys the caller wants to change
+ * need to be present. Semantics:
+ *   * string → set the key to that string (validated by zod).
+ *   * null   → clear the key back to the built-in default (drops
+ *              the key from the JSONB blob so a later shape change
+ *              doesn't inherit a stale explicit value).
+ *   * absent → leave whatever was there alone.
+ *
+ * The merge is done in-app (read → merge → write) rather than in
+ * SQL (`jsonb_set` per key) so the null-means-delete rule stays
+ * a single line of code and the on-disk shape is always exactly
+ * whatever we passed through `deriveConstants` — no accreted
+ * unknown keys from earlier experiments.
+ *
+ * Returns the merged, derived constants — same shape as GET.
+ */
+const constantsPatchSchema = z.object({
+  app_name: z.string().trim().min(1).max(60).nullable().optional(),
+}).strict();
+
+groupsRouter.patch("/:id/constants", async (req, res) => {
+  const groupId = String(req.params.id);
+  const user = req.user!;
+  const role = await roleInGroup(user.id, groupId, user.is_super_user);
+  if (!role) throw new HttpError(403, "not a member of this group");
+  if (role !== "admin") throw new HttpError(403, "admin role required in this group");
+
+  const body = constantsPatchSchema.parse(req.body);
+
+  const result = await withTransaction(async (client) => {
+    const { rows: existing } = await client.query<{ constants: unknown }>(
+      `SELECT constants FROM groups WHERE id = $1 FOR UPDATE`,
+      [groupId],
+    );
+    if (!existing[0]) throw new HttpError(404, "group not found");
+
+    const current = deriveConstants(existing[0].constants);
+    const next: AppConstants = { ...current };
+    for (const [k, v] of Object.entries(body)) {
+      if (v === undefined) continue;
+      if (v === null) {
+        delete next[k as keyof AppConstants];
+      } else {
+        (next as Record<string, string>)[k] = v;
+      }
+    }
+
+    await client.query(
+      `UPDATE groups SET constants = $1::jsonb, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify(next), groupId],
+    );
+    return next;
+  });
+
   res.json(result);
 });
 

@@ -28,7 +28,15 @@ import {
   type Zoom,
 } from "../lib/roadmapViewport";
 import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
-import { useViewStore, type ColorBy, type GroupBy } from "../lib/viewState";
+import {
+  ROADMAP_LABEL_COLUMN_DEFAULT_PX,
+  ROADMAP_LABEL_COLUMN_MAX_PX,
+  ROADMAP_LABEL_COLUMN_MIN_PX,
+  useViewStore,
+  type ColorBy,
+  type GroupBy,
+} from "../lib/viewState";
+import { ColumnResizer } from "./ColumnResizer";
 
 type Props = {
   projects: Project[];
@@ -70,6 +78,34 @@ type Props = {
    * unchanged.
    */
   pdfMode?: boolean;
+  /**
+   * Width (in CSS px) the left label column should render at right
+   * now. Kept as a prop rather than reading the store directly so
+   * callers that embed a chart in a preview modal (auto-schedule
+   * proposal) can render at a fixed default without their tweaks
+   * accidentally persisting to the interactive roadmap.
+   *
+   * When omitted, falls back to `ROADMAP_LABEL_COLUMN_DEFAULT_PX`
+   * and the resize divider is not rendered — same layout as before
+   * the resizer landed.
+   */
+  labelColumnPx?: number;
+  /**
+   * Called on every pointermove during a divider drag with the
+   * clamped live width. Together with `onLabelColumnPxCommit` this
+   * splits "cheap in-memory update" from "persisted write" so the
+   * zustand persist middleware doesn't fire 60 times a second. When
+   * either callback is omitted the divider is not rendered.
+   */
+  onLabelColumnPxChange?: (px: number) => void;
+  /**
+   * Called once per successful drag (on pointerup) with the final
+   * clamped width. Callers should route this to the persisted
+   * roadmap store slot. Not invoked on drag cancel (Escape /
+   * pointercancel) so an aborted drag doesn't overwrite the
+   * previously-saved value.
+   */
+  onLabelColumnPxCommit?: (px: number) => void;
 };
 
 const ROW_HEIGHT = 34;
@@ -79,7 +115,6 @@ const GROUP_HEADER_HEIGHT = 28;
 // unit. Rendered as un-shaded space; the header of the *next* group
 // sits below it, aligned between the label column and the SVG.
 const GROUP_GAP = 12;
-const LEFT_LABEL_WIDTH = 260;
 const BAR_PADDING = 6;
 /**
  * Pointer travel (in CSS px) before we treat a bar interaction as a
@@ -129,7 +164,23 @@ type DragState = {
 };
 
 export function GanttTimeline(props: Props) {
-  const { projects, lanes, teams, users, colorBy, groupBy, zoom, onOpen, readOnly, contextProjects, pdfMode } = props;
+  const {
+    projects, lanes, teams, users, colorBy, groupBy, zoom, onOpen,
+    readOnly, contextProjects, pdfMode,
+    labelColumnPx, onLabelColumnPxChange, onLabelColumnPxCommit,
+  } = props;
+  // Resolve the label column width. The resizer only participates
+  // when the parent has wired all three of `labelColumnPx` +
+  // `onLabelColumnPxChange` + `onLabelColumnPxCommit`, so a caller
+  // that embeds this chart without those props (e.g. the
+  // auto-schedule preview) simply gets the historical fixed width
+  // with no divider — no accidental persistence surface, and no new
+  // failure modes for existing callers.
+  const resolvedLabelColumnPx = labelColumnPx ?? ROADMAP_LABEL_COLUMN_DEFAULT_PX;
+  const canResizeLabelColumn =
+    typeof labelColumnPx === "number"
+    && typeof onLabelColumnPxChange === "function"
+    && typeof onLabelColumnPxCommit === "function";
   // Per-tenant write gate: a user who's owner in RMN but viewer in
   // VC loses drag-to-edit as soon as they switch groups.
   // `readOnly` short-circuits that so the auto-schedule preview
@@ -485,9 +536,26 @@ export function GanttTimeline(props: Props) {
           Epics only by default — click <ChevronRight size={11} className="inline align-[-2px]" /> next to an epic to reveal its subtasks.
         </span>
       </div>
-      <div className="card-surface overflow-hidden">
+      {/* PDF mode lifts every horizontal overflow clip on the chart's
+          ancestors so html-to-image captures the SVG at its NATURAL
+          scrollWidth (bars past the visible viewport are otherwise
+          silently cropped by the surrounding `overflow-x-auto` /
+          `overflow-hidden` boxes when the tree is cloned into the
+          exporter's foreignObject). Interactive rendering keeps the
+          clips so the roadmap still fits in its normal scroll frame. */}
+      <div className={pdfMode ? "card-surface" : "card-surface overflow-hidden"}>
         <div className="flex">
-          <div className="shrink-0" style={{ width: LEFT_LABEL_WIDTH }}>
+          {/*
+            Label column. Width is user-controlled via the divider
+            immediately to its right (see <ColumnResizer /> below).
+            The first child is a full-width header spacer whose
+            height matches the SVG's HEADER_HEIGHT band so the
+            column's group-header row lines up with the chart's
+            first row-bearing pixel — resizing the column doesn't
+            need to touch this because the width is applied to the
+            outer container and the spacer stretches with it.
+          */}
+          <div className="shrink-0" style={{ width: resolvedLabelColumnPx }}>
             <div className="border-b border-wp-stone bg-wp-stone/40" style={{ height: HEADER_HEIGHT }} />
             {groups.map((g, gi) => (
               <div key={`labels-${g.key}`}>
@@ -580,7 +648,30 @@ export function GanttTimeline(props: Props) {
             ))}
           </div>
 
-          <div ref={scrollRef} className="relative flex-1 overflow-x-auto">
+          {/*
+            Draggable divider between the label and chart columns.
+            Sits as a plain flex sibling so it participates in the
+            same row that already stretches to the label column's
+            full height — nothing to compute, nothing to sync. The
+            chart column below has `flex-1`, so widening the label
+            column shrinks the chart's flexible container and the
+            chart's existing horizontal-scroll behavior takes over.
+            Only rendered when the parent has wired the width state
+            through; embedded previews (RoadmapHelper) skip it and
+            fall back to the historical fixed width.
+          */}
+          {canResizeLabelColumn ? (
+            <ColumnResizer
+              currentWidth={resolvedLabelColumnPx}
+              minWidth={ROADMAP_LABEL_COLUMN_MIN_PX}
+              maxWidth={ROADMAP_LABEL_COLUMN_MAX_PX}
+              onWidthChange={onLabelColumnPxChange!}
+              onCommit={onLabelColumnPxCommit!}
+              ariaLabel="Resize roadmap label column"
+            />
+          ) : null}
+
+          <div ref={scrollRef} className={pdfMode ? "relative flex-1" : "relative flex-1 overflow-x-auto"}>
             <svg
               width={chartWidth}
               height={HEADER_HEIGHT + groups.reduce((s, g, gi) => (
@@ -1078,14 +1169,29 @@ function Bar(props: {
           // rolled-up subtask timeline. Each segment carries one of
           // the five single-phase kinds (styled like the per-phase
           // fallback below) or "mixed" (polka dot overlay).
+          //
+          // PDF mode drops every `url(#...)` pattern/gradient reference
+          // and paints flat solids instead. html-to-image serialises
+          // the captured DOM into a `<foreignObject>` inside a data:
+          // URI, and Chromium's SVG renderer inside that context has
+          // been observed to silently fail to resolve fragment
+          // identifiers on `<pattern>` / `<linearGradient>` fills —
+          // which drops the ENTIRE `<rect>` (not just the overlay),
+          // leaving the exported chart blank. Solids capture reliably
+          // and read cleanly in print, so PDF mode uses them exclusively.
           subtaskSegments.map((seg, i) => {
             const segX = differenceInCalendarDays(seg.start, chartStart) * dayPx;
             const segW = Math.max(2, differenceInCalendarDays(seg.end, seg.start) * dayPx);
             if (seg.kind === "awaitingDev" || seg.kind === "awaitingOptimization") {
               return (
                 <g key={`seg-${i}`}>
-                  <rect x={segX} y={barY + barH / 2 - 2} width={segW} height={4} fill="#CBD5E1" rx={2} />
-                  <rect x={segX} y={barY + barH / 2 - 2} width={segW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+                  {/* Interactive: light slate base + darker slate hatch overlay.
+                      PDF: darker slate solid (matches the hatch tone so awaiting
+                      periods read as "muted" against phase colors in print). */}
+                  <rect x={segX} y={barY + barH / 2 - 2} width={segW} height={4} fill={pdfMode ? "#94A3B8" : "#CBD5E1"} rx={2} />
+                  {pdfMode ? null : (
+                    <rect x={segX} y={barY + barH / 2 - 2} width={segW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+                  )}
                 </g>
               );
             }
@@ -1096,7 +1202,9 @@ function Bar(props: {
               return (
                 <g key={`seg-${i}`}>
                   <rect x={segX} y={barY} width={segW} height={barH} fill={base} fillOpacity={0.55} rx={3} />
-                  <rect x={segX} y={barY} width={segW} height={barH} fill="url(#phase-hatch)" rx={3} />
+                  {pdfMode ? null : (
+                    <rect x={segX} y={barY} width={segW} height={barH} fill="url(#phase-hatch)" rx={3} />
+                  )}
                 </g>
               );
             }
@@ -1107,7 +1215,9 @@ function Bar(props: {
             return (
               <g key={`seg-${i}`}>
                 <rect x={segX} y={barY} width={segW} height={barH} fill={base} fillOpacity={0.5} rx={3} />
-                <rect x={segX} y={barY} width={segW} height={barH} fill="url(#mixed-polka)" rx={3} />
+                {pdfMode ? null : (
+                  <rect x={segX} y={barY} width={segW} height={barH} fill="url(#mixed-polka)" rx={3} />
+                )}
               </g>
             );
           })
@@ -1118,14 +1228,18 @@ function Bar(props: {
             ) : null}
             {devGapGeom ? (
               <g>
-                <rect x={devGapGeom.x} y={barY + barH / 2 - 2} width={devGapGeom.w} height={4} fill="#CBD5E1" rx={2} />
-                <rect x={devGapGeom.x} y={barY + barH / 2 - 2} width={devGapGeom.w} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+                <rect x={devGapGeom.x} y={barY + barH / 2 - 2} width={devGapGeom.w} height={4} fill={pdfMode ? "#94A3B8" : "#CBD5E1"} rx={2} />
+                {pdfMode ? null : (
+                  <rect x={devGapGeom.x} y={barY + barH / 2 - 2} width={devGapGeom.w} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+                )}
               </g>
             ) : null}
             {devGeom ? (
               <>
                 <rect x={devGeom.x} y={barY} width={devGeom.w} height={barH} fill={base} fillOpacity={0.55} rx={3} />
-                <rect x={devGeom.x} y={barY} width={devGeom.w} height={barH} fill="url(#phase-hatch)" rx={3} />
+                {pdfMode ? null : (
+                  <rect x={devGeom.x} y={barY} width={devGeom.w} height={barH} fill="url(#phase-hatch)" rx={3} />
+                )}
                 {/* Unconfirmed dev estimate — dashed amber outline signals
                     that the segment's timing is a PM best-guess pending
                     engineering sign-off. Rendered above the fill layers so
@@ -1152,8 +1266,10 @@ function Bar(props: {
             ) : null}
             {optGapGeom ? (
               <g>
-                <rect x={optGapGeom.x} y={barY + barH / 2 - 2} width={optGapGeom.w} height={4} fill="#CBD5E1" rx={2} />
-                <rect x={optGapGeom.x} y={barY + barH / 2 - 2} width={optGapGeom.w} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+                <rect x={optGapGeom.x} y={barY + barH / 2 - 2} width={optGapGeom.w} height={4} fill={pdfMode ? "#94A3B8" : "#CBD5E1"} rx={2} />
+                {pdfMode ? null : (
+                  <rect x={optGapGeom.x} y={barY + barH / 2 - 2} width={optGapGeom.w} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
+                )}
               </g>
             ) : null}
             {optGeom ? (
@@ -1446,12 +1562,19 @@ function Bar(props: {
           need, keeping the fade tidy for tail-end bars. */}
       {pdfMode && firstStartX < 0 && overallEndX > 0 ? (
         <g pointerEvents="none">
+          {/* Opaque white rect (matches the chart's background) cleanly
+              caps the past-extending bar at the visible left edge. The
+              interactive path uses an SVG `<linearGradient>` for a
+              softer fade, but html-to-image's foreignObject-to-canvas
+              serialisation drops `url(#...)` fills in Chromium's export
+              raster, so PDF mode uses a solid rect and lets the chevron
+              carry the "continues earlier" affordance. */}
           <rect
             x={0}
             y={barY}
-            width={Math.min(16, overallEndX)}
+            width={Math.min(10, overallEndX)}
             height={barH}
-            fill="url(#pdf-fade-left)"
+            fill="#ffffff"
             rx={3}
           />
           {overallEndX >= 22 ? (

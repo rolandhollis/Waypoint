@@ -4,6 +4,7 @@ import type {
   AiEstimatorHealth,
   AiReferenceEstimate,
   AiSuggestionCached,
+  AppConstants,
   Group,
   Kpi,
   PendingStatusResponse,
@@ -373,5 +374,68 @@ export function useAiReferenceEstimates(enabled = true) {
     queryFn: () => api<AiReferenceEstimate[]>("/ai-reference-estimates"),
     enabled,
     refetchInterval: POLL_MS,
+  });
+}
+
+/**
+ * Built-in fallback name shown when the current group has no
+ * `app_name` constant set (or when there is no current group at
+ * all, e.g. on the pre-auth login screen). Kept as an exported
+ * constant so the Constants admin form can render it as the input
+ * placeholder without duplicating the literal.
+ */
+export const DEFAULT_APP_NAME = "Waypoint";
+
+/**
+ * The Group row (from `useGroups`) matching the user's current
+ * tenant, or `null` while `useMe` / `useGroups` are still loading
+ * or the user has no active group (pre-auth, or an admin-just-
+ * removed-them edge case that `useMe` will recover from on the
+ * next refetch).
+ *
+ * Deliberately reads from `useGroups()` rather than
+ * `useMe().memberships` because memberships carry only the
+ * navbar-switcher metadata (id / name / color / role) — the
+ * `constants` blob lives on the full group row. `useGroups` has a
+ * 60s staleTime so hydration is essentially free once anywhere in
+ * the app has fetched it.
+ */
+export function useCurrentGroup(): Group | null {
+  const me = useMe();
+  const groups = useGroups(!!me.data);
+  const currentId = me.data?.current_group_id ?? null;
+  if (!currentId || !groups.data) return null;
+  return groups.data.find((g) => g.id === currentId) ?? null;
+}
+
+/**
+ * Effective app name for the current tenant. Empty / whitespace-
+ * only values fall back to the built-in default so a group whose
+ * admin cleared the field never lands on a blank navbar. Callers
+ * can (and should) use this directly wherever `"Waypoint"` used to
+ * be a hardcoded string.
+ */
+export function useAppName(): string {
+  const group = useCurrentGroup();
+  const raw = group?.constants?.app_name;
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  return trimmed || DEFAULT_APP_NAME;
+}
+
+/**
+ * Live-fetched constants for a specific group. Used by the
+ * Constants admin form to hydrate the input on first render and to
+ * observe writes made in other tabs. `useCurrentGroup` already
+ * carries the same values (via `useGroups`) but this is the
+ * canonical source of truth when the admin is actively editing —
+ * mutations invalidate this key alongside `["groups"]` so the
+ * cross-reference stays consistent.
+ */
+export function useGroupConstants(groupId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["groupConstants", groupId],
+    queryFn: () => api<AppConstants>(`/groups/${groupId}/constants`),
+    enabled: enabled && !!groupId,
+    staleTime: 30_000,
   });
 }

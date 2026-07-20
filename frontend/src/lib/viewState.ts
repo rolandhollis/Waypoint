@@ -42,6 +42,39 @@ export type EzestimatesPerView = PerView & {
   devSourced: "any" | "yes" | "no";
 };
 
+/**
+ * Persisted top-level tab in the Admin view. Keys map 1:1 with the
+ * `TabKey`s that `AdminSettingsView.tsx` renders — kept as a wide
+ * string here (rather than importing the union) so the store stays
+ * independent of the admin view file.
+ *
+ * `null` means "no explicit pick yet — land on whatever the view's
+ * default resolution is" (which today is the first tab visible to
+ * the caller). Storing the pick lets a returning admin come back
+ * to the same sub-panel they were last in even if they close and
+ * reopen the tab.
+ */
+export type AdminTopTabKey =
+  | "workspace"
+  | "users"
+  | "archived"
+  | "notifications"
+  | "tshirt-sizes"
+  | "ai-reference-estimates"
+  | "csv"
+  | "constants";
+
+/**
+ * Persisted sub-tab pick for each parent that has sub-tabs. Keyed
+ * by parent tab id so switching top-level tabs preserves the sub-
+ * tab pick you left off on. Values are the free-form sub-tab id
+ * strings that each parent's local render defines.
+ */
+export type AdminSubTabState = {
+  workspace?: string;
+  csv?: string;
+};
+
 type Store = {
   board: PerView;
   roadmap: PerView;
@@ -61,6 +94,31 @@ type Store = {
    */
   roadmapRecentChangesOpen: boolean;
   roadmapUnscheduledOpen: boolean;
+  /**
+   * User-controlled width (in CSS px) of the Roadmap Gantt's left
+   * label column. The column has a draggable divider on its right
+   * edge; on pointer-up we clamp against
+   * `[ROADMAP_LABEL_COLUMN_MIN_PX, ROADMAP_LABEL_COLUMN_MAX_PX]` and
+   * persist the result here so widening the column to read long
+   * project titles survives a reload. Also honored by the PDF
+   * exporter, which snapshots whatever the interactive view is
+   * currently showing.
+   */
+  roadmapLabelColumnPx: number;
+  /**
+   * Persisted Admin-view tab state. `adminActiveTab` is the currently
+   * open top-level tab (or `null` = "no explicit pick yet — fall back
+   * to whatever the URL / default resolution picks"). `adminSubTabs`
+   * carries the currently open sub-tab per parent so switching parents
+   * remembers where each was.
+   *
+   * The URL `?tab=` / `?subtab=` params remain the canonical live
+   * source of truth (so admin URLs stay deep-linkable); this store
+   * mirrors the pick so a returning admin without a URL lands where
+   * they left off.
+   */
+  adminActiveTab: AdminTopTabKey | null;
+  adminSubTabs: AdminSubTabState;
   setFilters: (view: ViewKey, filters: FilterState) => void;
   setColorBy: (view: ViewKey, colorBy: ColorBy) => void;
   setGroupBy: (view: ViewKey, groupBy: GroupBy) => void;
@@ -69,6 +127,9 @@ type Store = {
   collapseAllEpics: () => void;
   setRoadmapRecentChangesOpen: (v: boolean) => void;
   setRoadmapUnscheduledOpen: (v: boolean) => void;
+  setRoadmapLabelColumnPx: (px: number) => void;
+  setAdminActiveTab: (key: AdminTopTabKey) => void;
+  setAdminSubTab: (parent: keyof AdminSubTabState, key: string) => void;
   /** EZEstimates-only "Created" dropdown. Null clears the filter
    *  (i.e. "All time"); the three discrete allowed values are the
    *  only ones surfaced in the UI. */
@@ -98,6 +159,29 @@ const defaultEzestimatesPerView: EzestimatesPerView = {
   devSourced: "any",
 };
 
+/**
+ * Bounds for the Roadmap Gantt's left label column.
+ *
+ * `MIN_PX` keeps the epic chevron + type icon + a couple of characters
+ * of the title always visible so the column never collapses to an
+ * unreadable strip. `MAX_PX` caps at roughly two-thirds of a typical
+ * 1440px monitor's usable width so the chart itself can't be squeezed
+ * to nothing on narrow layouts. `DEFAULT_PX` matches the pre-resizer
+ * fixed width, so returning users without a persisted preference land
+ * on the same layout they had before the divider was introduced.
+ */
+export const ROADMAP_LABEL_COLUMN_MIN_PX = 120;
+export const ROADMAP_LABEL_COLUMN_MAX_PX = 640;
+export const ROADMAP_LABEL_COLUMN_DEFAULT_PX = 260;
+
+function clampRoadmapLabelColumnPx(px: number): number {
+  if (!Number.isFinite(px)) return ROADMAP_LABEL_COLUMN_DEFAULT_PX;
+  return Math.max(
+    ROADMAP_LABEL_COLUMN_MIN_PX,
+    Math.min(ROADMAP_LABEL_COLUMN_MAX_PX, Math.round(px)),
+  );
+}
+
 export const useViewStore = create<Store>()(
   persist(
     (set) => ({
@@ -109,6 +193,12 @@ export const useViewStore = create<Store>()(
       // "peek in when you need it" surfaces, not the primary content.
       roadmapRecentChangesOpen: false,
       roadmapUnscheduledOpen: false,
+      roadmapLabelColumnPx: ROADMAP_LABEL_COLUMN_DEFAULT_PX,
+      // Admin tab state starts empty so the view falls back to its
+      // "first visible tab" default until the user actually picks
+      // one (which persists via setAdminActiveTab below).
+      adminActiveTab: null,
+      adminSubTabs: {},
       setFilters: (view, filters) => set((s) => ({ ...s, [view]: { ...s[view], filters } })),
       setColorBy: (view, colorBy) => set((s) => ({ ...s, [view]: { ...s[view], colorBy } })),
       setGroupBy: (view, groupBy) => set((s) => ({ ...s, [view]: { ...s[view], groupBy } })),
@@ -122,6 +212,17 @@ export const useViewStore = create<Store>()(
       collapseAllEpics: () => set(() => ({ expandedEpicIds: [] })),
       setRoadmapRecentChangesOpen: (v) => set(() => ({ roadmapRecentChangesOpen: v })),
       setRoadmapUnscheduledOpen: (v) => set(() => ({ roadmapUnscheduledOpen: v })),
+      // Always run picked widths through the clamp so a caller that
+      // passes an unclamped delta from a pointer event can't wedge
+      // the store into an unreachable state (e.g. 8000px from a
+      // stuck drag). Escape / cancel paths in the resizer restore
+      // the pre-drag value directly, which is also inside the range
+      // by construction.
+      setRoadmapLabelColumnPx: (px) =>
+        set(() => ({ roadmapLabelColumnPx: clampRoadmapLabelColumnPx(px) })),
+      setAdminActiveTab: (key) => set(() => ({ adminActiveTab: key })),
+      setAdminSubTab: (parent, key) =>
+        set((s) => ({ adminSubTabs: { ...s.adminSubTabs, [parent]: key } })),
       setEzestimatesCreatedWithinDays: (v) =>
         set((s) => ({ ...s, ezestimates: { ...s.ezestimates, createdWithinDays: v } })),
       setEzestimatesDevSourced: (v) =>
@@ -142,7 +243,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 6,
+      version: 8,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -184,6 +285,32 @@ export const useViewStore = create<Store>()(
           }
           if (typeof persisted.ezestimates.devSourced !== "string") {
             persisted.ezestimates.devSourced = "any";
+          }
+        }
+        // < v7: added the roadmap left-label-column resize preference.
+        // Backfill the default so returning users land on the same
+        // pre-resizer layout; also clamp any pre-existing value to the
+        // supported range in case a future migration writes it before
+        // the version bump.
+        if (version < 7 || typeof persisted.roadmapLabelColumnPx !== "number") {
+          persisted.roadmapLabelColumnPx = ROADMAP_LABEL_COLUMN_DEFAULT_PX;
+        } else {
+          persisted.roadmapLabelColumnPx = clampRoadmapLabelColumnPx(
+            persisted.roadmapLabelColumnPx,
+          );
+        }
+        // < v8: added persisted Admin tab / sub-tab picks. Default
+        // both to their "no pick yet" values so returning admins fall
+        // back to whatever the current default resolution picks —
+        // exactly the same landing state a fresh user gets. The URL
+        // `?tab=` / `?subtab=` params still take precedence when
+        // present.
+        if (version < 8) {
+          if (persisted.adminActiveTab === undefined) {
+            persisted.adminActiveTab = null;
+          }
+          if (!persisted.adminSubTabs || typeof persisted.adminSubTabs !== "object") {
+            persisted.adminSubTabs = {};
           }
         }
         return persisted;

@@ -58,8 +58,37 @@ export type GroupRow = {
   name: string;
   color: string | null;
   created_by: string | null;
+  /**
+   * Admin-editable runtime "constants" for this tenant. Backed by
+   * a JSONB column (see migration 033); shape is app-defined and
+   * validated at the router layer, not the database, so adding a
+   * new key is a code change with no migration cost.
+   *
+   * Today only `app_name` is recognized. Missing keys imply the
+   * built-in default (`app_name` falls back to "Waypoint" in the
+   * frontend hook). Any unknown key stored here is preserved on
+   * write but ignored by every consumer.
+   */
+  constants: AppConstants;
   created_at: Date;
   updated_at: Date;
+};
+
+/**
+ * Stable-shape view of a group's runtime constants bag. The
+ * `groups.constants` JSONB column can hold any keys the admin
+ * writes, but every consumer works against this narrow surface so
+ * the frontend never has to guess at a shape.
+ *
+ * Every key is optional (`?`) so `derive` calls can express "not
+ * set — fall back to the built-in default" as `undefined`, while
+ * every value is `... | null` so an admin can explicitly clear a
+ * key back to the default via PATCH with `{ key: null }` without
+ * conflating "cleared" with "not set".
+ */
+export type AppConstants = {
+  /** Tenant-visible product name shown in navbar / document title. */
+  app_name?: string | null;
 };
 
 /**
