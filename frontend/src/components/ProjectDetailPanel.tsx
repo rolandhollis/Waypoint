@@ -6,10 +6,12 @@ import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
 import { AuditEventBody, auditActorLabel, timelineEntryToRenderEntry } from "../lib/auditRender";
-import { useCanWrite, useCurrentGroupRole, useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { useCanWrite, useCurrentGroupRole, useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useTshirtSizes, useUsers } from "../lib/queries";
 import { computePhases } from "../lib/phaseCompute";
 import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
 import { ancestors, childrenByParent, descendants, indexById } from "../lib/hierarchy";
+import { makeAiEstimateHandlers, type AiEstimatePatchArgs } from "../lib/aiEstimateApply";
+import { AiSuggestPopover } from "./AiSuggestPopover";
 import { CapacityWarning } from "./CapacityWarning";
 import { computeOverloads, overloadsForProject } from "../lib/capacity";
 import { KpiPicker } from "./KpiPicker";
@@ -85,6 +87,7 @@ export function ProjectDetailPanel({
   const users = useUsers();
   const teams = useTeams();
   const kpis = useKpis();
+  const tshirtSizes = useTshirtSizes();
   const allProjects = useProjects();
   const qc = useQueryClient();
 
@@ -129,6 +132,59 @@ export function ProjectDetailPanel({
       setDraft({});
       setTouchedPhaseFields(new Set());
       onClose();
+    },
+  });
+
+  /**
+   * Sibling mutation used by the ✨ Suggest popover. Same endpoint,
+   * but distinct from the manual Save mutation above because:
+   *
+   *   - It must NOT close the panel (`onClose`) — the user is still
+   *     editing.
+   *   - It must NOT wipe unrelated draft edits (title, tags,
+   *     description, …). Only the phase-date entries the fresh
+   *     PATCH just persisted are cleared so the merged view echoes
+   *     the AI's new dates instead of a stale user-typed draft.
+   *   - It shares the SAME cache-invalidation set as the manual
+   *     save (`["project", id]` + `["projects"]` + history) so the
+   *     date pickers immediately reflect the new values.
+   *
+   * `_meta.source` is stamped by `makeAiEstimateHandlers` — we don't
+   * override it here.
+   */
+  const aiPatch = useMutation({
+    mutationFn: (args: AiEstimatePatchArgs) =>
+      api<Project>(`/projects/${args.projectId}`, {
+        method: "PATCH",
+        body: JSON.stringify(args.body),
+      }),
+    onSuccess: (updated, args) => {
+      qc.setQueryData(["project", id], updated);
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["projectHistory", id] });
+      // Clear any user-typed drafts for the phase-date fields the AI
+      // just wrote so the merged view picks up the fresh dates. Non-
+      // phase draft entries (title, tags, description, …) survive so
+      // the user's in-flight edits don't get discarded.
+      setDraft((prev) => {
+        const next: Draft = { ...prev };
+        for (const key of Object.keys(args.body)) {
+          if (key === "_meta") continue;
+          if (PHASE_DATE_FIELD_NAMES.includes(key as keyof Project)) {
+            delete (next as Record<string, unknown>)[key];
+          }
+        }
+        return next;
+      });
+      setTouchedPhaseFields((prev) => {
+        // Untouch every phase-date field — either the AI wrote a new
+        // value (so the field isn't "user-touched" anymore) OR the
+        // field was untouched to begin with (no-op). We could scope
+        // to phase-key granularity but the panel's `_meta` derivation
+        // is coarse enough that a full clear is byte-equivalent.
+        if (prev.size === 0) return prev;
+        return new Set();
+      });
     },
   });
 
@@ -260,6 +316,21 @@ export function ProjectDetailPanel({
   // id from the archive flag on the server side.
   const inArchive = !!lane?.is_archive;
   const canArchive = canWrite && !inArchive;
+
+  /**
+   * AI ✨ Suggest handlers, bound to the currently-viewed project.
+   * Same PATCH pipeline EZEstimates uses (`_meta.source: 'claude'`,
+   * per-phase edit list, atomic Accept-All body) — factored through
+   * `makeAiEstimateHandlers` so any drift in the cascade math flows
+   * through one place. The popover component itself owns open/close
+   * state, so we don't have to thread anything but the two accept
+   * callbacks through here.
+   */
+  const aiHandlers = makeAiEstimateHandlers({
+    project,
+    patchProject: aiPatch,
+    source: "claude",
+  });
 
   /**
    * Wrap a phase-date input change: applies the value (running the
@@ -459,6 +530,36 @@ export function ProjectDetailPanel({
                   ) : null}
                 </div>
               </Field>
+              {/* Estimates ledger row — labels the three phase-date
+                  Fields below and hosts the ✨ Suggest popover on
+                  the right. The popover pulls a Claude suggestion
+                  for all three phases and, on Accept / Accept-all,
+                  dispatches an IMMEDIATE PATCH (Option B) with
+                  `_meta.source: 'claude'` — the same code path
+                  EZEstimates uses. Not merged into the panel's
+                  draft state; the query invalidation in `aiPatch`
+                  refreshes the pickers. Only rendered when the
+                  user has write access — viewer role sees no
+                  button but still gets the section header. */}
+              <div className="col-span-2 flex items-center justify-between border-b border-wp-stone/60 pb-1 pt-1">
+                <span className="text-xs font-semibold uppercase tracking-wide text-wp-slate">
+                  Estimates
+                </span>
+                {canWrite ? (
+                  <AiSuggestPopover
+                    project={project}
+                    sizes={tshirtSizes.data}
+                    onAcceptPhase={aiHandlers.onAcceptPhase}
+                    onAcceptAll={aiHandlers.onAcceptAll}
+                  />
+                ) : null}
+              </div>
+              {aiPatch.isError ? (
+                <MutationErrorBanner
+                  mutation={aiPatch}
+                  className="col-span-2"
+                />
+              ) : null}
               <Field label="Discovery and Definition" className="col-span-2">
                 <PairedDates
                   startLabel="Start"
