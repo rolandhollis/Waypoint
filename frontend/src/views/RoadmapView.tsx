@@ -52,6 +52,16 @@ export function RoadmapView() {
   const roadmapOverrideByGroup = useViewStore((s) => s.roadmapOverrideByGroup);
   const setRoadmapOverride = useViewStore((s) => s.setRoadmapOverride);
   const clearRoadmapOverrides = useViewStore((s) => s.clearRoadmapOverrides);
+  // "Show conflicts" checkbox state. Default `true` (see viewState
+  // migration for v11) so a returning user or a fresh install lands
+  // on the historical roadmap with every capacity / deadline /
+  // dependency indicator visible. Flipping it off routes through
+  // GanttTimeline via the new `showConflicts` prop, which gates the
+  // conflict visuals without touching violation computation — so
+  // the PDF exporter picks the current state up automatically
+  // through the already-shared DOM-snapshot path.
+  const showConflicts = useViewStore((s) => s.showConflicts);
+  const setShowConflicts = useViewStore((s) => s.setShowConflicts);
   const hasAnyOverride = useMemo(
     () => Object.values(roadmapOverrideByGroup).some((ids) => ids && ids.length > 0),
     [roadmapOverrideByGroup],
@@ -362,6 +372,26 @@ export function RoadmapView() {
                   </span>
                 ) : null}
               </div>
+              {/* Show-conflicts checkbox. Sits alongside Timeframe /
+                  Sort by so the three visibility controls read as
+                  one cluster. Default on (via viewState) so nothing
+                  changes for returning users unless they explicitly
+                  unchecked. Toggling flips `showConflicts` in the
+                  view store which the Gantt honors immediately —
+                  and the PDF exporter picks up automatically because
+                  it snapshots the same DOM. */}
+              <label
+                className="inline-flex cursor-pointer items-center gap-1.5 text-wp-slate select-none"
+                title="Show capacity, deadline, and dependency warnings on the roadmap. Uncheck for a clean-presentation view (also applied to exported PDFs)."
+              >
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 cursor-pointer accent-wp-red"
+                  checked={showConflicts}
+                  onChange={(e) => setShowConflicts(e.target.checked)}
+                />
+                Show conflicts
+              </label>
             </div>
             {/* Actions cluster — Export PDF is always available;
                 Auto-schedule is admin/owner-only. `data-pdf-exclude`
@@ -443,6 +473,7 @@ export function RoadmapView() {
                   "Priority order is per swim lane. Move this item to a different lane on the Board view to change lanes.",
                 )
               }
+              showConflicts={showConflicts}
             />
           ) : (
             // Two distinct empty states: nothing scheduled at all vs.

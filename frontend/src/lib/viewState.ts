@@ -142,6 +142,23 @@ type Store = {
    */
   roadmapOverrideByGroup: Record<string, string[]>;
   /**
+   * Roadmap-only "Show conflicts" toggle. Default `true` so a fresh
+   * or migrated user lands on the historical view where every
+   * capacity / deadline / dependency indicator is visible. When
+   * flipped off, GanttTimeline suppresses the amber / red conflict
+   * visuals (row overload overlays, group overload overlays, the
+   * top-axis "any overload" strip + icons, the deadline-alert
+   * triangle icon, the dependency-alert broken-chain icon, and the
+   * violated-color variants of dependency arrows / tick marks /
+   * per-phase chain icons) — the informational styling stays so
+   * dotted dep lines and tick marks are still visible as wayfinding
+   * aids. The PDF exporter captures whatever the current toggle
+   * state produces without a separate flag because the DOM already
+   * reflects it. Persisted per-browser via zustand persist so a
+   * returning PM lands back on their preferred display.
+   */
+  showConflicts: boolean;
+  /**
    * Persisted Admin-view tab state. `adminActiveTab` is the currently
    * open top-level tab (or `null` = "no explicit pick yet — fall back
    * to whatever the URL / default resolution picks"). `adminSubTabs`
@@ -199,6 +216,12 @@ type Store = {
    * "Custom order · Reset" chip and by the sort-mode toggle.
    */
   clearRoadmapOverrides: () => void;
+  /**
+   * Toggle for the Roadmap "Show conflicts" checkbox. Purely a view
+   * preference — never touches backend state or violation
+   * computation, only whether the resulting visuals paint.
+   */
+  setShowConflicts: (v: boolean) => void;
   setAdminActiveTab: (key: AdminTopTabKey) => void;
   setAdminSubTab: (parent: keyof AdminSubTabState, key: string) => void;
   /** EZEstimates-only "Created" dropdown. Null clears the filter
@@ -273,6 +296,12 @@ export const useViewStore = create<Store>()(
       roadmapLabelColumnPx: ROADMAP_LABEL_COLUMN_DEFAULT_PX,
       roadmapSort: "startDate",
       roadmapOverrideByGroup: {},
+      // Default the Show-conflicts toggle to on so a first-time
+      // visit (or a returning user pre-migration) sees the full
+      // set of capacity / deadline / dependency indicators the
+      // roadmap has always rendered. Users who prefer the clean-
+      // presentation mode opt in explicitly via the checkbox.
+      showConflicts: true,
       // Admin tab state starts empty so the view falls back to its
       // "first visible tab" default until the user actually picks
       // one (which persists via setAdminActiveTab below).
@@ -344,6 +373,7 @@ export const useViewStore = create<Store>()(
         }),
       clearRoadmapOverrides: () =>
         set((s) => ({ ...s, roadmapOverrideByGroup: {} })),
+      setShowConflicts: (v) => set(() => ({ showConflicts: v })),
       setAdminActiveTab: (key) => set(() => ({ adminActiveTab: key })),
       setAdminSubTab: (parent, key) =>
         set((s) => ({ adminSubTabs: { ...s.adminSubTabs, [parent]: key } })),
@@ -377,7 +407,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 10,
+      version: 11,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -477,6 +507,14 @@ export const useViewStore = create<Store>()(
           ) {
             persisted.roadmapOverrideByGroup = {};
           }
+        }
+        // < v11: added the Roadmap "Show conflicts" checkbox. Default
+        // returning users to `true` so the migration is a no-op
+        // visually — they see the exact same warning surface they had
+        // before the toggle landed, and only opt in to the clean
+        // presentation by unchecking the new control.
+        if (version < 11 && typeof persisted.showConflicts !== "boolean") {
+          persisted.showConflicts = true;
         }
         return persisted;
       },

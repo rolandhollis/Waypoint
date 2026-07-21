@@ -961,6 +961,14 @@ function ReviewPhase({
                   // its scheduled start later than lower-ranked
                   // items. See preserveInputOrder in GanttTimeline.
                   preserveInputOrder
+                  // Auto-schedule review always surfaces conflicts,
+                  // regardless of the user's Roadmap-view toggle —
+                  // spotting capacity / deadline / dependency
+                  // trouble is the whole point of previewing a
+                  // proposal before committing it. Passed explicitly
+                  // even though `true` is the prop default so the
+                  // intent is obvious at the call site.
+                  showConflicts
                 />
               </div>
             </>

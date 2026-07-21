@@ -31,11 +31,12 @@ import { useCanWrite, useKpis, useProjects } from "../lib/queries";
 import { childrenByParent, descendants, indexById, rootEpic } from "../lib/hierarchy";
 import {
   ALL_ZOOM_FALLBACK_DAY_PX,
-  ALL_ZOOM_MAX_DAY_PX,
-  ALL_ZOOM_MIN_DAY_PX,
   DAY_PX,
+  ROADMAP_LABEL_RESIZER_WIDTH_PX,
   TIMEFRAME_MONTHS,
   TODAY_LEFT_OFFSET_PX,
+  computeRoadmapFitDayPx,
+  computeRoadmapPdfDayPx,
   type Zoom,
 } from "../lib/roadmapViewport";
 import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
@@ -195,6 +196,27 @@ type Props = {
    * toast slot so the message can render outside the SVG shell.
    */
   onReorderCrossLaneRejected?: () => void;
+  /**
+   * Master gate for every conflict/warning visual on the chart —
+   * capacity overloads (top-axis strip + icons, per-row overlays,
+   * per-group overlays), the deadline-alert red triangle icon, the
+   * dependency-alert broken-chain icon, and the "violated" color
+   * variants of dependency arrows / deadline tick marks / per-phase
+   * dependency chain icons.
+   *
+   * Defaults to `true` so any caller that predates this prop keeps
+   * the historical warning-heavy render. The main Roadmap wires
+   * this to the persisted `showConflicts` view-state slot so the
+   * user's checkbox controls both the interactive Gantt AND the
+   * PDF export (same DOM path). The auto-schedule proposal preview
+   * explicitly passes `true` because seeing conflicts is the whole
+   * point of reviewing a proposal.
+   *
+   * Only rendering is gated — violation computation still runs so
+   * flipping the toggle back on immediately restores the same
+   * indicators without a recompute pass.
+   */
+  showConflicts?: boolean;
 };
 
 const ROW_HEIGHT = 34;
@@ -221,11 +243,13 @@ const HANDLE_HITBOX_PX = 8;
 // so deep trees still fit in the label column.
 const DEPTH_INDENT_PX = 14;
 // Width of the label-column resize divider (matches Tailwind `w-1.5`
-// / 6px). Referenced when the "all" zoom needs to subtract chrome
+// / 6px). Referenced when the auto-fit sizer needs to subtract chrome
 // from the scroll container's clientWidth to compute the true chart
-// area. Kept as a module-level constant so a future ColumnResizer
-// visual redesign only has to update it in one place.
-const LABEL_RESIZER_WIDTH_PX = 6;
+// area. Re-exported from `roadmapViewport` so the sizing helper +
+// this component share a single source of truth for the divider
+// width — a future ColumnResizer visual redesign updates it in one
+// place.
+const LABEL_RESIZER_WIDTH_PX = ROADMAP_LABEL_RESIZER_WIDTH_PX;
 
 /** One rendered row in the tree — an epic or an expanded descendant. */
 type TreeRow = {
@@ -269,6 +293,7 @@ export function GanttTimeline(props: Props) {
     overrideByGroup,
     onReorderOverride,
     onReorderCrossLaneRejected,
+    showConflicts = true,
   } = props;
   // Row reorder is only wired up on the main Roadmap view: the
   // auto-schedule proposal preview passes `preserveInputOrder=true`
@@ -308,14 +333,16 @@ export function GanttTimeline(props: Props) {
   const collapseAllEpics = useViewStore((s) => s.collapseAllEpics);
   const expandedSet = useMemo(() => new Set(expandedEpicIds), [expandedEpicIds]);
 
-  // "all" mode is dynamic: the chart spans from the earliest
-  // scheduled item to the latest (inclusive of today), and dayPx is
-  // computed from the scroll container's measured width divided by
-  // the total span so everything fits without horizontal scroll.
-  // The three fixed zooms keep their static dayPx from
-  // `roadmapViewport`. `timeframeMonths` is null in "all" so
-  // `computeRange` skips the "start = today, end = today +
-  // timeframe" widening and anchors purely on project dates.
+  // Every zoom in the sticky-header roadmap layout is auto-fit: the
+  // chart spans the selected timeframe (or the whole project set for
+  // "all") and `dayPx` is derived from the scroll container's
+  // measured width divided by the total span so the entire range
+  // fits on a typical laptop without horizontal scroll. Static
+  // `DAY_PX[zoom]` from `roadmapViewport` acts as a transient
+  // fallback until the container has been measured on first paint.
+  // `timeframeMonths` is null in "all" so `computeRange` skips the
+  // "start = today, end = today + timeframe" widening and anchors
+  // purely on project dates.
   const timeframeMonths: number | null = zoom === "all" ? null : TIMEFRAME_MONTHS[zoom];
 
   // Horizontal-scroll container ref. In the sticky-header layout
@@ -334,9 +361,9 @@ export function GanttTimeline(props: Props) {
     const el = scrollRef.current;
     if (!el) return;
     setContainerWidth(el.clientWidth);
-    // Only "all" zoom cares about width, but subscribing
-    // unconditionally keeps the effect simple and avoids re-hooking
-    // on every zoom flip. The observer is cheap.
+    // Fires on browser resize AND on label-column-resize drags (the
+    // resizer changes the sibling label column's width which reflows
+    // this element's own clientWidth). One observer, both signals.
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         setContainerWidth(entry.contentRect.width);
@@ -346,10 +373,12 @@ export function GanttTimeline(props: Props) {
     return () => ro.disconnect();
   }, [useMonolithic]);
 
-  // For non-"all" zooms, dayPx is static and the range widens by an
-  // inch of past chart. For "all" we compute range first without
-  // that widening (dayPx passed here is irrelevant), then derive
-  // dayPx from the resulting span + measured container width.
+  // Range widening uses the STATIC `DAY_PX[zoom]` as a hint (the
+  // widening is small — a fraction of an inch of past chart per
+  // TODAY_LEFT_OFFSET_PX — so using the fallback density here
+  // instead of the dynamically-computed one avoids a
+  // dayPx-depends-on-totalDays-depends-on-dayPx circular dependency
+  // without materially changing the resulting range).
   const rangeDayPxHint = zoom === "all" ? ALL_ZOOM_FALLBACK_DAY_PX : DAY_PX[zoom];
   const { start, end } = useMemo(
     () => computeRange(projects, timeframeMonths, rangeDayPxHint, pdfMode ?? false),
@@ -357,31 +386,49 @@ export function GanttTimeline(props: Props) {
   );
   const totalDays = Math.max(1, differenceInCalendarDays(end, start));
   const dayPx = useMemo(() => {
-    if (zoom !== "all") return DAY_PX[zoom];
-    if (containerWidth == null || containerWidth <= 0) {
-      return ALL_ZOOM_FALLBACK_DAY_PX;
+    // PDF snapshot: force a fixed, screen-size-independent width so
+    // the exported artefact drops nicely into a Google Slide
+    // regardless of what the user's browser happened to be sized at
+    // when they clicked Export. See `computeRoadmapPdfDayPx` for
+    // the target-width rationale.
+    if (pdfMode) return computeRoadmapPdfDayPx(totalDays, resolvedLabelColumnPx);
+    // The monolithic layout (auto-schedule preview modal) keeps the
+    // historical static per-zoom densities for the fixed zooms —
+    // the modal owns its own horizontal scroll and PMs expect the
+    // "typical" bar widths there. "all" zoom still auto-fits to the
+    // measured chart column so multi-year previews stay on-screen.
+    if (useMonolithic) {
+      if (zoom !== "all") return DAY_PX[zoom];
+      const fit = computeRoadmapFitDayPx({
+        containerWidth,
+        totalDays,
+        labelColumnPx: resolvedLabelColumnPx,
+        subtractLabel: false,
+        includeResizer: false,
+      });
+      return fit ?? ALL_ZOOM_FALLBACK_DAY_PX;
     }
-    // The sticky layout observes the OUTER card (whole Gantt width),
-    // so subtract the label column + resizer to get the true chart
-    // area — otherwise "all" zoom picks a density based on the full
-    // card width and produces a chart that horizontally scrolls off
-    // the right edge. The monolithic layout observes the CHART
-    // COLUMN directly, so containerWidth is already the chart area
-    // and no subtraction is needed. (chartAreaWidth / spanDays gives
-    // "everything fits" density.) Clamp so bars never go sub-pixel
-    // (unreadable) or absurdly wide (single item stretched across
-    // a laptop screen).
-    const chartAreaWidth = useMonolithic
-      ? containerWidth
-      : Math.max(
-        0,
-        containerWidth
-          - resolvedLabelColumnPx
-          - (canResizeLabelColumn ? LABEL_RESIZER_WIDTH_PX : 0),
-      );
-    const raw = chartAreaWidth / totalDays;
-    return Math.max(ALL_ZOOM_MIN_DAY_PX, Math.min(ALL_ZOOM_MAX_DAY_PX, raw));
-  }, [zoom, containerWidth, totalDays, resolvedLabelColumnPx, canResizeLabelColumn, useMonolithic]);
+    // Sticky-header roadmap: auto-fit every zoom. The container
+    // (whole card) spans label + resizer + chart, so subtract that
+    // chrome to derive the true chart area — otherwise the chart
+    // ends up wider than the available space and the card starts
+    // horizontally scrolling under the user, which is exactly the
+    // "too wide, need to scroll back and forth" problem this
+    // behavior fixes. Fallback to the static per-zoom density until
+    // the container is measured on first paint.
+    const fit = computeRoadmapFitDayPx({
+      containerWidth,
+      totalDays,
+      labelColumnPx: resolvedLabelColumnPx,
+      subtractLabel: true,
+      includeResizer: canResizeLabelColumn,
+    });
+    if (fit != null) return fit;
+    return zoom === "all" ? ALL_ZOOM_FALLBACK_DAY_PX : DAY_PX[zoom];
+  }, [
+    pdfMode, useMonolithic, zoom, containerWidth, totalDays,
+    resolvedLabelColumnPx, canResizeLabelColumn,
+  ]);
   const chartWidth = totalDays * dayPx;
 
   const months = useMemo(() => {
@@ -994,8 +1041,11 @@ export function GanttTimeline(props: Props) {
           alert icon per contiguous range that reveals a rich
           tooltip on hover ("Roland assigned 4 tasks, over maximum
           of 3"). Renders in every grouping mode so PMs never lose
-          sight of a breach the current grouping happens to hide. */}
-      {anyOverloadDays.length > 0 ? (
+          sight of a breach the current grouping happens to hide.
+          Suppressed entirely when the parent has toggled
+          `showConflicts` off — this is a capacity-conflict visual,
+          exactly what that toggle exists to hide. */}
+      {showConflicts && anyOverloadDays.length > 0 ? (
         <g>
           <g pointerEvents="none">
             {anyOverloadDays.map((iso, i) => (
@@ -1151,11 +1201,18 @@ export function GanttTimeline(props: Props) {
             // unless we paint it on the row itself. Same in
             // reverse when grouped by owner. In non-entity grouping
             // (lane/tag/none) we paint both dimensions on the row.
+            //
+            // Suppressed wholesale when `showConflicts` is off:
+            // per-row overload paint is a capacity-conflict indicator
+            // by construction, so an empty rowIvs list drops it
+            // cleanly without touching the computation upstream.
             const showOwnerOnRow = groupBy !== "owner";
             const showTeamOnRow = groupBy !== "team";
-            const rowIvs = overloadsForProject(overloads, previewProject).filter((iv) =>
-              (iv.kind === "owner" && showOwnerOnRow) || (iv.kind === "team" && showTeamOnRow)
-            );
+            const rowIvs = showConflicts
+              ? overloadsForProject(overloads, previewProject).filter((iv) =>
+                  (iv.kind === "owner" && showOwnerOnRow) || (iv.kind === "team" && showTeamOnRow)
+                )
+              : [];
             for (const iv of rowIvs) {
               const span = projectSpan(previewProject);
               if (!span) continue;
@@ -1207,6 +1264,7 @@ export function GanttTimeline(props: Props) {
                 isSubtask={row.depth > 0}
                 kids={kids}
                 pdfMode={pdfMode ?? false}
+                showConflicts={showConflicts}
               />
             );
           });
@@ -1216,8 +1274,14 @@ export function GanttTimeline(props: Props) {
           // translucent red band across the group's Y range for
           // each overloaded date interval, so PMs can see at a
           // glance which weeks the owner/team is over their cap.
-          const groupOverloads: OverloadInterval[] =
-            groupBy === "owner"
+          //
+          // Suppressed wholesale when `showConflicts` is off — this
+          // is a capacity-conflict visual, exactly what that toggle
+          // exists to hide. Empty list flows through the map below
+          // and paints nothing.
+          const groupOverloads: OverloadInterval[] = !showConflicts
+            ? []
+            : groupBy === "owner"
               ? overloadsByOwner.get(g.key) ?? []
               : groupBy === "team"
               ? overloadsByTeam.get(g.key) ?? []
@@ -1304,7 +1368,12 @@ export function GanttTimeline(props: Props) {
                   y1={y1}
                   x2={x2}
                   y2={y2}
-                  violated={s.severity === "violated"}
+                  // Force the arrow's informational (slate) styling
+                  // when `showConflicts` is off — the dotted line
+                  // stays visible as a wayfinding aid per the prior
+                  // spec, only the red "violated" color variant is
+                  // suppressed.
+                  violated={showConflicts && s.severity === "violated"}
                 />,
               );
             }
@@ -1560,11 +1629,24 @@ function Bar(props: {
    * live view where the past is fully scrollable.
    */
   pdfMode?: boolean;
+  /**
+   * Master gate for the per-row conflict/warning glyphs — the
+   * deadline-alert red triangle icon, the dependency-alert broken
+   * chain icon, and the violated-color variants of deadline tick
+   * marks / per-phase dependency chain icons. Defaults to `true`
+   * to keep pre-toggle callers' visuals intact. When false, the
+   * deadline flags/tick marks and per-phase chain icons still
+   * render but always in their informational (slate) styling —
+   * they read as "here's the shape of the plan" rather than
+   * "here's what's broken."
+   */
+  showConflicts?: boolean;
 }) {
   const {
     project: p, y, chartStart, dayPx, lanes, teams, users, colorBy,
     canEdit, activeDrag, onStartDrag, onOpen,
     deadlineStatuses, dependencyStatuses, isSubtask, kids, pdfMode,
+    showConflicts = true,
   } = props;
   const phases = computePhases(p);
   if (!phases.scheduled) return null;
@@ -1841,10 +1923,16 @@ function Bar(props: {
           icon — a triangle for deadlines, a broken chain for
           dependencies — so PMs can tell at a glance which class
           of issue a row has just by scanning the right margin.
-          Both icons render side-by-side when both are violated. */}
+          Both icons render side-by-side when both are violated.
+          When `showConflicts` is off, the red alert glyphs are
+          suppressed and the deadline tick marks revert to their
+          slate (informational) styling — the tick itself is a
+          location marker, not a violation indicator, so keeping
+          it visible in the neutral color reads as "there's a
+          deadline here" without shouting a warning. */}
       {(() => {
-        const anyDeadlineViolated = deadlineStatuses.some((s) => s.severity !== "ok");
-        const anyDepViolated = dependencyStatuses.some((s) => s.severity === "violated");
+        const anyDeadlineViolated = showConflicts && deadlineStatuses.some((s) => s.severity !== "ok");
+        const anyDepViolated = showConflicts && dependencyStatuses.some((s) => s.severity === "violated");
         const nothingToRender = deadlineStatuses.length === 0 && !anyDeadlineViolated && !anyDepViolated;
         if (nothingToRender) return null;
         // Icon slot positions past the bar's right edge. Deadline
@@ -1859,7 +1947,10 @@ function Bar(props: {
           <g pointerEvents="none">
             {deadlineStatuses.map((s) => {
               const tickX = dayX(s.deadline.deadline_date, chartStart, dayPx) + dayPx / 2;
-              const violated = s.severity !== "ok";
+              // Only paint the red "violated" variant when the
+              // parent is actively surfacing conflicts. Otherwise
+              // the tick reads as pure wayfinding.
+              const violated = showConflicts && s.severity !== "ok";
               const color = violated ? "#DC2626" : "#94A3B8";
               const laneName = s.lane?.name ?? "(deleted lane)";
               const dl = format(parseISO(s.deadline.deadline_date), "MMM d, yyyy");
@@ -1979,7 +2070,13 @@ function Bar(props: {
             {Array.from(byPhase.entries()).map(([phase, ss]) => {
               const cx = phaseStartX[phase];
               if (cx === undefined) return null;
-              const violated = ss.some((s) => s.severity === "violated");
+              // Per-phase chain icons stay visible as informational
+              // "this phase has a dep" markers even when
+              // `showConflicts` is off — only the red violated color
+              // variant is suppressed. Same rationale as the
+              // dependency arrows above: keep the wiring visible,
+              // hide the alarm colouring.
+              const violated = showConflicts && ss.some((s) => s.severity === "violated");
               const color = violated ? "#DC2626" : "#64748B";
               return (
                 <DependencyPhaseTooltip
