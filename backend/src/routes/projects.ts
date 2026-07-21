@@ -62,6 +62,8 @@ const AUDITED_FIELDS = [
   "optimization_end_date",
   "excluded_from_capacity",
   "dev_estimate_sourced_by_dev",
+  "dates_locked",
+  "hidden_from_roadmap",
 ] as const;
 type AuditedField = (typeof AUDITED_FIELDS)[number];
 
@@ -542,6 +544,25 @@ const projectBaseSchema = z.object({
    */
   dev_estimate_sourced_by_dev: z.boolean().optional(),
   /**
+   * Persistent per-project auto-scheduler lock. When true, the
+   * Auto-schedule modal treats this project as locked-permanent
+   * and no automated run can change its dates. Manual edits
+   * (detail panel, EZEstimates picker) are unaffected — this
+   * only gates the automated Auto-schedule flow. Default false
+   * at the DB level; toggled from the padlock icon in the
+   * ProjectDetailPanel header (see migration 034).
+   */
+  dates_locked: z.boolean().optional(),
+  /**
+   * Per-project "hide from the Roadmap view" flag. When true the
+   * project is unconditionally excluded from the Roadmap surface
+   * (Gantt, Unscheduled list, Recent Changes, headline, PDF
+   * export). No other view is affected. Default false at the DB
+   * level; toggled from the checkbox in the ProjectDetailPanel
+   * (see migration 035).
+   */
+  hidden_from_roadmap: z.boolean().optional(),
+  /**
    * Per-phase estimate provenance metadata. Optional and out-of-band
    * (leading underscore) so it stays clearly distinct from the
    * persisted project columns above — it drives WHICH of the nine
@@ -580,6 +601,8 @@ const PROJECT_COLUMN_KEYS = [
   "optimization_start_date", "optimization_end_date",
   "excluded_from_capacity",
   "dev_estimate_sourced_by_dev",
+  "dates_locked",
+  "hidden_from_roadmap",
 ] as const;
 
 /**
@@ -738,12 +761,13 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
           type, parent_id,
           start_date, target_date, dev_start_date, dev_end_date,
           optimization_start_date, optimization_end_date,
-          excluded_from_capacity, dev_estimate_sourced_by_dev, created_by,
+          excluded_from_capacity, dev_estimate_sourced_by_dev, dates_locked,
+          hidden_from_roadmap, created_by,
           discovery_updated_at, discovery_updated_by_user_id, discovery_updated_source,
           development_updated_at, development_updated_by_user_id, development_updated_source,
           post_dev_updated_at, post_dev_updated_by_user_id, post_dev_updated_source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-               $19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING id`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+               $21,$22,$23,$24,$25,$26,$27,$28,$29) RETURNING id`,
       [
         groupId,
         body.title,
@@ -762,6 +786,8 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
         body.optimization_end_date ?? null,
         body.excluded_from_capacity ?? false,
         body.dev_estimate_sourced_by_dev ?? false,
+        body.dates_locked ?? false,
+        body.hidden_from_roadmap ?? false,
         req.user!.id,
         phaseStamps.discovery.at,
         phaseStamps.discovery.by,

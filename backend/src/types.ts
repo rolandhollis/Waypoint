@@ -293,6 +293,27 @@ export type ProjectRow = {
    */
   excluded_from_capacity: boolean;
   /**
+   * Persistent "no auto-scheduler may change these dates" flag
+   * (migration 034). When TRUE, the Auto-schedule modal pre-checks
+   * this project as locked and does not let the user unlock it from
+   * the picker — the toggle has to happen in the ProjectDetailPanel
+   * header. Manual date edits (detail panel / EZEstimates) are
+   * unaffected; only automated date shifting is blocked. Default
+   * FALSE so unmigrated behavior is preserved.
+   */
+  dates_locked: boolean;
+  /**
+   * Per-project "hide from the Roadmap view" flag (migration 035).
+   * When TRUE the project is unconditionally excluded from the
+   * Roadmap surface — no filter, timeframe, group-by, sort order,
+   * or PDF export will bring it back. Every other view (Board,
+   * Status Report, EZEstimates, admin lists) still shows the item;
+   * only the Roadmap narrows on it. Default FALSE so every existing
+   * row keeps rendering exactly as it did pre-migration; toggled
+   * from the checkbox in the ProjectDetailPanel.
+   */
+  hidden_from_roadmap: boolean;
+  /**
    * PM flag: has the dev-phase estimate been vetted by an engineer?
    * Default false — old rows carry no confirmation, new rows are
    * created as unconfirmed until a PM flips the checkbox on the

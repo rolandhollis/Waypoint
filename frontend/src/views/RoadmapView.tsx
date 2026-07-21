@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { FileDown, Wand2 } from "lucide-react";
-import { useCanWrite, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { FileDown, Wand2, X } from "lucide-react";
+import { useCanWrite, useKpis, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { applyFilters } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { indexById } from "../lib/hierarchy";
 import { isProjectInRoadmapViewport, type Zoom } from "../lib/roadmapViewport";
+import { computeHeadlineGroups } from "../lib/roadmapHeadline";
 import { FilterBar } from "../components/FilterBar";
 import { GanttTimeline } from "../components/GanttTimeline";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
 import { RecentChanges } from "../components/RecentChanges";
+import { RoadmapHeadline } from "../components/RoadmapHeadline";
+import { RoadmapOverview } from "../components/RoadmapOverview";
 import { UnscheduledList } from "../components/UnscheduledList";
 import { PhaseLegend } from "../components/PhaseLegend";
 import { ColorLegend } from "../components/ColorLegend";
@@ -21,6 +24,11 @@ export function RoadmapView() {
   const lanes = useSwimLanes();
   const teams = useTeams();
   const users = useUsers();
+  // KPI catalog is fetched here (not inside RoadmapHeadline) so the
+  // AI summary can resolve KPI ids to display names without spinning
+  // up its own query. The Gantt itself already uses the same query;
+  // React Query dedupes so this is a zero-cost read.
+  const kpis = useKpis();
   // Recent-changes feed for the section below the Gantt. Fetched at
   // the view level (not inside <RecentChanges />) so the query stays
   // active across section-collapse and doesn't restart on toggle;
@@ -31,6 +39,34 @@ export function RoadmapView() {
   const filters = useViewStore((s) => s.roadmap.filters);
   const colorBy = useViewStore((s) => s.roadmap.colorBy);
   const groupBy = useViewStore((s) => s.roadmap.groupBy);
+  // Roadmap Sort-by state. `roadmapSort` is a two-value toggle
+  // ("startDate" default, or "priority"), and
+  // `roadmapOverrideByGroup` is the per-group manual ordering the
+  // user builds up by drag-reordering while in startDate mode. Both
+  // live in the persisted zustand store so a reload lands the PM
+  // back on the same view they left; see `viewState.ts` for the
+  // migration + reset semantics (any sort-mode toggle wipes every
+  // per-group override).
+  const roadmapSort = useViewStore((s) => s.roadmapSort);
+  const setRoadmapSort = useViewStore((s) => s.setRoadmapSort);
+  const roadmapOverrideByGroup = useViewStore((s) => s.roadmapOverrideByGroup);
+  const setRoadmapOverride = useViewStore((s) => s.setRoadmapOverride);
+  const clearRoadmapOverrides = useViewStore((s) => s.clearRoadmapOverrides);
+  const hasAnyOverride = useMemo(
+    () => Object.values(roadmapOverrideByGroup).some((ids) => ids && ids.length > 0),
+    [roadmapOverrideByGroup],
+  );
+  // Transient toast surfaced when a Priority-mode drag tries to
+  // cross swim lanes. Owned by RoadmapView (not GanttTimeline) so
+  // the message renders outside the Gantt's scroll container and
+  // survives the SVG re-render that follows the snap-back. Auto-
+  // clears after ~6s or on next explicit dismissal.
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!toastMessage) return;
+    const t = window.setTimeout(() => setToastMessage(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [toastMessage]);
   // Roadmap Gantt's left label column width is user-controlled via
   // a divider between the label and chart columns. The persisted
   // value lives in the zustand store (survives reloads); we mirror
@@ -87,6 +123,7 @@ export function RoadmapView() {
   const visibleProjects = useMemo(() => {
     const laneById = new Map((lanes.data ?? []).map((l) => [l.id, l] as const));
     return (projects.data ?? []).filter((p) => {
+      if (p.hidden_from_roadmap) return false;
       if (!p.swim_lane_id) return true;
       const lane = laneById.get(p.swim_lane_id);
       if (!lane) return true;
@@ -181,6 +218,23 @@ export function RoadmapView() {
   }
   const scheduledInViewport = scheduled.filter((p) => finalIds.has(p.id));
 
+  // Pre-compute the AI Roadmap Headline inputs from the SAME
+  // scheduled-in-viewport set the Gantt renders. Only scheduled
+  // (Parking Lot / Archive / Unscheduled already dropped by the
+  // upstream visibleProjects sweep + the computePhases filter) so
+  // the summary lines up with what the user is actually looking
+  // at. Kept as plain constants (not useMemo) because we sit after
+  // the loading early-return above — the hook-order rule elsewhere
+  // in this component forbids adding new hooks past that point.
+  const headlineMaps = {
+    usersById: new Map((users.data ?? []).map((u) => [u.id, u] as const)),
+    teamsById: new Map((teams.data ?? []).map((t) => [t.id, t] as const)),
+    kpisById: new Map((kpis.data ?? []).map((k) => [k.id, k] as const)),
+    lanesById: new Map((lanes.data ?? []).map((l) => [l.id, l] as const)),
+  };
+  const headlineGroups = computeHeadlineGroups(scheduledInViewport, groupBy, headlineMaps);
+  const headlineVisibleIds = scheduledInViewport.map((p) => p.id);
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <FilterBar view="roadmap" showGrouping showColorBy />
@@ -189,38 +243,123 @@ export function RoadmapView() {
           well-defined subtree to snapshot; the wrapper itself adds
           no styling to keep the DOM shape identical to before. */}
       <div ref={exportRef} className="flex min-h-0 flex-1 flex-col">
+        {/* Optional PM-authored overview text for the current
+            (group, filter fingerprint) slice. Sits above the
+            timeframe / sort controls so it reads like an intro
+            paragraph on the page. Empty state (no row saved yet)
+            renders a subtle ghost affordance for editors and
+            renders nothing at all for viewers — see
+            RoadmapOverview.tsx for the state matrix. */}
+        <RoadmapOverview
+          filters={filters}
+          groupBy={groupBy}
+          zoom={zoom}
+          visibleProjectIds={headlineVisibleIds}
+        />
         <div className="flex flex-col gap-2 border-b border-wp-stone bg-white/60 px-4 py-2">
-          {/* Row 1: timeframe + action(s). Kept compact so the two
-              legends below get their own breathing room. */}
+          {/* Row 1: timeframe + sort-by + action(s). Kept compact so
+              the two legends below get their own breathing room. */}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-wp-slate">Timeframe</span>
-              <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
-                <button
-                  className={`px-2 py-1 ${zoom === "3mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
-                  onClick={() => setZoom("3mo")}
-                >
-                  3 months
-                </button>
-                <button
-                  className={`border-l border-wp-stone px-2 py-1 ${zoom === "6mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
-                  onClick={() => setZoom("6mo")}
-                >
-                  6 months
-                </button>
-                <button
-                  className={`border-l border-wp-stone px-2 py-1 ${zoom === "1yr" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
-                  onClick={() => setZoom("1yr")}
-                >
-                  1 year
-                </button>
-                <button
-                  className={`border-l border-wp-stone px-2 py-1 ${zoom === "all" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
-                  onClick={() => setZoom("all")}
-                  title="Fit the entire scheduled roadmap on one screen"
-                >
-                  All
-                </button>
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-wp-slate">Timeframe</span>
+                <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
+                  <button
+                    className={`px-2 py-1 ${zoom === "3mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                    onClick={() => setZoom("3mo")}
+                  >
+                    3 months
+                  </button>
+                  <button
+                    className={`border-l border-wp-stone px-2 py-1 ${zoom === "6mo" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                    onClick={() => setZoom("6mo")}
+                  >
+                    6 months
+                  </button>
+                  <button
+                    className={`border-l border-wp-stone px-2 py-1 ${zoom === "1yr" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                    onClick={() => setZoom("1yr")}
+                  >
+                    1 year
+                  </button>
+                  <button
+                    className={`border-l border-wp-stone px-2 py-1 ${zoom === "all" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                    onClick={() => setZoom("all")}
+                    title="Fit the entire scheduled roadmap on one screen"
+                  >
+                    All
+                  </button>
+                </div>
+              </div>
+              {/* Sort-by segmented control. "Start date" is the
+                  historical chronological order (byStart on the
+                  earliest phase). "Priority" reuses the same
+                  swim_lane.order × projects.position rank the
+                  Board view drives so the two surfaces stay in
+                  lockstep. Clicking the currently-active option
+                  clears every per-group override — that's the
+                  reset affordance for the Custom-order chip.
+                  Switching between options ALSO clears overrides
+                  (see viewState.setRoadmapSort) so a stale manual
+                  order from one mode never lingers into the
+                  other. */}
+              <div className="flex items-center gap-2">
+                <span className="text-wp-slate">Sort by</span>
+                <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
+                  <button
+                    className={`px-2 py-1 ${roadmapSort === "startDate" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                    onClick={() => setRoadmapSort("startDate")}
+                    title={
+                      roadmapSort === "startDate" && hasAnyOverride
+                        ? "Currently overridden by a manual order — click to reset to chronological."
+                        : "Sort items chronologically by earliest phase start"
+                    }
+                  >
+                    Start date
+                    {/* Subtle dot chip when the natural
+                        chronological sort is overridden by a
+                        manual drag reorder. Gives at-a-glance
+                        feedback that Start-date mode is not
+                        currently in its canonical order. */}
+                    {roadmapSort === "startDate" && hasAnyOverride ? (
+                      <span
+                        className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-white/80 align-middle"
+                        aria-hidden
+                      />
+                    ) : null}
+                  </button>
+                  <button
+                    className={`border-l border-wp-stone px-2 py-1 ${roadmapSort === "priority" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                    onClick={() => setRoadmapSort("priority")}
+                    title="Sort by swim lane priority + per-lane rank (Board view order)"
+                  >
+                    Priority
+                  </button>
+                </div>
+                {/* Custom-order chip. Only visible in Start-date
+                    mode when at least one group has a manual
+                    override in effect; clicking the × dismisses
+                    every override in one call. Kept as a chip
+                    (not baked into the segmented button) so the
+                    reset action reads as a distinct affordance
+                    the user can commit to without accidentally
+                    toggling sort modes. */}
+                {roadmapSort === "startDate" && hasAnyOverride ? (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800"
+                    title="Roadmap is showing your manual order — chronological sort is temporarily overridden."
+                  >
+                    Custom order
+                    <button
+                      type="button"
+                      onClick={clearRoadmapOverrides}
+                      aria-label="Reset roadmap order to chronological"
+                      className="rounded-full p-0.5 text-amber-700 hover:bg-amber-100 hover:text-amber-900"
+                    >
+                      <X size={10} />
+                    </button>
+                  </span>
+                ) : null}
               </div>
             </div>
             {/* Actions cluster — Export PDF is always available;
@@ -265,11 +404,21 @@ export function RoadmapView() {
           <PhaseLegend />
         </div>
 
-        {/* Interactive rendering scrolls this pane; PDF mode drops
-            the overflow clip so the exporter captures the full
-            chart width + all recent/unscheduled rows without
-            html-to-image's foreignObject clone silently cropping
-            the SVG's tail to the visible viewport. */}
+        {/* Two-scroll layout in interactive mode:
+              - This pane's `overflow-auto` is the OUTER scroll —
+                it keeps the Recent Changes and Unscheduled sections
+                reachable when the Gantt bounds its own height.
+              - The Gantt itself carries a `max-h-[calc(100vh-…)]
+                overflow-auto` on its own card so its sticky date
+                header pins to the Gantt's inner top edge (not the
+                page's top). Wheel events over the Gantt scroll its
+                inner region first and only bubble to this outer
+                pane once the Gantt's own scroll bottoms out — the
+                standard nested-scroll UX browsers already give us.
+            PDF mode drops the overflow clip so the exporter captures
+            the full chart width + all recent/unscheduled rows without
+            html-to-image's foreignObject clone silently cropping the
+            SVG's tail to the visible viewport. */}
         <div className={pdfMode ? "flex-1" : "flex-1 overflow-auto"}>
           {scheduledInViewport.length ? (
             <GanttTimeline
@@ -285,6 +434,14 @@ export function RoadmapView() {
               labelColumnPx={labelColumnPx}
               onLabelColumnPxChange={setLabelColumnPx}
               onLabelColumnPxCommit={persistLabelColumnPx}
+              sortMode={roadmapSort}
+              overrideByGroup={roadmapOverrideByGroup}
+              onReorderOverride={setRoadmapOverride}
+              onReorderCrossLaneRejected={() =>
+                setToastMessage(
+                  "Priority order is per swim lane. Move this item to a different lane on the Board view to change lanes.",
+                )
+              }
             />
           ) : (
             // Two distinct empty states: nothing scheduled at all vs.
@@ -324,6 +481,21 @@ export function RoadmapView() {
             teams={teams.data ?? []}
             onOpen={setSelectedId}
           />
+
+          {/* AI Roadmap Headline sits at the very bottom of the
+              scroll — a "give me the summary" affordance after the
+              user has already scanned the Gantt, recent changes,
+              and unscheduled backlog. Cached client-side so
+              flipping between filters / timeframes doesn't waste
+              a token; the component owns its own collapse state,
+              cache lookup, and Regenerate flow. */}
+          <RoadmapHeadline
+            filters={filters}
+            groupBy={groupBy}
+            zoom={zoom}
+            visibleProjectIds={headlineVisibleIds}
+            groups={headlineGroups}
+          />
         </div>
       </div>
 
@@ -361,6 +533,34 @@ export function RoadmapView() {
           initialOwnerIds={filters.ownerIds}
           onClose={() => setHelperOpen(false)}
         />
+      ) : null}
+
+      {/* Cross-lane reorder rejection toast. Fixed to the bottom
+          center so it doesn't cover the FilterBar or the top row
+          of the Gantt; auto-dismisses after ~6s (see the effect
+          above) and offers a manual × to close early. Pointer
+          events on the toast body are enabled only on the close
+          button — the surrounding fixed wrapper stays inert so the
+          toast doesn't accidentally intercept a Gantt bar click
+          under it. */}
+      {toastMessage ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4"
+        >
+          <div className="pointer-events-auto flex max-w-md items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-lg">
+            <span className="mt-0.5 flex-1">{toastMessage}</span>
+            <button
+              type="button"
+              onClick={() => setToastMessage(null)}
+              aria-label="Dismiss notification"
+              className="shrink-0 rounded p-0.5 text-amber-700 hover:bg-amber-100 hover:text-amber-900"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        </div>
       ) : null}
     </div>
   );

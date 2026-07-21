@@ -316,6 +316,26 @@ export type Project = {
    */
   excluded_from_capacity: boolean;
   /**
+   * Persistent per-project auto-scheduler lock (migration 034).
+   * When true, the Auto-schedule modal pre-checks this project as
+   * locked-permanent and refuses to let the user unlock it from
+   * the picker; the toggle only lives on the padlock icon in the
+   * ProjectDetailPanel header. Manual date edits (detail panel,
+   * EZEstimates picker) are unaffected — this flag only gates the
+   * automated Auto-schedule flow.
+   */
+  dates_locked: boolean;
+  /**
+   * Per-project "hide from the Roadmap view" flag (migration 035).
+   * When true the project is unconditionally excluded from the
+   * Roadmap view — no filter, timeframe, group-by, sort order, or
+   * PDF export brings it back. Every other view (Board, Status
+   * Report, EZEstimates, admin lists) still shows the item. Toggled
+   * from the checkbox in the ProjectDetailPanel's Timelines &
+   * Estimates section.
+   */
+  hidden_from_roadmap: boolean;
+  /**
    * PM flag: has an engineer signed off on the dev-phase estimate?
    * Default false — new rows are provisional until dev confirms.
    * When false, the roadmap draws the dev bar segment with a
@@ -512,6 +532,75 @@ export type AiSuggestionFresh = {
 export type AiEstimatorHealth = {
   configured: boolean;
   model: string | null;
+};
+
+/**
+ * Per-project payload the client packages up for the AI Roadmap
+ * Headline request. Descriptions are truncated on the server side
+ * to bound token cost — this type carries whatever the client is
+ * willing to send.
+ */
+export type AiHeadlineProjectPayload = {
+  title: string;
+  description: string;
+  start: string | null;
+  end: string | null;
+  phase: string;
+  teamNames: string[];
+  ownerName: string | null;
+  kpiNames: string[];
+};
+
+/**
+ * One pre-grouped section of the roadmap the client asks Claude to
+ * summarize. `label` is the group heading (e.g. "Loyalty" for a
+ * team, "Discovery" for a swim lane). `projects` is the ordered
+ * list of items within it.
+ */
+export type AiHeadlineGroupPayload = {
+  label: string;
+  projects: AiHeadlineProjectPayload[];
+};
+
+/**
+ * Request body sent to POST /api/ai/roadmap-headline. The client
+ * pre-computes `fingerprint` from the current filter/timeframe/
+ * group state + visible project ids so the response can be cached
+ * on the browser without a second fingerprint round-trip.
+ */
+export type AiHeadlineRequestBody = {
+  fingerprint: string;
+  groupBy: "none" | "lane" | "team" | "owner" | "kpi" | "tag";
+  timeframeLabel: string;
+  groups: AiHeadlineGroupPayload[];
+};
+
+/**
+ * Response shape from POST /api/ai/roadmap-headline. `fingerprint`
+ * echoes the request so the client can cheaply confirm the reply
+ * matches the view state it was asked about. `headline` is
+ * multi-paragraph markdown (or plain-text with double-newline
+ * paragraph breaks); `## <group label>` headers separate sections.
+ * `model` + `generatedAt` back the popover-style footer the UI
+ * renders below the summary.
+ */
+export type AiHeadlineResponse = {
+  fingerprint: string;
+  headline: string;
+  model: string;
+  generatedAt: string;
+};
+
+/**
+ * Cached headline entry stored in zustand keyed by tenant. Every
+ * field is populated together — the entire object is written on
+ * success and cleared on regenerate.
+ */
+export type RoadmapHeadlineCacheEntry = {
+  fingerprint: string;
+  headline: string;
+  model: string;
+  generatedAt: string;
 };
 
 export type HealthFlag = "white" | "green" | "yellow" | "red";

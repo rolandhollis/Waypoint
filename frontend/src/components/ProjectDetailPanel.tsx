@@ -2,7 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Lock, LockOpen, X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
 import { AuditEventBody, auditActorLabel, timelineEntryToRenderEntry } from "../lib/auditRender";
@@ -195,6 +195,38 @@ export function ProjectDetailPanel({
       qc.invalidateQueries({ queryKey: ["projectHistory", id] });
       qc.invalidateQueries({ queryKey: ["pendingStatus"] });
       onClose();
+    },
+  });
+
+  /**
+   * Persistent per-project auto-scheduler lock toggle. Distinct from
+   * the manual Save mutation above because:
+   *   - It fires immediately (no draft staging) — the padlock is a
+   *     one-click affordance in the header, not a form field.
+   *   - It must NOT close the panel — flipping the lock is often a
+   *     precursor to further edits.
+   *   - It carries `_meta.source: 'user'` so the backend's per-phase
+   *     provenance stamper stays consistent (though `dates_locked`
+   *     isn't a phase field, `_meta` on unrelated PATCHes is
+   *     safely ignored by the stamper).
+   * The dedicated invalidate on `["project", id]` + `["projects"]`
+   * refreshes both the header state and every list-view that reads
+   * `dates_locked` (Roadmap Gantt padlock glyph, Auto-schedule
+   * picker).
+   */
+  const lockToggle = useMutation({
+    mutationFn: (nextLocked: boolean) =>
+      api<Project>(`/projects/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          dates_locked: nextLocked,
+          _meta: { source: "user" as const },
+        }),
+      }),
+    onSuccess: (updated) => {
+      qc.setQueryData(["project", id], updated);
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["projectHistory", id] });
     },
   });
 
@@ -437,6 +469,11 @@ export function ProjectDetailPanel({
                   <div className="mx-1 h-5 w-px bg-wp-stone" aria-hidden />
                 </>
               ) : null}
+              {/* The dates-lock toggle used to live here in the header,
+                  but was moved down beside the "Timelines and Estimates"
+                  section heading so the control sits with the fields it
+                  governs. See that section below for the interactive
+                  padlock and the viewer-read-only indicator. */}
               <button aria-label="Close" className="btn-ghost !p-1" onClick={onClose}>
                 <X size={18} />
               </button>
@@ -539,21 +576,61 @@ export function ProjectDetailPanel({
                   ) : null}
                 </div>
               </Field>
-              {/* Estimates ledger row — labels the three phase-date
-                  Fields below and hosts the ✨ Suggest popover on
-                  the right. The popover pulls a Claude suggestion
-                  for all three phases and, on Accept / Accept-all,
-                  dispatches an IMMEDIATE PATCH (Option B) with
-                  `_meta.source: 'claude'` — the same code path
-                  EZEstimates uses. Not merged into the panel's
-                  draft state; the query invalidation in `aiPatch`
-                  refreshes the pickers. Only rendered when the
-                  user has write access — viewer role sees no
-                  button but still gets the section header. */}
+              {/* Timelines & Estimates ledger row — labels the three
+                  phase-date fields below and hosts two controls:
+                    • the persistent auto-scheduler lock padlock
+                      (writers only; viewers see a read-only icon
+                      reflecting the current state) — this is the
+                      one authoritative UI for `dates_locked`,
+                      colocated with the dates it governs.
+                    • the ✨ Suggest popover, which pulls a Claude
+                      suggestion for all three phases and, on
+                      Accept / Accept-all, dispatches an IMMEDIATE
+                      PATCH (Option B) with `_meta.source: 'claude'`
+                      — the same code path EZEstimates uses. Not
+                      merged into the panel's draft state; the
+                      query invalidation in `aiPatch` refreshes
+                      the pickers. Only rendered when the user has
+                      write access. */}
               <div className="col-span-2 flex items-center justify-between border-b border-wp-stone/60 pb-1 pt-1">
-                <span className="text-xs font-semibold uppercase tracking-wide text-wp-slate">
-                  Estimates
-                </span>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-wp-slate">
+                    Timelines and Estimates
+                  </span>
+                  {canWrite ? (
+                    <button
+                      type="button"
+                      aria-label={merged.dates_locked ? "Unlock dates" : "Lock dates"}
+                      aria-pressed={merged.dates_locked}
+                      className={`inline-flex h-7 w-7 items-center justify-center rounded hover:bg-wp-stone/40 disabled:cursor-not-allowed disabled:opacity-40 ${
+                        merged.dates_locked ? "text-wp-red" : "text-wp-slate"
+                      }`}
+                      disabled={lockToggle.isPending}
+                      onClick={() => lockToggle.mutate(!merged.dates_locked)}
+                      title={
+                        merged.dates_locked
+                          ? "Dates are locked \u2014 click to unlock. The auto-scheduler will not change locked dates."
+                          : "Lock dates \u2014 prevent the auto-scheduler from changing them"
+                      }
+                    >
+                      {merged.dates_locked ? <Lock size={16} /> : <LockOpen size={16} />}
+                    </button>
+                  ) : (
+                    <span
+                      aria-label={merged.dates_locked ? "Dates locked" : "Dates unlocked"}
+                      className={`inline-flex h-7 w-7 items-center justify-center ${
+                        merged.dates_locked ? "text-wp-red" : "text-wp-slate/60"
+                      }`}
+                      title={
+                        merged.dates_locked
+                          ? "Dates are locked \u2014 the auto-scheduler will not change them."
+                          : "Dates are unlocked \u2014 the auto-scheduler may change them."
+                      }
+                    >
+                      {merged.dates_locked ? <Lock size={16} /> : <LockOpen size={16} />}
+                    </span>
+                  )}
+                </div>
                 {canWrite ? (
                   <AiSuggestPopover
                     project={project}
@@ -578,7 +655,7 @@ export function ProjectDetailPanel({
                   endValue={merged.target_date}
                   endMin={merged.start_date}
                   onEndChange={(v) => markPhaseDateChange("target_date", v)}
-                  disabled={!canWrite}
+                  disabled={!canWrite || merged.dates_locked}
                 />
               </Field>
               <Field
@@ -595,7 +672,7 @@ export function ProjectDetailPanel({
                   endValue={eff.devEnd}
                   endMin={eff.devStart}
                   onEndChange={(v) => markPhaseDateChange("dev_end_date", v)}
-                  disabled={!canWrite}
+                  disabled={!canWrite || merged.dates_locked}
                 />
                 <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-wp-ink">
                   <input
@@ -630,7 +707,7 @@ export function ProjectDetailPanel({
                   endValue={eff.optEnd}
                   endMin={eff.optStart}
                   onEndChange={(v) => markPhaseDateChange("optimization_end_date", v)}
-                  disabled={!canWrite}
+                  disabled={!canWrite || merged.dates_locked}
                 />
               </Field>
               <Field
@@ -651,6 +728,40 @@ export function ProjectDetailPanel({
                   />
                   <span>
                     Count this item against owner &amp; team capacity
+                  </span>
+                </label>
+              </Field>
+              {/* Per-project Roadmap visibility toggle (migration 035).
+                  Distinct from the Archive lane (which hides the item
+                  from every view) — this ONLY drops the project from
+                  the Roadmap surface (Gantt, Unscheduled list, Recent
+                  Changes, headline, PDF export). The Board, Status
+                  Report, EZEstimates, and admin lists still show it.
+                  Uses the shared draft / Save flow (not a one-shot
+                  mutation) so the toggle lands in the same PATCH as
+                  any other pending edits and appears once in the
+                  audit trail. */}
+              <Field
+                label="Roadmap visibility"
+                className="col-span-2"
+                hint="Hidden items never appear on the Roadmap view, even if they have valid dates."
+              >
+                <label className="flex cursor-pointer items-start gap-2 text-sm text-wp-ink">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4 accent-wp-red"
+                    disabled={!canWrite}
+                    checked={!!merged.hidden_from_roadmap}
+                    onChange={(e) => setDraft((d) => ({
+                      ...d,
+                      hidden_from_roadmap: e.target.checked,
+                    }))}
+                  />
+                  <span>
+                    Hide this item from the Roadmap view
+                    <span className="ml-1 text-xs text-wp-slate/80">
+                      (still visible on the Board, Status Report, and other views)
+                    </span>
                   </span>
                 </label>
               </Field>
@@ -770,6 +881,7 @@ export function ProjectDetailPanel({
               />
               <MutationErrorBanner mutation={patch} className="mb-2" />
               <MutationErrorBanner mutation={archive} className="mb-2" />
+              <MutationErrorBanner mutation={lockToggle} className="mb-2" />
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <button className="btn-ghost text-xs" onClick={onClose}>Cancel</button>

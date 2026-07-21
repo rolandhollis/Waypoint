@@ -8,6 +8,7 @@ import {
   Calendar,
   CheckCircle2,
   GripVertical,
+  Info,
   List,
   Lock,
   Unlock,
@@ -61,6 +62,37 @@ import { GanttTimeline } from "./GanttTimeline";
  */
 
 type Phase = "pick" | "review" | "applying" | "done";
+
+/**
+ * True iff a proposal's proposed phase dates differ, field-by-field,
+ * from its scheduler-time originals.
+ *
+ * We deliberately compare `proposedDates` vs `originalDates` directly
+ * rather than trusting the scheduler's `changed` flag (which today is
+ * simply `bestOffset !== 0`). The direct comparison is:
+ *   1. Insensitive to any future scheduler refactor that might tweak
+ *      the semantics of `bestOffset` or `changed` without updating the
+ *      review-screen summary in lockstep, and
+ *   2. The exact question the summary + Apply button are trying to
+ *      answer: "would applying this proposal change anything on disk?"
+ *
+ * Kept as a module-level helper so `runApply` (RoadmapHelper) and the
+ * summary/gate inside `ReviewPhase` share the same predicate — a prior
+ * incarnation had them looking at subtly different fields, which was
+ * exactly the class of bug this file has been bit by before.
+ */
+function proposalMovesDates(p: ItemProposal): boolean {
+  const a = p.originalDates;
+  const b = p.proposedDates;
+  return (
+    a.start_date !== b.start_date
+    || a.target_date !== b.target_date
+    || a.dev_start_date !== b.dev_start_date
+    || a.dev_end_date !== b.dev_end_date
+    || a.optimization_start_date !== b.optimization_start_date
+    || a.optimization_end_date !== b.optimization_end_date
+  );
+}
 
 export function RoadmapHelper({
   projects,
@@ -146,8 +178,8 @@ export function RoadmapHelper({
   const [locked, setLocked] = useState<Map<string, boolean>>(() => new Map());
 
   // Auto-check any filtered rows we haven't seen yet (default all
-  // ON, default all UNLOCKED). We do this lazily so users' explicit
-  // uncheck doesn't get re-checked when they tweak filters.
+  // ON). We do this lazily so users' explicit uncheck doesn't get
+  // re-checked when they tweak filters.
   const nextChecked = new Map(checked);
   let changed = false;
   for (const p of filtered) {
@@ -160,6 +192,27 @@ export function RoadmapHelper({
     // Deferred state update — safe because setState in render is
     // React's official pattern for "derive but persist".
     setChecked(nextChecked);
+  }
+
+  // Seed the per-run `locked` map from each project's persistent
+  // `dates_locked` flag. We look at the full ELIGIBLE set (not the
+  // filtered subset) so a persistently-locked item that's filtered
+  // out and back in still carries its lock. Only newly-seen ids
+  // pick up the persistent value; ids already in `locked` keep the
+  // user's explicit per-run pick so tweaks to the filter don't
+  // clobber their choices. The `SortablePickRow` renders
+  // persistently-locked items with a non-toggleable "Locked
+  // (permanent)" control so the user can't unlock them from here.
+  const nextLocked = new Map(locked);
+  let lockedChanged = false;
+  for (const p of eligible) {
+    if (!nextLocked.has(p.id) && p.dates_locked) {
+      nextLocked.set(p.id, true);
+      lockedChanged = true;
+    }
+  }
+  if (lockedChanged) {
+    setLocked(nextLocked);
   }
 
   // User-driven priority ranking. The order of ids in this array IS
@@ -247,7 +300,7 @@ export function RoadmapHelper({
 
   const runApply = async () => {
     if (!result) return;
-    const changes = result.proposals.filter((p) => p.changed);
+    const changes = result.proposals.filter(proposalMovesDates);
     setApplyProgress({ done: 0, total: changes.length });
     setApplyErrors([]);
     setPhase("applying");
@@ -509,6 +562,7 @@ function PickPhase(props: {
                       .join(", ")}
                     isChecked={checked.get(p.id) !== false}
                     isLocked={locked.get(p.id) === true}
+                    isPersistentLock={p.dates_locked === true}
                     onToggleChecked={(v) => {
                       const next = new Map(checked);
                       next.set(p.id, v);
@@ -552,12 +606,16 @@ function SortablePickRow(props: {
   teamNames: string;
   isChecked: boolean;
   isLocked: boolean;
+  /** True iff the project's persistent `dates_locked` flag is set.
+   *  Renders a distinct, non-toggleable "Locked (permanent)" chip;
+   *  unlocking is only possible from the ProjectDetailPanel. */
+  isPersistentLock: boolean;
   onToggleChecked: (v: boolean) => void;
   onToggleLocked: () => void;
 }) {
   const {
     project: p, rank, lane, owner, teamNames,
-    isChecked, isLocked, onToggleChecked, onToggleLocked,
+    isChecked, isLocked, isPersistentLock, onToggleChecked, onToggleLocked,
   } = props;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: p.id });
@@ -594,7 +652,24 @@ function SortablePickRow(props: {
         className="h-4 w-4 accent-wp-red"
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate font-medium text-wp-ink">{p.title}</div>
+        <div className="flex items-center gap-1.5 font-medium text-wp-ink">
+          {isPersistentLock ? (
+            // Small inline lock next to the title mirrors the padlock
+            // that appears in the Roadmap Gantt row (see GanttTimeline
+            // ~line 693) and the ProjectDetailPanel header — persistent
+            // `dates_locked` items are visually flagged the same way
+            // everywhere, so a PM scanning the Auto-schedule picker
+            // can spot them without reading the trailing chip.
+            <span
+              className="inline-flex shrink-0 items-center text-wp-red"
+              title="Dates are locked — the scheduler cannot change this item's dates"
+              aria-label="Dates locked"
+            >
+              <Lock size={14} />
+            </span>
+          ) : null}
+          <span className="truncate">{p.title}</span>
+        </div>
         <div className="mt-0.5 flex items-center gap-2 text-xs text-wp-slate">
           {lane ? <span>{lane.name}</span> : null}
           {owner ? <span>· {owner.name}</span> : null}
@@ -605,19 +680,36 @@ function SortablePickRow(props: {
           </span>
         </div>
       </div>
-      <button
-        className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition ${
-          isLocked
-            ? "border-wp-red bg-wp-red/10 text-wp-red"
-            : "border-wp-stone bg-white text-wp-slate hover:bg-wp-stone/40"
-        }`}
-        onClick={onToggleLocked}
-        disabled={!isChecked}
-        title={isLocked ? "Locked — dates won't change" : "Unlocked — algorithm may shift dates"}
-      >
-        {isLocked ? <Lock size={12} /> : <Unlock size={12} />}
-        {isLocked ? "Locked" : "Unlocked"}
-      </button>
+      {isPersistentLock ? (
+        // Persistent, project-level lock — not toggleable from this
+        // modal. Visually distinct (filled padlock + "permanent"
+        // label + info glyph) so the PM understands the lock lives
+        // on the project itself, not on this scheduler run. To
+        // unlock they'd open the ProjectDetailPanel and click the
+        // padlock in the header.
+        <span
+          className="inline-flex cursor-default items-center gap-1 rounded-md border border-wp-red bg-wp-red/10 px-2 py-1 text-xs font-medium text-wp-red"
+          title="Dates locked on this project. Auto-scheduler will not change them. Open the project detail panel to unlock."
+        >
+          <Lock size={12} />
+          Locked (permanent)
+          <Info size={11} className="opacity-70" aria-hidden />
+        </span>
+      ) : (
+        <button
+          className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition ${
+            isLocked
+              ? "border-wp-red bg-wp-red/10 text-wp-red"
+              : "border-wp-stone bg-white text-wp-slate hover:bg-wp-stone/40"
+          }`}
+          onClick={onToggleLocked}
+          disabled={!isChecked}
+          title={isLocked ? "Locked — dates won't change" : "Unlocked — algorithm may shift dates"}
+        >
+          {isLocked ? <Lock size={12} /> : <Unlock size={12} />}
+          {isLocked ? "Locked" : "Unlocked"}
+        </button>
+      )}
     </li>
   );
 }
@@ -708,7 +800,12 @@ function ReviewPhase({
   const [tab, setTab] = useState<ReviewTab>("timeline");
   const [zoom, setZoom] = useState<"3mo" | "6mo" | "1yr">("6mo");
 
-  const changes = result.proposals.filter((p) => p.changed);
+  // Summary count + Accept-button gate: compare proposed dates to
+  // originals field-by-field rather than trusting `p.changed`. The
+  // per-row display (`ProposalRow` below) intentionally continues to
+  // use `p.changed` so its "already optimal" / "+N day" labeling stays
+  // in lockstep with the scheduler's offset semantics.
+  const changes = result.proposals.filter(proposalMovesDates);
   const warnings = result.proposals.filter(
     (p) =>
       p.deadlineViolations.length ||
@@ -848,6 +945,22 @@ function ReviewPhase({
                   onOpen={() => { /* preview: clicks disabled */ }}
                   readOnly
                   contextProjects={previewContext}
+                  // Opt out of the bounded / sticky-header layout —
+                  // the modal body already owns vertical scroll and
+                  // the chart's own overflow-x-auto is the only
+                  // horizontal scroll we want. See the comment above
+                  // the wrapper: nested Gantt-internal scroll used
+                  // to hide rows behind the modal's outer scrollbar.
+                  stickyHeader={false}
+                  // Keep the PM's drag-to-rank order visible on the
+                  // chart. `previewBatch` is already built in
+                  // result.proposals order (== user rank), but
+                  // GanttTimeline's default is to sort by start_date
+                  // which would slide a high-priority item down the
+                  // list if capacity/dependency constraints pushed
+                  // its scheduled start later than lower-ranked
+                  // items. See preserveInputOrder in GanttTimeline.
+                  preserveInputOrder
                 />
               </div>
             </>
@@ -858,8 +971,13 @@ function ReviewPhase({
           </div>
         ) : (
           <ul className="divide-y divide-wp-stone rounded-md border border-wp-stone">
-            {result.proposals.map((prop) => (
-              <ProposalRow key={prop.projectId} prop={prop} />
+            {result.proposals.map((prop, i) => (
+              <ProposalRow
+                key={prop.projectId}
+                prop={prop}
+                rank={i + 1}
+                datesLocked={projectsById.get(prop.projectId)?.dates_locked === true}
+              />
             ))}
           </ul>
         )}
@@ -884,7 +1002,24 @@ function ReviewPhase({
   );
 }
 
-function ProposalRow({ prop }: { prop: ItemProposal }) {
+function ProposalRow({
+  prop,
+  rank,
+  datesLocked,
+}: {
+  prop: ItemProposal;
+  rank: number;
+  /** True iff the underlying project has its persistent `dates_locked`
+   *  flag set. Distinct from `prop.locked`, which is the merged
+   *  per-run lock the scheduler saw (and which is seeded from
+   *  `dates_locked` in the Pick phase, so persistent-lock items always
+   *  have `prop.locked === true` too). We keep the two icons visually
+   *  distinct — red padlock for persistent, slate padlock for
+   *  per-run-only — so the PM can tell at a glance whether unlocking
+   *  is a one-click Pick-phase toggle or requires opening the project
+   *  detail panel. */
+  datesLocked: boolean;
+}) {
   const totalWarnings =
     prop.deadlineViolations.length +
     prop.dependencyViolations.length +
@@ -899,8 +1034,26 @@ function ProposalRow({ prop }: { prop: ItemProposal }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            {prop.locked ? (
-              <Lock size={12} className="text-wp-slate" aria-label="Locked" />
+            <span
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-wp-stone/60 text-[11px] font-semibold text-wp-slate"
+              title="Priority rank"
+            >
+              {rank}
+            </span>
+            {datesLocked ? (
+              <span
+                className="inline-flex shrink-0 items-center text-wp-red"
+                title="Dates are locked — the scheduler cannot change this item's dates"
+                aria-label="Dates locked"
+              >
+                <Lock size={14} />
+              </span>
+            ) : prop.locked ? (
+              <Lock
+                size={12}
+                className="text-wp-slate"
+                aria-label="Locked for this run"
+              />
             ) : null}
             <span className="truncate font-medium text-wp-ink">{prop.title}</span>
             {totalWarnings > 0 ? (

@@ -296,6 +296,8 @@ export const FIELD_LABELS: Record<string, string> = {
   swim_lane_id: "swim lane",
   excluded_from_capacity: "capacity opt-out",
   dev_estimate_sourced_by_dev: "dev estimate confirmed",
+  dates_locked: "dates locked",
+  hidden_from_roadmap: "hidden from roadmap",
 };
 
 function isBlank(v: unknown): boolean {

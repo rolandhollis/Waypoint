@@ -162,6 +162,13 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
       actual_completion_date: null,
       excluded_from_capacity: !countsForCapacity,
       dev_estimate_sourced_by_dev: devEstimateConfirmed,
+      dates_locked: false,
+      // The create dialog deliberately doesn't expose the
+      // "hide from Roadmap" checkbox (per the feature spec —
+      // toggling lives on the ProjectDetailPanel only), so every
+      // new item starts visible. The field is threaded onto the
+      // preview object so the shared Project type stays satisfied.
+      hidden_from_roadmap: false,
       // No provenance stamped in the preview object — this row
       // never lands in the DB (it's fed to the capacity sweep only).
       // Real inserts get their `<phase>_updated_*` columns filled by

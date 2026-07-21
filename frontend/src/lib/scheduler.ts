@@ -43,10 +43,23 @@ import type { PhaseDateKey, Project, SwimLane, Team, User } from "./types";
  * algorithm can't satisfy an impossible constraint, so we give up
  * gracefully and let the user see the resulting warnings).
  *
+ * EARLIEST-FIRST GREEDY PACKING: an unlocked item's CURRENT dates
+ * are NOT treated as a preference. The scheduler ignores them and
+ * asks: given TODAY, this item's dependency floor, and the
+ * capacity map (locked items + non-batch items + already-placed
+ * higher-ranked items), what is the earliest offset at which the
+ * item can sit without breaking any constraint? Highest-ranked
+ * items get first pick of the earliest slots; each subsequent
+ * item is placed after them. This is why a PM can drag an item to
+ * rank #1 and watch it snap forward to today (or its dep floor)
+ * even if its current `start_date` is many months out.
+ *
  * CONSTRAINT HANDLING per unlocked item:
- *   1. Hard: dep upstream ends. Algorithm always respects these —
- *      the earliest valid offset is the max of dep-derived lower
- *      bounds and today.
+ *   1. Hard: dep upstream ends + no scheduling before today. The
+ *      earliest valid offset is `max(today - start_date, dep
+ *      lower bound)`. This can be NEGATIVE — an item with a
+ *      future current start_date will typically shift to a
+ *      negative offset so it lands at today.
  *   2. Soft: hard deadlines. Algorithm prefers offsets that
  *      satisfy deadlines but falls back to the earliest offset
  *      if none in the search window does.
@@ -54,9 +67,11 @@ import type { PhaseDateKey, Project, SwimLane, Team, User } from "./types";
  *      first, warned if impossible.
  *
  * SEARCH: linear scan of offsets, day by day, starting at the
- * dep-derived floor and going forward up to SEARCH_WINDOW_DAYS
- * (365). First offset with zero soft violations wins; else the
- * earliest offset with the fewest violations wins.
+ * dep+today floor and going forward up to SEARCH_WINDOW_DAYS.
+ * First offset with zero soft violations wins; else the earliest
+ * offset with the fewest violations wins. If the whole window is
+ * exhausted without a clean slot the least-bad offset is used and
+ * the residual violations surface as UI warnings.
  */
 
 export type SchedulerInputItem = {
@@ -102,8 +117,15 @@ export type ItemProposal = {
   projectId: string;
   title: string;
   locked: boolean;
-  /** Offset applied to every phase date, in days. Zero for locked
-   *  items and for unlocked items that were already optimal. */
+  /** Offset applied to every phase date, in days. Positive = shifted
+   *  later, negative = pulled earlier. Negative offsets are the
+   *  common case for high-rank items whose current dates are
+   *  far-future — the scheduler ignores their current dates and
+   *  drops them at today (or their dep floor), which is typically
+   *  well before their old start_date. Zero for locked items and
+   *  for unlocked items whose earliest valid slot happens to match
+   *  their current dates exactly. See `changed` for the canonical
+   *  "did anything move?" flag. */
   offsetDays: number;
   originalDates: PhaseDates;
   proposedDates: PhaseDates;
@@ -189,6 +211,28 @@ function shiftDates(d: PhaseDates, days: number): PhaseDates {
     optimization_start_date: shift(d.optimization_start_date),
     optimization_end_date: shift(d.optimization_end_date),
   };
+}
+
+/**
+ * True iff any of the six phase-date fields differ between the two
+ * PhaseDates. This is the "would applying the proposal actually
+ * change something on disk?" predicate. Kept as a module helper so
+ * the scheduler's `changed` flag and the UI-side `proposalMovesDates`
+ * (RoadmapHelper.tsx) can't drift out of sync — an earlier version
+ * of the scheduler set `changed = bestOffset !== 0`, which was
+ * equivalent for the unit-shift semantics but coupled the summary
+ * gate to an implementation detail. Comparing dates directly makes
+ * the flag survive any future re-jiggering of offset semantics.
+ */
+function anyPhaseDateDiffers(a: PhaseDates, b: PhaseDates): boolean {
+  return (
+    a.start_date !== b.start_date
+    || a.target_date !== b.target_date
+    || a.dev_start_date !== b.dev_start_date
+    || a.dev_end_date !== b.dev_end_date
+    || a.optimization_start_date !== b.optimization_start_date
+    || a.optimization_end_date !== b.optimization_end_date
+  );
 }
 
 /**
@@ -425,7 +469,17 @@ export function scheduleRoadmap(input: SchedulerInput): SchedulerResult {
     // The "phase start" here is what `laneStartOn` returns — NOT
     // the phase_date_key field directly (which might name the phase
     // END for lanes like "In Dev" bound to dev_end_date).
-    let depFloorOffset = 0;
+    //
+    // NOTE the initial `-Infinity`: with no deps we want NO
+    // dep-derived floor, so `Math.max(startFloorOffset, depFloorOffset)`
+    // below reduces to `startFloorOffset`. The previous code
+    // initialized this to 0 which silently clamped negative
+    // startFloorOffsets to 0 — meaning an item with a future
+    // start_date could never shift EARLIER than its current dates,
+    // even when the PM had ranked it #1 and today was wide open.
+    // That was the "auto-scheduler leaves highest-rank items far
+    // future" bug this file exists to prevent.
+    let depFloorOffset = Number.NEGATIVE_INFINITY;
     for (const dep of p.dependencies ?? []) {
       const thisLane = lanesById.get(dep.project_swim_lane_id) ?? null;
       const otherLane = lanesById.get(dep.depends_on_swim_lane_id) ?? null;
@@ -447,15 +501,19 @@ export function scheduleRoadmap(input: SchedulerInput): SchedulerResult {
       if (needed > depFloorOffset) depFloorOffset = needed;
     }
 
-    // Enforce today floor on start_date.
+    // Earliest-possible-offset floor: this is the offset that
+    // would move start_date to TODAY. If the current start_date
+    // is in the future this is negative (item wants to move
+    // EARLIER); if it's already in the past this is positive
+    // (item can only be delayed further — we never rewrite
+    // history). Combined with depFloorOffset (which may add a
+    // stricter lower bound for items with unfinished upstreams),
+    // this defines the earliest slot the scanner is allowed to
+    // try. It intentionally does NOT depend on the item's
+    // current dates as a preference — those are the very
+    // "current dates" the algorithm is asked to ignore.
     const startFloorOffset = diffDaysIso(todayStr, original.start_date!);
-    // Also allow going backward if deps + today permit (algorithm
-    // may pull an item earlier than its current date to fit better
-    // ahead of higher-priority items). Overall lower bound:
     let floorOffset = Math.max(startFloorOffset, depFloorOffset);
-    // If the item's current start_date is in the past AND deps
-    // don't push us forward, we still can't schedule before today.
-    // startFloorOffset handles that.
 
     const evaluate = (offsetDays: number): {
       deadlineHits: number;
@@ -633,7 +691,11 @@ export function scheduleRoadmap(input: SchedulerInput): SchedulerResult {
       offsetDays: bestOffset,
       originalDates: original,
       proposedDates,
-      changed: bestOffset !== 0,
+      // Compare dates directly rather than trusting `bestOffset !==
+      // 0`. Under unit-shift they're equivalent, but the direct
+      // comparison keeps the flag honest if the offset semantic
+      // ever changes (e.g. a future per-phase shift).
+      changed: anyPhaseDateDiffers(original, proposedDates),
       deadlineViolations,
       dependencyViolations,
       capacityWarnings,

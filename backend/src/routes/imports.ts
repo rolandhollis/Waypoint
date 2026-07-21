@@ -56,6 +56,9 @@ const COLUMN_ALIASES: Record<string, string> = {
   opt_start: "optimization_start_date",
   optimization_end_date: "optimization_end_date",
   opt_end: "optimization_end_date",
+  hidden_from_roadmap: "hidden_from_roadmap",
+  hide_from_roadmap: "hidden_from_roadmap",
+  hidden: "hidden_from_roadmap",
 };
 
 /** Fields whose value is a comma-separated list at CSV time. */
@@ -88,6 +91,16 @@ export type ResolvedRow = {
   dev_end_date: string | null;
   optimization_start_date: string | null;
   optimization_end_date: string | null;
+  /**
+   * Optional per-project "hide from Roadmap" flag (migration 035).
+   * Defaults to FALSE when the column is absent or blank — a CSV
+   * without this column keeps every imported row visible on the
+   * Roadmap, which matches the pre-flag behavior. Accepted spellings
+   * are the usual boolean-ish set (true/yes/y/1 vs false/no/n/0);
+   * anything else surfaces as a row error rather than silently
+   * defaulting to false.
+   */
+  hidden_from_roadmap: boolean;
 };
 
 type PreviewRow = {
@@ -200,6 +213,7 @@ const commitSchema = z.object({
         dev_end_date: z.string().nullable().optional(),
         optimization_start_date: z.string().nullable().optional(),
         optimization_end_date: z.string().nullable().optional(),
+        hidden_from_roadmap: z.boolean().optional(),
       }),
     )
     .min(1)
@@ -263,12 +277,13 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
              (group_id, title, description, swim_lane_id, position, owner_id, tags,
               type, parent_id,
               start_date, target_date, dev_start_date, dev_end_date,
-              optimization_start_date, optimization_end_date, created_by,
+              optimization_start_date, optimization_end_date,
+              hidden_from_roadmap, created_by,
               discovery_updated_at, discovery_updated_by_user_id, discovery_updated_source,
               development_updated_at, development_updated_by_user_id, development_updated_source,
               post_dev_updated_at, post_dev_updated_by_user_id, post_dev_updated_source)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'epic',NULL,$8,$9,$10,$11,$12,$13,$14,
-                   $15,$16,$17,$18,$19,$20,$21,$22,$23)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'epic',NULL,$8,$9,$10,$11,$12,$13,$14,$15,
+                   $16,$17,$18,$19,$20,$21,$22,$23,$24)
            RETURNING id`,
           [
             groupId,
@@ -284,6 +299,7 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
             row.dev_end_date ?? null,
             row.optimization_start_date ?? null,
             row.optimization_end_date ?? null,
+            row.hidden_from_roadmap ?? false,
             req.user!.id,
             discoveryPresent ? stampedAt : null,
             discoveryPresent ? userId : null,
@@ -412,6 +428,23 @@ function resolveRow(args: {
     errors.push(msg);
   }
 
+  // Optional "hide from Roadmap" flag. Absent / blank cell defaults
+  // to false (matches the DB column default), so a CSV without the
+  // column keeps every row visible on the Roadmap. Unrecognized
+  // literals surface as a row error rather than silently coercing.
+  let hidden_from_roadmap = false;
+  const rawHidden = raw.hidden_from_roadmap;
+  if (rawHidden !== undefined && rawHidden.trim() !== "") {
+    const parsed = parseBooleanish(rawHidden);
+    if (parsed === null) {
+      errors.push(
+        `invalid hidden_from_roadmap "${rawHidden}" — use true/false, yes/no, 1/0, or leave blank`,
+      );
+    } else {
+      hidden_from_roadmap = parsed;
+    }
+  }
+
   const resolved: ResolvedRow | null = errors.length
     ? null
     : {
@@ -426,9 +459,23 @@ function resolveRow(args: {
         dev_end_date: dates.dev_end_date ?? null,
         optimization_start_date: dates.optimization_start_date ?? null,
         optimization_end_date: dates.optimization_end_date ?? null,
+        hidden_from_roadmap,
       };
 
   return { line, raw, resolved, errors, warnings };
+}
+
+/**
+ * Interpret a CSV cell as an optional boolean. Returns `true`/`false`
+ * for recognized truthy / falsy spellings, or `null` for anything
+ * else so the caller can surface an explicit error rather than
+ * silently defaulting.
+ */
+function parseBooleanish(v: string): boolean | null {
+  const s = v.trim().toLowerCase();
+  if (s === "true" || s === "yes" || s === "y" || s === "1") return true;
+  if (s === "false" || s === "no" || s === "n" || s === "0") return false;
+  return null;
 }
 
 /** Split a CSV cell on commas, honouring simple quoted segments. */

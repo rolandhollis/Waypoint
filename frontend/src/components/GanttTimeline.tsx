@@ -4,8 +4,19 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { addDays, addMonths, differenceInCalendarDays, endOfMonth, format, min, max, parseISO, startOfMonth } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Layers } from "lucide-react";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ChevronDown, ChevronRight, GripVertical, Layers, Lock } from "lucide-react";
 import { api } from "../lib/api";
+import { reindexAfterMove } from "../lib/boardReorder";
 import { computeOverloads, overloadsForProject, projectSpan, type OverloadInterval } from "../lib/capacity";
 import { computeDeadlineStatuses, type DeadlineStatus } from "../lib/deadlines";
 import {
@@ -35,6 +46,7 @@ import {
   useViewStore,
   type ColorBy,
   type GroupBy,
+  type RoadmapSort,
 } from "../lib/viewState";
 import { ColumnResizer } from "./ColumnResizer";
 
@@ -106,6 +118,83 @@ type Props = {
    * previously-saved value.
    */
   onLabelColumnPxCommit?: (px: number) => void;
+  /**
+   * When false (or when `pdfMode` is on), the chart renders as a
+   * single monolithic SVG with no bounded scroll and no `sticky
+   * top-0` on the date header — matching the pre-sticky layout.
+   * The RoadmapHelper's proposal preview sets this to false so the
+   * modal's own scrollbar continues to be the only one; a nested
+   * `overflow-auto` on the Gantt would compete with the modal's
+   * body scroll and hide rows behind the double-scrollbar UX the
+   * comment on that preview call site explicitly warns against.
+   *
+   * Defaults to true so the main Roadmap view (and anything else
+   * that mounts a full-featured Gantt) gets the pinned date band
+   * without opting in.
+   */
+  stickyHeader?: boolean;
+  /**
+   * When true, top-level rows are rendered in the caller-provided
+   * `projects` order instead of the default chronological
+   * (start_date-ascending) sort. Used by the auto-schedule
+   * proposal preview so that the user's drag-to-rank order in the
+   * modal remains visible on the timeline — otherwise an item the
+   * user ranked #2 can appear halfway down the chart just because
+   * capacity/dependency constraints pushed its start_date later
+   * than four unranked items placed before it. When omitted,
+   * behavior is unchanged (byStart sort, as callers like
+   * RoadmapView have relied on since day one).
+   *
+   * Only affects the top-level (root) row order — descendants
+   * shown when an epic is expanded still sort by start_date so
+   * expanded subtasks read left-to-right in time. That matches
+   * the "epic is the primary unit" mental model and the drag-
+   * to-rank UX ranks epics, not their children.
+   *
+   * Only respected when `groupBy === "none"`. Any other grouping
+   * imposes its own primary order (owner, swim lane, etc.) and
+   * ranking within a group is not part of the current UX.
+   */
+  preserveInputOrder?: boolean;
+  /**
+   * Roadmap-only sort mode. When set, the chart's top-level rows
+   * are ordered by:
+   *   - "startDate": earliest phase start ascending, honoring any
+   *     per-group override in `overrideByGroup` first.
+   *   - "priority": swim_lane.order → projects.position →
+   *     updated_at desc → id. Same composite the Board view drives.
+   *
+   * When undefined (or when `preserveInputOrder` is true), the
+   * chart falls back to its historical byStart behavior with no
+   * drag-reorder affordance — matching every non-Roadmap caller
+   * (auto-schedule preview, unit tests) that never opts in.
+   */
+  sortMode?: RoadmapSort;
+  /**
+   * Per-group user-authored order (only consulted when
+   * `sortMode === "startDate"`). Key = the group key GanttTimeline
+   * emits ("all" for ungrouped, group id or "__unassigned" bucket
+   * key when grouped). Value = ordered list of top-level project
+   * ids. Projects present in the group but absent from the list
+   * fall to the end in default chronological order.
+   */
+  overrideByGroup?: Record<string, string[]>;
+  /**
+   * Fired when the user drags-to-reorder while `sortMode ===
+   * "startDate"`. `orderedRootIds` is the group's new top-level
+   * order after the drop. Caller persists this into the Roadmap
+   * view-state store; GanttTimeline does not touch backend state
+   * on this path.
+   */
+  onReorderOverride?: (groupKey: string, orderedRootIds: string[]) => void;
+  /**
+   * Fired when the user tried to drop a row across swim lanes
+   * while `sortMode === "priority"`. The drag is snapped back
+   * (no backend write, no view-state change) and the caller is
+   * expected to surface a small toast — the Roadmap owns the
+   * toast slot so the message can render outside the SVG shell.
+   */
+  onReorderCrossLaneRejected?: () => void;
 };
 
 const ROW_HEIGHT = 34;
@@ -131,6 +220,12 @@ const HANDLE_HITBOX_PX = 8;
 // shape reads at a glance without a heavy nested container. Kept tight
 // so deep trees still fit in the label column.
 const DEPTH_INDENT_PX = 14;
+// Width of the label-column resize divider (matches Tailwind `w-1.5`
+// / 6px). Referenced when the "all" zoom needs to subtract chrome
+// from the scroll container's clientWidth to compute the true chart
+// area. Kept as a module-level constant so a future ColumnResizer
+// visual redesign only has to update it in one place.
+const LABEL_RESIZER_WIDTH_PX = 6;
 
 /** One rendered row in the tree — an epic or an expanded descendant. */
 type TreeRow = {
@@ -168,7 +263,27 @@ export function GanttTimeline(props: Props) {
     projects, lanes, teams, users, colorBy, groupBy, zoom, onOpen,
     readOnly, contextProjects, pdfMode,
     labelColumnPx, onLabelColumnPxChange, onLabelColumnPxCommit,
+    stickyHeader = true,
+    preserveInputOrder = false,
+    sortMode,
+    overrideByGroup,
+    onReorderOverride,
+    onReorderCrossLaneRejected,
   } = props;
+  // Row reorder is only wired up on the main Roadmap view: the
+  // auto-schedule proposal preview passes `preserveInputOrder=true`
+  // and no `sortMode`, so it keeps the exact byStart-free rendering
+  // path it always had (its own dnd-kit context in RoadmapHelper
+  // handles that modal's ranking UX). Callers that DO pass a
+  // sortMode opt in to both the ordering logic AND the drag
+  // affordance atomically — this flag gates both.
+  const rowReorderEnabled = !preserveInputOrder && sortMode !== undefined;
+  // Two rendering shells share the same paint code: a monolithic SVG
+  // (pdfMode OR when the caller has opted out of the sticky header)
+  // and the sticky-header split layout. Consolidating the branching
+  // through one flag keeps the JSX below tidy — pdfMode still gates
+  // paint-server / fill decisions inside Bar itself.
+  const useMonolithic = Boolean(pdfMode) || !stickyHeader;
   // Resolve the label column width. The resizer only participates
   // when the parent has wired all three of `labelColumnPx` +
   // `onLabelColumnPxChange` + `onLabelColumnPxCommit`, so a caller
@@ -203,12 +318,16 @@ export function GanttTimeline(props: Props) {
   // timeframe" widening and anchors purely on project dates.
   const timeframeMonths: number | null = zoom === "all" ? null : TIMEFRAME_MONTHS[zoom];
 
-  // Scroll container ref is bound below on the chart div. We
-  // measure it here (via a ResizeObserver so the "all" zoom stays
-  // responsive when the sidebar collapses / window resizes) so the
-  // dayPx below can react to viewport-width changes. `null` until
-  // the first layout effect fires — the fallback dayPx below covers
-  // that window.
+  // Horizontal-scroll container ref. In the sticky-header layout
+  // this points at the OUTER card (whose overflow-auto scrolls both
+  // axes), and its clientWidth spans the whole Gantt (label +
+  // resizer + chart). In the monolithic layout it points at the
+  // inner CHART COLUMN — matching the pre-sticky behavior the
+  // auto-schedule preview relies on — so its clientWidth already
+  // represents just the chart area. `dayPx` reads the two cases
+  // differently below. The `useMonolithic` dep keeps the observer
+  // pointed at whichever element the current layout actually
+  // mounts (pdfMode toggles swap the whole subtree).
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
   useLayoutEffect(() => {
@@ -225,7 +344,7 @@ export function GanttTimeline(props: Props) {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [useMonolithic]);
 
   // For non-"all" zooms, dayPx is static and the range widens by an
   // inch of past chart. For "all" we compute range first without
@@ -242,12 +361,27 @@ export function GanttTimeline(props: Props) {
     if (containerWidth == null || containerWidth <= 0) {
       return ALL_ZOOM_FALLBACK_DAY_PX;
     }
-    // clientWidth / spanDays gives "everything fits" density.
-    // Clamp so bars never go sub-pixel (unreadable) or absurdly
-    // wide (single item stretched across a laptop screen).
-    const raw = containerWidth / totalDays;
+    // The sticky layout observes the OUTER card (whole Gantt width),
+    // so subtract the label column + resizer to get the true chart
+    // area — otherwise "all" zoom picks a density based on the full
+    // card width and produces a chart that horizontally scrolls off
+    // the right edge. The monolithic layout observes the CHART
+    // COLUMN directly, so containerWidth is already the chart area
+    // and no subtraction is needed. (chartAreaWidth / spanDays gives
+    // "everything fits" density.) Clamp so bars never go sub-pixel
+    // (unreadable) or absurdly wide (single item stretched across
+    // a laptop screen).
+    const chartAreaWidth = useMonolithic
+      ? containerWidth
+      : Math.max(
+        0,
+        containerWidth
+          - resolvedLabelColumnPx
+          - (canResizeLabelColumn ? LABEL_RESIZER_WIDTH_PX : 0),
+      );
+    const raw = chartAreaWidth / totalDays;
     return Math.max(ALL_ZOOM_MIN_DAY_PX, Math.min(ALL_ZOOM_MAX_DAY_PX, raw));
-  }, [zoom, containerWidth, totalDays]);
+  }, [zoom, containerWidth, totalDays, resolvedLabelColumnPx, canResizeLabelColumn, useMonolithic]);
   const chartWidth = totalDays * dayPx;
 
   const months = useMemo(() => {
@@ -284,19 +418,32 @@ export function GanttTimeline(props: Props) {
   const kpis = kpisQuery.data ?? [];
 
   const groups = useMemo(
-    () => groupTreeRows(projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams, kpis),
-    [projects, byId, kids, rootIdsInSet, expandedSet, groupBy, users, lanes, teams, kpis],
+    () => groupTreeRows(
+      projects, byId, kids, rootIdsInSet, expandedSet, groupBy,
+      users, lanes, teams, kpis, preserveInputOrder,
+      sortMode, overrideByGroup,
+    ),
+    [
+      projects, byId, kids, rootIdsInSet, expandedSet, groupBy,
+      users, lanes, teams, kpis, preserveInputOrder,
+      sortMode, overrideByGroup,
+    ],
   );
 
   const lanesById = useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
-  // Row positions map — projectId → top Y of that row on the SVG.
-  // Kept in sync with the render-loop cursor math below (both derive
-  // from the same `groups` layout). The dependency-arrow layer walks
-  // this to draw dotted links between visible pairs.
+  // Row positions map — projectId → top Y of that row within the
+  // BODY SVG (y=0 is the first row-bearing pixel below the header).
+  // In the interactive layout the body renders inside its own SVG
+  // whose y=0 sits directly below the sticky header, so body-local
+  // coordinates are what dependency arrows / row hitboxes actually
+  // want. The PDF monolith wraps the body in a single
+  // <g transform="translate(0, HEADER_HEIGHT)"> so these same
+  // coordinates land at the correct absolute Y there. Keeping the
+  // math in one system means we don't have to fork the render loop.
   const rowPositions = useMemo(() => {
     const out = new Map<string, { rowY: number; project: Project }>();
-    let cursorY = HEADER_HEIGHT;
+    let cursorY = 0;
     groups.forEach((g, gi) => {
       if (gi > 0 && g.label) cursorY += GROUP_GAP;
       if (g.label) cursorY += GROUP_HEADER_HEIGHT;
@@ -307,6 +454,20 @@ export function GanttTimeline(props: Props) {
     });
     return out;
   }, [groups]);
+
+  // Total pixel height of the body content (everything below the
+  // header strip). Used to size the body SVG in interactive mode and
+  // to size the monolith's inner group in pdfMode. Also drives the
+  // full-height fills of the "today" line and month gridlines in the
+  // body SVG so they don't have to reach for a magic 9999.
+  const bodyHeight = useMemo(() => (
+    groups.reduce((s, g, gi) => (
+      s
+      + (gi > 0 && g.label ? GROUP_GAP : 0)
+      + (g.label ? GROUP_HEADER_HEIGHT : 0)
+      + g.rows.length * ROW_HEIGHT
+    ), 0)
+  ), [groups]);
 
   // Capacity overloads are a workspace-level truth, not a filtered one:
   // Alice is still overloaded on Aug 12 even if the current filter
@@ -518,6 +679,660 @@ export function GanttTimeline(props: Props) {
     void e; // no-op, keep signature aligned with pointer events
   }
 
+  // Row-reorder mutation. Used only by the Priority-mode drag path
+  // (see `handleReorderEnd`); Start-date mode routes to the parent's
+  // `onReorderOverride` callback instead and never touches backend
+  // state. Wire is deliberately identical to BoardView.tsx's
+  // `moveMutation` — same endpoint, same optimistic-cache write via
+  // the shared `reindexAfterMove` helper, same rollback-on-error
+  // shape — so a Priority-mode drag on the Roadmap and a card drag
+  // on the Board produce indistinguishable server side effects.
+  const moveMutation = useMutation({
+    mutationFn: (v: { id: string; swim_lane_id: string | null; position: number; _prev: Project[] | undefined }) =>
+      api(`/projects/${v.id}/move`, {
+        method: "POST",
+        body: JSON.stringify({ swim_lane_id: v.swim_lane_id, position: v.position }),
+      }),
+    onError: (err, v) => {
+      if (v._prev) qc.setQueryData(["projects"], v._prev);
+      const msg = err instanceof Error ? err.message : "Reorder didn't save. Try again.";
+      alert(msg);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["pendingStatus"] });
+    },
+  });
+
+  // dnd-kit sensor for the label-column reorder handle. `distance: 4`
+  // gives the user 4px of pointer slack before a drag starts so a
+  // click on the grip (or accidental micro-movement while releasing
+  // over the row) doesn't kick off a spurious reorder. Matches the
+  // Board view's own PointerSensor config exactly.
+  const reorderSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+
+  // Chunk each group's flat `rows` list into per-root clusters —
+  // each cluster is a top-level row plus any expanded subtask rows
+  // underneath it. Sortable items are keyed by the root's project
+  // id so the DndContext only ever moves root-level items; subtask
+  // rows ride along inside their cluster and are not directly
+  // reorderable. Recomputes on every render (cheap: single pass
+  // over each group's rows), which keeps the label DOM in lockstep
+  // with the current `groups` shape as filters / grouping change.
+  const clustersByGroup = groups.map((g) => ({
+    key: g.key,
+    label: g.label,
+    color: g.color,
+    rowCount: g.rows.length,
+    clusters: clusterRootsWithSubtasks(g.rows),
+  }));
+
+  function handleReorderEnd(e: DragEndEvent) {
+    if (!rowReorderEnabled) return;
+    if (!canEdit) return;
+    // Sortable ids are `${groupKey}::${rootId}` — see
+    // `makeSortableId` — so the same underlying project can
+    // participate in multiple SortableContexts (team + kpi
+    // groupings intentionally duplicate roots across groups)
+    // without dnd-kit's droppable registry colliding. Decode
+    // both endpoints before doing any group / project lookup.
+    const activeParts = parseSortableId(String(e.active.id));
+    const overParts = e.over ? parseSortableId(String(e.over.id)) : null;
+    if (!activeParts || !overParts) return;
+    if (e.active.id === e.over?.id) return;
+    // Reject cross-group drops outright. Multi-value groupings
+    // (team, kpi) duplicate the same project across groups, but a
+    // reorder still only moves the project within a single group;
+    // there's no coherent "cross-group" reorder for those cases.
+    const activeGroupKey = activeParts.groupKey;
+    const overGroupKey = overParts.groupKey;
+    if (activeGroupKey !== overGroupKey) return;
+    const cg = clustersByGroup.find((x) => x.key === activeGroupKey);
+    if (!cg) return;
+    const rootIds = cg.clusters.map((c) => c.rootId);
+    const activeId = activeParts.rootId;
+    const overId = overParts.rootId;
+    const oldIndex = rootIds.indexOf(activeId);
+    const newIndex = rootIds.indexOf(overId);
+    if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return;
+    const nextOrder = arrayMove(rootIds, oldIndex, newIndex);
+
+    if (sortMode === "priority") {
+      const activeProject = byId.get(activeId);
+      const overProject = byId.get(overId);
+      if (!activeProject || !overProject) return;
+      // Same-lane restriction: the priority rank is per swim lane
+      // (matches the Board view's SortLane semantics), so a drop
+      // that crosses swim lanes has no unambiguous per-lane
+      // position to write. Reject the drop, snap back, and fire
+      // the "cross-lane rejected" callback so the parent can
+      // surface a small toast telling the user how to move
+      // between lanes (which is a Board-view action).
+      if (activeProject.swim_lane_id !== overProject.swim_lane_id) {
+        onReorderCrossLaneRejected?.();
+        return;
+      }
+      // Compute the new per-lane position from the FULL workspace
+      // cache — not just the visible rootIds — so the target index
+      // matches what the /projects/:id/move endpoint will clamp
+      // against server-side. Uses the same reindex helper the
+      // Board view drives, so priority-drag writes are byte-for-
+      // byte identical to a card drag on the Board.
+      const cacheSnapshot = qc.getQueryData<Project[]>(["projects"]);
+      if (!cacheSnapshot) return;
+      const laneItems = cacheSnapshot
+        .filter((p) => p.swim_lane_id === activeProject.swim_lane_id && !p.deleted_at)
+        .sort((a, b) => a.position - b.position);
+      const laneIdxByProject = new Map(laneItems.map((p, i) => [p.id, i] as const));
+      // Translate the visible-only new position into an absolute
+      // per-lane position by inspecting the neighbour on either
+      // side inside `nextOrder`. If the moved item now sits just
+      // after some visible project X in the same lane, we place
+      // it right after X in the cache; if it now sits just before
+      // Y, we place it right before Y. Falls back to the target's
+      // absolute position when both neighbours are unreachable.
+      let targetPosition: number;
+      if (newIndex === 0) {
+        targetPosition = 0;
+      } else {
+        const beforeVisible = nextOrder[newIndex - 1];
+        const beforeProject = beforeVisible ? byId.get(beforeVisible) : undefined;
+        if (beforeProject && beforeProject.swim_lane_id === activeProject.swim_lane_id) {
+          const beforeIdx = laneIdxByProject.get(beforeProject.id) ?? -1;
+          // If moving down (past its old position), the array-move
+          // math means we insert AT beforeIdx (since removing the
+          // moved item shifts subsequent indices down by one).
+          const oldAbs = laneIdxByProject.get(activeProject.id) ?? -1;
+          targetPosition = beforeIdx >= oldAbs && oldAbs >= 0 ? beforeIdx : beforeIdx + 1;
+        } else {
+          targetPosition = laneIdxByProject.get(overProject.id) ?? 0;
+        }
+      }
+      // Optimistic cache write + mutation fire. Matches the
+      // BoardView pattern exactly.
+      qc.cancelQueries({ queryKey: ["projects"] });
+      const optimistic = reindexAfterMove(cacheSnapshot, activeProject.id, activeProject.swim_lane_id, targetPosition);
+      qc.setQueryData<Project[]>(["projects"], optimistic);
+      moveMutation.mutate({
+        id: activeProject.id,
+        swim_lane_id: activeProject.swim_lane_id,
+        position: targetPosition,
+        _prev: cacheSnapshot,
+      });
+      return;
+    }
+
+    // Start-date mode: record the group's manual order in the
+    // view-state store. No backend call, no cache write — the
+    // sort is purely view-local and the "Custom order" chip is
+    // the user's visual confirmation that the natural
+    // chronological sort has been overridden.
+    onReorderOverride?.(activeGroupKey, nextOrder);
+  }
+
+  // Label column body — group headers + row labels. Shared between
+  // the pdfMode monolith path and the interactive sticky-header
+  // path so a change to the label-side visuals only has to be made
+  // in one place.
+  //
+  // When `rowReorderEnabled` is true the whole label column is
+  // wrapped in a DndContext that owns the drag handlers; individual
+  // clusters register with a per-group SortableContext so drops
+  // only reorder within their own group (cross-group drags snap
+  // back). When reorder is disabled (auto-schedule preview / PDF
+  // export / any caller that doesn't pass a `sortMode`) the same
+  // DOM renders inside a no-op fragment — no dnd-kit listeners,
+  // no grip handles, identical to the pre-feature layout.
+  const labelBodyInner = clustersByGroup.map((cg, gi) => {
+    const clusters = cg.clusters;
+    const rootIds = clusters.map((c) => c.rootId);
+    // Every cluster inside a group shares the same containerId so
+    // the drag-end handler can cheaply reject drops that cross
+    // group boundaries (see `data.current.groupKey`).
+    const contextId = `roadmap-sort:${cg.key}`;
+    const groupClusters = (
+      <>
+        {clusters.map((cluster) => (
+          <SortableLabelCluster
+            key={cluster.rootId}
+            cluster={cluster}
+            groupKey={cg.key}
+            reorderEnabled={rowReorderEnabled && canEdit}
+            onOpen={onOpen}
+            onToggleExpand={toggleEpicExpanded}
+          />
+        ))}
+      </>
+    );
+    return (
+      <div key={`labels-${cg.key}`}>
+        {/* Blank strip separating this group from the previous one.
+            Matches the same-height gap in the SVG column so the
+            labels and bars stay aligned row-for-row. */}
+        {gi > 0 && cg.label ? <div style={{ height: GROUP_GAP }} /> : null}
+        {cg.label ? (
+          <div
+            className="flex items-center justify-between border-b border-wp-stone bg-wp-stone/30 px-3 text-xs font-semibold uppercase tracking-wide text-wp-slate"
+            style={{ height: GROUP_HEADER_HEIGHT }}
+          >
+            <span className="flex min-w-0 items-center gap-1.5">
+              {/* KPI grouping keys off the KPI's canonical color, so
+                  we show the same swatch users see in the KPI report
+                  / picker. Other groupings don't set g.color and
+                  render label-only. */}
+              {cg.color ? (
+                <span
+                  aria-hidden
+                  className="inline-block h-2 w-2 shrink-0 rounded-full"
+                  style={{ background: cg.color }}
+                />
+              ) : null}
+              <span className="truncate">{cg.label}</span>
+            </span>
+            <span>{cg.rowCount}</span>
+          </div>
+        ) : null}
+        {rowReorderEnabled ? (
+          <SortableContext
+            id={contextId}
+            items={rootIds.map((rid) => makeSortableId(cg.key, rid))}
+            strategy={verticalListSortingStrategy}
+          >
+            {groupClusters}
+          </SortableContext>
+        ) : (
+          groupClusters
+        )}
+      </div>
+    );
+  });
+  const labelBody = rowReorderEnabled ? (
+    <DndContext
+      sensors={reorderSensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleReorderEnd}
+    >
+      {labelBodyInner}
+    </DndContext>
+  ) : (
+    labelBodyInner
+  );
+
+  // Shared paint-server definitions (phase hatch, awaiting-dev hatch,
+  // mixed-phase polka, PDF fade). Both SVGs (pdfMode monolith AND
+  // interactive body) need these because Bars are rendered in
+  // whichever body context is active; the interactive header SVG
+  // doesn't reference any url(#...) fills so it goes without its
+  // own <defs>.
+  const defsBlock = (
+    <defs>
+      <pattern id="phase-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="6" height="6" fill="transparent" />
+        <rect width="2" height="6" fill="rgba(255,255,255,0.55)" />
+      </pattern>
+      <pattern id="awaiting-dev-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">
+        <rect width="6" height="6" fill="transparent" />
+        <rect width="1.25" height="6" fill="#94a3b8" />
+      </pattern>
+      {/* Polka dot overlay for epic bar days where subtasks span
+          multiple phases at once. Chosen to look clearly distinct
+          from the diagonal phase-hatch so "mixed" reads as
+          different-from-any-single-phase at a glance. */}
+      <pattern id="mixed-polka" width="7" height="7" patternUnits="userSpaceOnUse">
+        <rect width="7" height="7" fill="transparent" />
+        <circle cx="3.5" cy="3.5" r="1.4" fill="rgba(255,255,255,0.8)" />
+      </pattern>
+      {/* PDF-only left-edge fade. Overlaid as a white → transparent
+          gradient on the leftmost ~16px of any bar whose real span
+          extends earlier than the PDF viewport start (today - 30d),
+          so readers see the bar visually dissolving into the page
+          rather than a hard cut. Defined here rather than per-Bar
+          so every affected row references the same gradient id.
+          Interactive (non-PDF) rendering never references it, so
+          its presence is a no-op cost. */}
+      <linearGradient id="pdf-fade-left" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stopColor="#ffffff" stopOpacity="1" />
+        <stop offset="1" stopColor="#ffffff" stopOpacity="0" />
+      </linearGradient>
+    </defs>
+  );
+
+  // HEADER content — the month/tick strip, the "any overload" strip
+  // on the top axis, and the header half of the today line. Renders
+  // inside its own SVG in interactive mode (which is what stays
+  // pinned via `sticky top-0`), and inline in the pdfMode monolith
+  // path so the exporter still sees one continuous SVG.
+  const headerBlock = (
+    <>
+      <g>
+        {months.map((m, i) => {
+          const x = differenceInCalendarDays(m, start) * dayPx;
+          return (
+            <g key={i}>
+              <line x1={x} y1={0} x2={x} y2={HEADER_HEIGHT} stroke="#E4E7EB" />
+              {/* Header labels compress as the timeframe widens.
+                  "3mo" / "6mo" have room for "MMM d"; "1yr" is too
+                  dense so we drop the day and add the year. "all"
+                  also uses "MMM yyyy" because the span can easily
+                  cover multiple years, and a bare "Jan" without a
+                  year would be ambiguous. */}
+              <text x={x + 4} y={18} fontSize={11} fill="#475467">
+                {format(m, (zoom === "1yr" || zoom === "all") ? "MMM yyyy" : "MMM d")}
+              </text>
+              {zoom === "6mo" ? (
+                <text x={x + 4} y={34} fontSize={9} fill="#98A2B3">
+                  {format(m, "yyyy")}
+                </text>
+              ) : null}
+            </g>
+          );
+        })}
+      </g>
+
+      {/* Global overload indicator on the top axis: continuous red
+          strip along the affected days for glanceability + one
+          alert icon per contiguous range that reveals a rich
+          tooltip on hover ("Roland assigned 4 tasks, over maximum
+          of 3"). Renders in every grouping mode so PMs never lose
+          sight of a breach the current grouping happens to hide. */}
+      {anyOverloadDays.length > 0 ? (
+        <g>
+          <g pointerEvents="none">
+            {anyOverloadDays.map((iso, i) => (
+              <rect
+                key={`ov-day-${i}`}
+                x={dayX(iso, start, dayPx)}
+                y={HEADER_HEIGHT - 6}
+                width={Math.max(1, dayPx)}
+                height={6}
+                fill="#DC2626"
+                fillOpacity={0.9}
+              />
+            ))}
+          </g>
+          {anyOverloadRanges.map((rng, i) => {
+            // Icon sits above the strip, centered over the range.
+            // Clamp the range in chart-space so a range extending
+            // off-chart still shows an icon near the edge instead
+            // of vanishing.
+            const x1 = dayX(rng.from, start, dayPx);
+            const x2 = dayX(rng.to, start, dayPx) + dayPx;
+            const cx = Math.max(10, Math.min(chartWidth - 10, (x1 + x2) / 2));
+            const cy = HEADER_HEIGHT - 14;
+            const relevant = overloads.filter(
+              (iv) => !(iv.to < rng.from || iv.from > rng.to),
+            );
+            return (
+              <OverloadTooltip
+                key={`ov-cluster-${i}`}
+                content={
+                  <OverloadTooltipContent
+                    title="Capacity overload"
+                    range={rng}
+                    entries={relevant}
+                    users={users}
+                    teams={teams}
+                  />
+                }
+              >
+                <g className="cursor-help">
+                  {/* Larger transparent hit target so hover feels
+                      forgiving even at r=6. */}
+                  <circle cx={cx} cy={cy} r={11} fill="transparent" />
+                  <circle cx={cx} cy={cy} r={7} fill="#DC2626" stroke="white" strokeWidth={1.5} />
+                  <text
+                    x={cx}
+                    y={cy + 4}
+                    fontSize={11}
+                    fill="white"
+                    textAnchor="middle"
+                    fontWeight={700}
+                    pointerEvents="none"
+                  >
+                    !
+                  </text>
+                </g>
+              </OverloadTooltip>
+            );
+          })}
+        </g>
+      ) : null}
+
+      {/* Today line — header half. Split from the body half so
+          interactive mode can render each in its own SVG while
+          keeping the pdfMode monolith visually identical (both
+          halves live in the same SVG there). The "4 4" dash
+          pattern tiles evenly across HEADER_HEIGHT=48px, so the
+          join into the body's dashed line is seamless. */}
+      {showToday ? (
+        <g>
+          <line
+            x1={todayX}
+            y1={0}
+            x2={todayX}
+            y2={HEADER_HEIGHT}
+            stroke="#DC2626"
+            strokeWidth={1.5}
+            strokeDasharray="4 4"
+          />
+          <text x={todayX + 4} y={12} fontSize={10} fill="#DC2626">Today</text>
+        </g>
+      ) : null}
+    </>
+  );
+
+  // BODY content — vertical body gridlines, per-group row bars +
+  // overloads, dependency arrows, and the body half of the today
+  // line. All rendered with body-local coordinates (y=0 is the
+  // first row-bearing pixel). In interactive mode this renders
+  // inside its own SVG whose top edge sits directly under the
+  // sticky header. In pdfMode the caller wraps it in
+  // <g transform="translate(0, HEADER_HEIGHT)"> so it lands at the
+  // correct absolute Y inside the monolith.
+  const bodyBlock = (
+    <>
+      <g>
+        {/* Body-only vertical gridlines at month boundaries. The
+            darker top-strip lines are drawn in headerBlock; these
+            are the lighter continuation that reaches the bottom of
+            the chart. */}
+        {months.map((m, i) => {
+          const x = differenceInCalendarDays(m, start) * dayPx;
+          return <line key={i} x1={x} y1={0} x2={x} y2={bodyHeight} stroke="#F2F4F7" />;
+        })}
+      </g>
+
+      {(() => {
+        let cursorY = 0;
+        return groups.map((g, gi) => {
+          // Insert the between-group blank strip before the header
+          // of every group except the first. Skipped for
+          // label-less renders (groupBy === "none").
+          if (gi > 0 && g.label) cursorY += GROUP_GAP;
+          const groupStartY = cursorY;
+          if (g.label) cursorY += GROUP_HEADER_HEIGHT;
+          const rowsTop = cursorY;
+          // Per-row transparent rect stretching the full chart
+          // width. Sits BEHIND the bar + overload overlays in paint
+          // order so a click on empty row space (past the bar's
+          // right edge, before its left edge, or in an
+          // awaiting-dev / awaiting-opt gap that isn't covered by
+          // the bar) opens the project detail panel. Bar clicks
+          // are still handled by the bar's own pointer-up → onOpen
+          // path so we don't double-fire; overload tooltips get
+          // their own onClick further down to preserve the click
+          // affordance where they paint over this rect.
+          const rowHitRects: React.ReactNode[] = g.rows.map((row, idx) => {
+            const p = row.project;
+            const rowY = cursorY + idx * ROW_HEIGHT;
+            return (
+              <rect
+                key={`row-hit-${p.id}`}
+                x={0}
+                y={rowY}
+                width={chartWidth}
+                height={ROW_HEIGHT}
+                fill="transparent"
+                style={{ cursor: "pointer" }}
+                onClick={() => onOpen(p.id)}
+              />
+            );
+          });
+          const rowOverloadOverlays: React.ReactNode[] = [];
+          const rows = g.rows.map((row, idx) => {
+            const p = row.project;
+            const rowY = cursorY + idx * ROW_HEIGHT;
+            const activeDrag = drag?.projectId === p.id ? drag : null;
+            const previewProject = activeDrag ? applyDragToProject(p, activeDrag) : p;
+
+            // Per-row hatches for the "other" dimension: when
+            // grouped by team, per-group overlays only show TEAM
+            // overloads — so the OWNER-overload signal is lost
+            // unless we paint it on the row itself. Same in
+            // reverse when grouped by owner. In non-entity grouping
+            // (lane/tag/none) we paint both dimensions on the row.
+            const showOwnerOnRow = groupBy !== "owner";
+            const showTeamOnRow = groupBy !== "team";
+            const rowIvs = overloadsForProject(overloads, previewProject).filter((iv) =>
+              (iv.kind === "owner" && showOwnerOnRow) || (iv.kind === "team" && showTeamOnRow)
+            );
+            for (const iv of rowIvs) {
+              const span = projectSpan(previewProject);
+              if (!span) continue;
+              const from = iv.from > span.start ? iv.from : span.start;
+              const to = iv.to < span.end ? iv.to : span.end;
+              if (from > to) continue;
+              const x1 = dayX(from, start, dayPx);
+              const x2 = dayX(to, start, dayPx) + dayPx;
+              const w = Math.max(0, x2 - x1);
+              if (w <= 0) continue;
+              rowOverloadOverlays.push(
+                <OverloadTooltip
+                  key={`row-ov-${p.id}-${iv.kind}-${iv.entityId}-${iv.from}`}
+                  content={
+                    <OverloadTooltipContent
+                      title="Capacity overload on this project"
+                      range={{ from, to }}
+                      entries={[iv]}
+                      users={users}
+                      teams={teams}
+                    />
+                  }
+                >
+                  <g className="cursor-help">
+                    <rect x={x1} y={rowY + 2} width={w} height={ROW_HEIGHT - 4} fill="#DC2626" fillOpacity={0.06} />
+                    <rect x={x1} y={rowY + ROW_HEIGHT - 3} width={w} height={2} fill="#DC2626" fillOpacity={0.7} />
+                  </g>
+                </OverloadTooltip>
+              );
+            }
+
+            return (
+              <Bar
+                key={p.id}
+                project={previewProject}
+                y={rowY}
+                chartStart={start}
+                dayPx={dayPx}
+                lanes={lanes}
+                teams={teams}
+                users={users}
+                colorBy={colorBy}
+                canEdit={canEdit}
+                activeDrag={activeDrag}
+                onStartDrag={startDrag}
+                onOpen={onOpen}
+                deadlineStatuses={deadlineStatusByProject.get(p.id) ?? []}
+                dependencyStatuses={dependencyStatusByProject.get(p.id) ?? []}
+                isSubtask={row.depth > 0}
+                kids={kids}
+                pdfMode={pdfMode ?? false}
+              />
+            );
+          });
+          cursorY += g.rows.length * ROW_HEIGHT;
+          // Overload overlay: only meaningful when the group key IS
+          // an entity id (owner or team mode). We paint a
+          // translucent red band across the group's Y range for
+          // each overloaded date interval, so PMs can see at a
+          // glance which weeks the owner/team is over their cap.
+          const groupOverloads: OverloadInterval[] =
+            groupBy === "owner"
+              ? overloadsByOwner.get(g.key) ?? []
+              : groupBy === "team"
+              ? overloadsByTeam.get(g.key) ?? []
+              : [];
+          const overloadOverlays = groupOverloads.map((iv, ii) => {
+            const x1 = dayX(iv.from, start, dayPx);
+            // Right edge = end-of-day, so a single-day overload is
+            // at least `dayPx` wide.
+            const x2 = dayX(iv.to, start, dayPx) + dayPx;
+            const w = Math.max(0, x2 - x1);
+            if (w <= 0) return null;
+            const y = groupStartY;
+            const h = cursorY - groupStartY;
+            return (
+              <OverloadTooltip
+                key={`ov-${g.key}-${ii}`}
+                content={
+                  <OverloadTooltipContent
+                    title="Capacity overload"
+                    range={{ from: iv.from, to: iv.to }}
+                    entries={[iv]}
+                    users={users}
+                    teams={teams}
+                  />
+                }
+              >
+                <g className="cursor-help">
+                  <rect x={x1} y={y} width={w} height={h} fill="#DC2626" fillOpacity={0.08} />
+                  <rect x={x1} y={y} width={w} height={3} fill="#DC2626" fillOpacity={0.55} />
+                </g>
+              </OverloadTooltip>
+            );
+          });
+          void rowsTop;
+          return (
+            <g key={`grp-${g.key}`}>
+              {/* Hit rects go first so everything else paints (and
+                  hit-tests) on top of them. Group header rows have
+                  no project association, so they intentionally
+                  have NO hit rect and stay non-interactive. */}
+              {rowHitRects}
+              {g.label ? (
+                <rect x={0} y={groupStartY} width={chartWidth} height={GROUP_HEADER_HEIGHT} fill="#F2F4F7" />
+              ) : null}
+              {overloadOverlays}
+              {rowOverloadOverlays}
+              {rows}
+            </g>
+          );
+        });
+      })()}
+
+      {/* Dependency arrows between visible pairs. Drawn AFTER bars
+          so they sit on top of hatched phase fills, but before the
+          today-line so today stays the most prominent vertical
+          marker. Arrows only render when BOTH endpoints are in the
+          current rowset (per product decision — off-chart arrows to
+          nowhere are noisy). */}
+      <g pointerEvents="none">
+        {(() => {
+          const arrows: React.ReactNode[] = [];
+          const rowMid = ROW_HEIGHT / 2;
+          for (const p of projects) {
+            const from = rowPositions.get(p.id);
+            if (!from) continue;
+            const statuses = dependencyStatusByProject.get(p.id) ?? [];
+            for (const s of statuses) {
+              if (!s.otherProject || !s.thisStart || !s.otherEnd) continue;
+              const other = rowPositions.get(s.otherProject.id);
+              if (!other) continue;
+              // Bar geometry: bar goes from dayX(phase.start) to
+              // dayX(phase.end). NO +dayPx on the end — the bar's
+              // right edge lands at the left edge of the end-date
+              // day. Adding dayPx put the arrow's source one full
+              // day past the visible bar, hence the misalignment.
+              const x1 = dayX(dateOnly(s.otherEnd), start, dayPx);
+              const y1 = other.rowY + rowMid;
+              const x2 = dayX(dateOnly(s.thisStart), start, dayPx);
+              const y2 = from.rowY + rowMid;
+              arrows.push(
+                <DependencyArrow
+                  key={`arrow-${s.dep.id}`}
+                  x1={x1}
+                  y1={y1}
+                  x2={x2}
+                  y2={y2}
+                  violated={s.severity === "violated"}
+                />,
+              );
+            }
+          }
+          return arrows;
+        })()}
+      </g>
+
+      {/* Today line — body half. Drawn in the body SVG so it stays
+          in lockstep with the header half (both share the same
+          chart's H-scroll offset because they're inside the same
+          scroll container). The "Today" text label lives in the
+          header only; here we just carry the dashed vertical line
+          down through the row bars. */}
+      {showToday ? (
+        <line
+          x1={todayX}
+          y1={0}
+          x2={todayX}
+          y2={bodyHeight}
+          stroke="#DC2626"
+          strokeWidth={1.5}
+          strokeDasharray="4 4"
+        />
+      ) : null}
+    </>
+  );
+
   return (
     <div className="p-4">
       <div className="mb-2 flex items-center gap-2 text-xs text-wp-slate">
@@ -536,510 +1351,153 @@ export function GanttTimeline(props: Props) {
           Epics only by default — click <ChevronRight size={11} className="inline align-[-2px]" /> next to an epic to reveal its subtasks.
         </span>
       </div>
-      {/* PDF mode lifts every horizontal overflow clip on the chart's
-          ancestors so html-to-image captures the SVG at its NATURAL
-          scrollWidth (bars past the visible viewport are otherwise
-          silently cropped by the surrounding `overflow-x-auto` /
-          `overflow-hidden` boxes when the tree is cloned into the
-          exporter's foreignObject). Interactive rendering keeps the
-          clips so the roadmap still fits in its normal scroll frame. */}
-      <div className={pdfMode ? "card-surface" : "card-surface overflow-hidden"}>
-        <div className="flex">
-          {/*
-            Label column. Width is user-controlled via the divider
-            immediately to its right (see <ColumnResizer /> below).
-            The first child is a full-width header spacer whose
-            height matches the SVG's HEADER_HEIGHT band so the
-            column's group-header row lines up with the chart's
-            first row-bearing pixel — resizing the column doesn't
-            need to touch this because the width is applied to the
-            outer container and the spacer stretches with it.
-          */}
-          <div className="shrink-0" style={{ width: resolvedLabelColumnPx }}>
-            <div className="border-b border-wp-stone bg-wp-stone/40" style={{ height: HEADER_HEIGHT }} />
-            {groups.map((g, gi) => (
-              <div key={`labels-${g.key}`}>
-                {/* Blank strip separating this group from the previous one.
-                    Matches the same-height gap in the SVG column so the
-                    labels and bars stay aligned row-for-row. */}
-                {gi > 0 && g.label ? <div style={{ height: GROUP_GAP }} /> : null}
-                {g.label ? (
-                  <div
-                    className="flex items-center justify-between border-b border-wp-stone bg-wp-stone/30 px-3 text-xs font-semibold uppercase tracking-wide text-wp-slate"
-                    style={{ height: GROUP_HEADER_HEIGHT }}
-                  >
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      {/* KPI grouping keys off the KPI's canonical
-                          color, so we show the same swatch users see
-                          in the KPI report / picker. Other groupings
-                          don't set g.color and render label-only. */}
-                      {g.color ? (
-                        <span
-                          aria-hidden
-                          className="inline-block h-2 w-2 shrink-0 rounded-full"
-                          style={{ background: g.color }}
-                        />
-                      ) : null}
-                      <span className="truncate">{g.label}</span>
-                    </span>
-                    <span>{g.rows.length}</span>
-                  </div>
-                ) : null}
-                {g.rows.map((row) => {
-                  const p = row.project;
-                  return (
-                    // Whole label row is a click target for opening the
-                    // project detail panel — mirrors the SVG-side hit
-                    // rect so anywhere on a row (label OR chart) opens
-                    // the modal. Rendered as div role="button" (not a
-                    // <button>) because the expand chevron below is
-                    // itself an interactive control, and nesting a
-                    // <button> inside a <button> is invalid HTML.
-                    <div
-                      key={`lbl-${p.id}`}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={p.title}
-                      onClick={() => onOpen(p.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          onOpen(p.id);
-                        }
-                      }}
-                      className="flex cursor-pointer items-center gap-1 border-b border-wp-stone px-2 text-left text-xs transition-colors hover:bg-wp-stone/30 focus:bg-wp-stone/40 focus:outline-none"
-                      style={{ height: ROW_HEIGHT }}
-                    >
-                      {/* Indent scales with depth so nesting is obvious. */}
-                      <div style={{ width: row.depth * DEPTH_INDENT_PX, flexShrink: 0 }} />
-                      {row.hasChildren ? (
-                        <button
-                          type="button"
-                          className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-wp-slate hover:bg-wp-stone/60 hover:text-wp-ink"
-                          // Chevron toggles expand/collapse — stop the
-                          // click from bubbling to the row's onOpen so
-                          // clicking the chevron doesn't ALSO pop the
-                          // detail modal on top of the expand.
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleEpicExpanded(p.id);
-                          }}
-                          title={row.isExpanded ? "Hide subtasks" : "Show subtasks"}
-                          aria-label={row.isExpanded ? `Collapse ${p.title}` : `Expand ${p.title}`}
-                        >
-                          {row.isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                        </button>
-                      ) : (
-                        <div className="w-4 shrink-0" />
-                      )}
-                      {row.project.type === "epic" ? (
-                        <Layers size={11} className="shrink-0 text-wp-red" aria-label="Epic" />
-                      ) : null}
-                      <span
-                        className={`min-w-0 flex-1 truncate ${row.depth > 0 ? "text-wp-slate" : "text-wp-ink"}`}
-                        title={p.title}
-                      >
-                        {p.title}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-
-          {/*
-            Draggable divider between the label and chart columns.
-            Sits as a plain flex sibling so it participates in the
-            same row that already stretches to the label column's
-            full height — nothing to compute, nothing to sync. The
-            chart column below has `flex-1`, so widening the label
-            column shrinks the chart's flexible container and the
-            chart's existing horizontal-scroll behavior takes over.
-            Only rendered when the parent has wired the width state
-            through; embedded previews (RoadmapHelper) skip it and
-            fall back to the historical fixed width.
-          */}
-          {canResizeLabelColumn ? (
-            <ColumnResizer
-              currentWidth={resolvedLabelColumnPx}
-              minWidth={ROADMAP_LABEL_COLUMN_MIN_PX}
-              maxWidth={ROADMAP_LABEL_COLUMN_MAX_PX}
-              onWidthChange={onLabelColumnPxChange!}
-              onCommit={onLabelColumnPxCommit!}
-              ariaLabel="Resize roadmap label column"
-            />
-          ) : null}
-
-          <div ref={scrollRef} className={pdfMode ? "relative flex-1" : "relative flex-1 overflow-x-auto"}>
-            <svg
-              width={chartWidth}
-              height={HEADER_HEIGHT + groups.reduce((s, g, gi) => (
-                s
-                + (gi > 0 && g.label ? GROUP_GAP : 0)
-                + (g.label ? GROUP_HEADER_HEIGHT : 0)
-                + g.rows.length * ROW_HEIGHT
-              ), 0)}
-              onPointerMove={onPointerMove}
-              onPointerUp={endDrag}
-              onPointerCancel={endDrag}
-              style={{ userSelect: "none", touchAction: "none" }}
+      {/* Two rendering paths share the same paint code (labelBody,
+          headerBlock, bodyBlock, defsBlock) but wire them into very
+          different DOM shells:
+            - useMonolithic (pdfMode OR stickyHeader=false):
+              single monolithic SVG inside a plain flex row, matching
+              the shape html-to-image's foreignObject clone and the
+              auto-schedule preview's modal wrapper have always seen.
+              pdfMode additionally drops the chart column's own
+              overflow-x-auto so the exporter captures the SVG at its
+              natural scrollWidth; the RoadmapHelper preview keeps
+              the H-scroll on the chart column so the modal's outer
+              scrollbar and the Gantt's inner one don't compete.
+              Sticky positioning is deliberately absent here — an
+              intermediate sticky ancestor has been observed to
+              confuse Chromium's SVG raster in the exported PNG, and
+              the preview's own modal body owns vertical scroll.
+            - sticky-header layout: ONE scroll container handles BOTH
+              axes. The header row is `sticky top-0` so it pins to
+              the container's top as the user scrolls down. Because
+              the header lives INSIDE the same H-scroll parent as
+              the body, they share the horizontal scroll offset
+              without a JS listener — CSS is enough. The label
+              column inside each row uses `sticky left-0` so
+              horizontal scroll doesn't orphan the project titles
+              (matches the pre-refactor UX where the label sat
+              OUTSIDE the chart's own overflow-x-auto pane).
+          The scrollRef points at whichever element is the actual
+          H-scroll parent in each path: the CHART COLUMN in the
+          monolithic layout (matching pre-refactor behavior for the
+          auto-schedule preview), and the OUTER card in the sticky
+          layout (whose overflow-auto handles both axes). The
+          `useLayoutEffect` that installs the ResizeObserver keeps
+          `useMonolithic` in its dep list so a mode flip re-hooks
+          onto the new element cleanly. */}
+      <div
+        ref={useMonolithic ? null : scrollRef}
+        className={useMonolithic
+          ? (pdfMode ? "card-surface" : "card-surface overflow-hidden")
+          : "card-surface max-h-[calc(100vh-240px)] overflow-auto"}
+      >
+        {useMonolithic ? (
+          <div className="flex">
+            <div className="shrink-0" style={{ width: resolvedLabelColumnPx }}>
+              <div className="border-b border-wp-stone bg-wp-stone/40" style={{ height: HEADER_HEIGHT }} />
+              {labelBody}
+            </div>
+            {/* Chart column carries the H-scroll in the monolithic
+                layout so today-anchor scrollLeft targets the same
+                element (via `scrollRef`) that pre-refactor code
+                aimed at. pdfMode keeps it as a plain flex-1 so
+                html-to-image captures the full scrollWidth without
+                the wrapper clipping. */}
+            <div
+              ref={scrollRef}
+              className={pdfMode ? "relative flex-1" : "relative flex-1 overflow-x-auto"}
             >
-              <defs>
-                <pattern id="phase-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-                  <rect width="6" height="6" fill="transparent" />
-                  <rect width="2" height="6" fill="rgba(255,255,255,0.55)" />
-                </pattern>
-                <pattern id="awaiting-dev-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">
-                  <rect width="6" height="6" fill="transparent" />
-                  <rect width="1.25" height="6" fill="#94a3b8" />
-                </pattern>
-                {/* Polka dot overlay for epic bar days where subtasks
-                    span multiple phases at once. Chosen to look
-                    clearly distinct from the diagonal phase-hatch so
-                    "mixed" reads as different-from-any-single-phase at
-                    a glance. */}
-                <pattern id="mixed-polka" width="7" height="7" patternUnits="userSpaceOnUse">
-                  <rect width="7" height="7" fill="transparent" />
-                  <circle cx="3.5" cy="3.5" r="1.4" fill="rgba(255,255,255,0.8)" />
-                </pattern>
-                {/* PDF-only left-edge fade. Overlaid as a white →
-                    transparent gradient on the leftmost ~16px of any
-                    bar whose real span extends earlier than the PDF
-                    viewport start (today - 30d), so readers see the
-                    bar visually dissolving into the page rather than
-                    a hard cut. Defined here rather than per-Bar so
-                    every affected row references the same gradient
-                    id — de-duplicates the paint server and keeps the
-                    exporter's html-to-image serialisation compact.
-                    Interactive (non-PDF) rendering never references
-                    it, so its presence in every SVG is a no-op cost. */}
-                <linearGradient id="pdf-fade-left" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0" stopColor="#ffffff" stopOpacity="1" />
-                  <stop offset="1" stopColor="#ffffff" stopOpacity="0" />
-                </linearGradient>
-              </defs>
-
-              <g>
-                {months.map((m, i) => {
-                  const x = differenceInCalendarDays(m, start) * dayPx;
-                  return (
-                    <g key={i}>
-                      <line x1={x} y1={0} x2={x} y2={HEADER_HEIGHT} stroke="#E4E7EB" />
-                      {/* Header labels compress as the timeframe widens.
-                          "3mo" / "6mo" have room for "MMM d"; "1yr" is
-                          too dense so we drop the day and add the year.
-                          "all" also uses "MMM yyyy" because the span
-                          can easily cover multiple years, and a bare
-                          "Jan" without a year would be ambiguous. */}
-                      <text x={x + 4} y={18} fontSize={11} fill="#475467">
-                        {format(m, (zoom === "1yr" || zoom === "all") ? "MMM yyyy" : "MMM d")}
-                      </text>
-                      {zoom === "6mo" ? (
-                        <text x={x + 4} y={34} fontSize={9} fill="#98A2B3">
-                          {format(m, "yyyy")}
-                        </text>
-                      ) : null}
-                      <line x1={x} y1={HEADER_HEIGHT} x2={x} y2={9999} stroke="#F2F4F7" />
-                    </g>
-                  );
-                })}
-              </g>
-
-              {(() => {
-                let cursorY = HEADER_HEIGHT;
-                return groups.map((g, gi) => {
-                  // Insert the between-group blank strip before the
-                  // header of every group except the first. Skipped
-                  // for label-less renders (groupBy === "none").
-                  if (gi > 0 && g.label) cursorY += GROUP_GAP;
-                  const groupStartY = cursorY;
-                  if (g.label) cursorY += GROUP_HEADER_HEIGHT;
-                  const rowsTop = cursorY;
-                  // Per-row transparent rect stretching the full chart
-                  // width. Sits BEHIND the bar + overload overlays in
-                  // paint order so a click on empty row space (past
-                  // the bar's right edge, before its left edge, or in
-                  // an awaiting-dev / awaiting-opt gap that isn't
-                  // covered by the bar) opens the project detail
-                  // panel. Bar clicks are still handled by the bar's
-                  // own pointer-up → onOpen path so we don't
-                  // double-fire; overload tooltips get their own
-                  // onClick further down to preserve the click
-                  // affordance where they paint over this rect.
-                  const rowHitRects: React.ReactNode[] = g.rows.map((row, idx) => {
-                    const p = row.project;
-                    const rowY = cursorY + idx * ROW_HEIGHT;
-                    return (
-                      <rect
-                        key={`row-hit-${p.id}`}
-                        x={0}
-                        y={rowY}
-                        width={chartWidth}
-                        height={ROW_HEIGHT}
-                        fill="transparent"
-                        style={{ cursor: "pointer" }}
-                        onClick={() => onOpen(p.id)}
-                      />
-                    );
-                  });
-                  const rowOverloadOverlays: React.ReactNode[] = [];
-                  const rows = g.rows.map((row, idx) => {
-                    const p = row.project;
-                    const rowY = cursorY + idx * ROW_HEIGHT;
-                    const activeDrag = drag?.projectId === p.id ? drag : null;
-                    const previewProject = activeDrag ? applyDragToProject(p, activeDrag) : p;
-
-                    // Per-row hatches for the "other" dimension:
-                    // when grouped by team, per-group overlays only
-                    // show TEAM overloads — so the OWNER-overload
-                    // signal is lost unless we paint it on the row
-                    // itself. Same in reverse when grouped by owner.
-                    // In non-entity grouping (lane/tag/none) we paint
-                    // both dimensions on the row.
-                    const showOwnerOnRow = groupBy !== "owner";
-                    const showTeamOnRow = groupBy !== "team";
-                    const rowIvs = overloadsForProject(overloads, previewProject).filter((iv) =>
-                      (iv.kind === "owner" && showOwnerOnRow) || (iv.kind === "team" && showTeamOnRow)
-                    );
-                    for (const iv of rowIvs) {
-                      const span = projectSpan(previewProject);
-                      if (!span) continue;
-                      const from = iv.from > span.start ? iv.from : span.start;
-                      const to = iv.to < span.end ? iv.to : span.end;
-                      if (from > to) continue;
-                      const x1 = dayX(from, start, dayPx);
-                      const x2 = dayX(to, start, dayPx) + dayPx;
-                      const w = Math.max(0, x2 - x1);
-                      if (w <= 0) continue;
-                      rowOverloadOverlays.push(
-                        <OverloadTooltip
-                          key={`row-ov-${p.id}-${iv.kind}-${iv.entityId}-${iv.from}`}
-                          content={
-                            <OverloadTooltipContent
-                              title="Capacity overload on this project"
-                              range={{ from, to }}
-                              entries={[iv]}
-                              users={users}
-                              teams={teams}
-                            />
-                          }
-                        >
-                          <g className="cursor-help">
-                            <rect x={x1} y={rowY + 2} width={w} height={ROW_HEIGHT - 4} fill="#DC2626" fillOpacity={0.06} />
-                            <rect x={x1} y={rowY + ROW_HEIGHT - 3} width={w} height={2} fill="#DC2626" fillOpacity={0.7} />
-                          </g>
-                        </OverloadTooltip>
-                      );
-                    }
-
-                    return (
-                      <Bar
-                        key={p.id}
-                        project={previewProject}
-                        y={rowY}
-                        chartStart={start}
-                        dayPx={dayPx}
-                        lanes={lanes}
-                        teams={teams}
-                        users={users}
-                        colorBy={colorBy}
-                        canEdit={canEdit}
-                        activeDrag={activeDrag}
-                        onStartDrag={startDrag}
-                        onOpen={onOpen}
-                        deadlineStatuses={deadlineStatusByProject.get(p.id) ?? []}
-                        dependencyStatuses={dependencyStatusByProject.get(p.id) ?? []}
-                        isSubtask={row.depth > 0}
-                        kids={kids}
-                        pdfMode={pdfMode ?? false}
-                      />
-                    );
-                  });
-                  cursorY += g.rows.length * ROW_HEIGHT;
-                  // Overload overlay: only meaningful when the group
-                  // key IS an entity id (owner or team mode). We paint
-                  // a translucent red band across the group's Y
-                  // range for each overloaded date interval, so PMs
-                  // can see at a glance which weeks the owner/team is
-                  // over their cap.
-                  const groupOverloads: OverloadInterval[] =
-                    groupBy === "owner"
-                      ? overloadsByOwner.get(g.key) ?? []
-                      : groupBy === "team"
-                      ? overloadsByTeam.get(g.key) ?? []
-                      : [];
-                  const overloadOverlays = groupOverloads.map((iv, ii) => {
-                    const x1 = dayX(iv.from, start, dayPx);
-                    // Right edge = end-of-day, so a single-day overload
-                    // is at least `dayPx` wide.
-                    const x2 = dayX(iv.to, start, dayPx) + dayPx;
-                    const w = Math.max(0, x2 - x1);
-                    if (w <= 0) return null;
-                    const y = groupStartY;
-                    const h = cursorY - groupStartY;
-                    return (
-                      <OverloadTooltip
-                        key={`ov-${g.key}-${ii}`}
-                        content={
-                          <OverloadTooltipContent
-                            title="Capacity overload"
-                            range={{ from: iv.from, to: iv.to }}
-                            entries={[iv]}
-                            users={users}
-                            teams={teams}
-                          />
-                        }
-                      >
-                        <g className="cursor-help">
-                          <rect x={x1} y={y} width={w} height={h} fill="#DC2626" fillOpacity={0.08} />
-                          <rect x={x1} y={y} width={w} height={3} fill="#DC2626" fillOpacity={0.55} />
-                        </g>
-                      </OverloadTooltip>
-                    );
-                  });
-                  void rowsTop;
-                  return (
-                    <g key={`grp-${g.key}`}>
-                      {/* Hit rects go first so everything else paints
-                          (and hit-tests) on top of them. Group header
-                          rows have no project association, so they
-                          intentionally have NO hit rect and stay
-                          non-interactive. */}
-                      {rowHitRects}
-                      {g.label ? (
-                        <rect x={0} y={groupStartY} width={chartWidth} height={GROUP_HEADER_HEIGHT} fill="#F2F4F7" />
-                      ) : null}
-                      {overloadOverlays}
-                      {rowOverloadOverlays}
-                      {rows}
-                    </g>
-                  );
-                });
-              })()}
-
-              {/* Global overload indicator on the top axis:
-                  continuous red strip along the affected days for
-                  glanceability + one alert icon per contiguous range
-                  that reveals a rich tooltip on hover ("Roland
-                  assigned 4 tasks, over maximum of 3"). Renders in
-                  every grouping mode so PMs never lose sight of a
-                  breach the current grouping happens to hide. */}
-              {anyOverloadDays.length > 0 ? (
-                <g>
-                  <g pointerEvents="none">
-                    {anyOverloadDays.map((iso, i) => (
-                      <rect
-                        key={`ov-day-${i}`}
-                        x={dayX(iso, start, dayPx)}
-                        y={HEADER_HEIGHT - 6}
-                        width={Math.max(1, dayPx)}
-                        height={6}
-                        fill="#DC2626"
-                        fillOpacity={0.9}
-                      />
-                    ))}
-                  </g>
-                  {anyOverloadRanges.map((rng, i) => {
-                    // Icon sits above the strip, centered over the
-                    // range. Clamp the range in chart-space so a
-                    // range extending off-chart still shows an icon
-                    // near the edge instead of vanishing.
-                    const x1 = dayX(rng.from, start, dayPx);
-                    const x2 = dayX(rng.to, start, dayPx) + dayPx;
-                    const cx = Math.max(10, Math.min(chartWidth - 10, (x1 + x2) / 2));
-                    const cy = HEADER_HEIGHT - 14;
-                    const relevant = overloads.filter(
-                      (iv) => !(iv.to < rng.from || iv.from > rng.to),
-                    );
-                    return (
-                      <OverloadTooltip
-                        key={`ov-cluster-${i}`}
-                        content={
-                          <OverloadTooltipContent
-                            title="Capacity overload"
-                            range={rng}
-                            entries={relevant}
-                            users={users}
-                            teams={teams}
-                          />
-                        }
-                      >
-                        <g className="cursor-help">
-                          {/* Larger transparent hit target so hover
-                              feels forgiving even at r=6. */}
-                          <circle cx={cx} cy={cy} r={11} fill="transparent" />
-                          <circle cx={cx} cy={cy} r={7} fill="#DC2626" stroke="white" strokeWidth={1.5} />
-                          <text
-                            x={cx}
-                            y={cy + 4}
-                            fontSize={11}
-                            fill="white"
-                            textAnchor="middle"
-                            fontWeight={700}
-                            pointerEvents="none"
-                          >
-                            !
-                          </text>
-                        </g>
-                      </OverloadTooltip>
-                    );
-                  })}
+              <svg
+                width={chartWidth}
+                height={HEADER_HEIGHT + bodyHeight}
+                onPointerMove={onPointerMove}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
+                style={{ userSelect: "none", touchAction: "none" }}
+              >
+                {defsBlock}
+                {headerBlock}
+                <g transform={`translate(0, ${HEADER_HEIGHT})`}>
+                  {bodyBlock}
                 </g>
-              ) : null}
-
-              {/* Dependency arrows between visible pairs. Drawn AFTER
-                  bars so they sit on top of hatched phase fills, but
-                  before the today-line so today stays the most
-                  prominent vertical marker. Arrows only render when
-                  BOTH endpoints are in the current rowset (per product
-                  decision — off-chart arrows to nowhere are noisy). */}
-              <g pointerEvents="none">
-                {(() => {
-                  const arrows: React.ReactNode[] = [];
-                  const rowMid = ROW_HEIGHT / 2;
-                  for (const p of projects) {
-                    const from = rowPositions.get(p.id);
-                    if (!from) continue;
-                    const statuses = dependencyStatusByProject.get(p.id) ?? [];
-                    for (const s of statuses) {
-                      if (!s.otherProject || !s.thisStart || !s.otherEnd) continue;
-                      const other = rowPositions.get(s.otherProject.id);
-                      if (!other) continue;
-                      // Bar geometry: bar goes from dayX(phase.start) to
-                      // dayX(phase.end). NO +dayPx on the end — the bar's
-                      // right edge lands at the left edge of the end-date
-                      // day. Adding dayPx put the arrow's source one full
-                      // day past the visible bar, hence the misalignment.
-                      const x1 = dayX(dateOnly(s.otherEnd), start, dayPx);
-                      const y1 = other.rowY + rowMid;
-                      const x2 = dayX(dateOnly(s.thisStart), start, dayPx);
-                      const y2 = from.rowY + rowMid;
-                      arrows.push(
-                        <DependencyArrow
-                          key={`arrow-${s.dep.id}`}
-                          x1={x1}
-                          y1={y1}
-                          x2={x2}
-                          y2={y2}
-                          violated={s.severity === "violated"}
-                        />,
-                      );
-                    }
-                  }
-                  return arrows;
-                })()}
-              </g>
-
-              {showToday ? (
-                <g>
-                  <line x1={todayX} y1={0} x2={todayX} y2={9999} stroke="#DC2626" strokeWidth={1.5} strokeDasharray="4 4" />
-                  <text x={todayX + 4} y={12} fontSize={10} fill="#DC2626">Today</text>
-                </g>
-              ) : null}
-            </svg>
+              </svg>
+            </div>
           </div>
-        </div>
+        ) : (
+          <>
+            {/* Sticky HEADER row — vertical scroll pins it to the
+                scroll container's top edge; horizontal scroll moves
+                it in lockstep with the body because they share a
+                parent. Inside the row, the label side is itself
+                `sticky left-0` so H-scroll keeps the header spacer
+                and the resize divider aligned with the label
+                column below. */}
+            <div className="sticky top-0 z-20 flex bg-white">
+              <div className="sticky left-0 z-30 flex bg-white shrink-0">
+                <div
+                  className="border-b border-wp-stone bg-wp-stone/40 shrink-0"
+                  style={{ width: resolvedLabelColumnPx, height: HEADER_HEIGHT }}
+                />
+                {canResizeLabelColumn ? (
+                  <ColumnResizer
+                    currentWidth={resolvedLabelColumnPx}
+                    minWidth={ROADMAP_LABEL_COLUMN_MIN_PX}
+                    maxWidth={ROADMAP_LABEL_COLUMN_MAX_PX}
+                    onWidthChange={onLabelColumnPxChange!}
+                    onCommit={onLabelColumnPxCommit!}
+                    ariaLabel="Resize roadmap label column"
+                  />
+                ) : null}
+              </div>
+              <svg
+                className="block shrink-0"
+                width={chartWidth}
+                height={HEADER_HEIGHT}
+              >
+                {headerBlock}
+              </svg>
+            </div>
+
+            {/* BODY row — labels + body SVG. Label side is
+                `sticky left-0` so long project titles never scroll
+                out of view horizontally. The body SVG carries all
+                pointer handlers because every draggable Bar lives
+                inside it; a drag started on a bar keeps firing
+                move/up events on the bar's captured element even
+                if the pointer physically wanders up into the
+                sticky header, so the header SVG doesn't need its
+                own handlers. */}
+            <div className="flex">
+              <div className="sticky left-0 z-10 flex bg-white shrink-0">
+                <div className="shrink-0" style={{ width: resolvedLabelColumnPx }}>
+                  {labelBody}
+                </div>
+                {canResizeLabelColumn ? (
+                  <ColumnResizer
+                    currentWidth={resolvedLabelColumnPx}
+                    minWidth={ROADMAP_LABEL_COLUMN_MIN_PX}
+                    maxWidth={ROADMAP_LABEL_COLUMN_MAX_PX}
+                    onWidthChange={onLabelColumnPxChange!}
+                    onCommit={onLabelColumnPxCommit!}
+                    ariaLabel="Resize roadmap label column"
+                  />
+                ) : null}
+              </div>
+              <svg
+                className="block shrink-0"
+                width={chartWidth}
+                height={bodyHeight}
+                onPointerMove={onPointerMove}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
+                style={{ userSelect: "none", touchAction: "none" }}
+              >
+                {defsBlock}
+                {bodyBlock}
+              </svg>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1812,7 +2270,55 @@ function groupTreeRows(
   lanes: SwimLane[],
   teams: Team[],
   kpis: Kpi[],
+  preserveInputOrder: boolean,
+  sortMode: RoadmapSort | undefined,
+  overrideByGroup: Record<string, string[]> | undefined,
 ): Group[] {
+  const lanesById = new Map(lanes.map((l) => [l.id, l] as const));
+  // Composite comparator that ranks roots the same way the Board
+  // view does: swim lane's own order first (lower = higher
+  // priority), then per-lane `projects.position`, then a
+  // stable-but-informative pair of tiebreakers (updated_at desc
+  // to surface recent activity, id ascending to break the last
+  // remaining tie deterministically). Roots without a swim lane
+  // sort to the very end so an unassigned item can't sneak above
+  // a properly-ranked pick just because its id sorts earlier.
+  const byPriority = (a: Project, b: Project) => {
+    const orderA = a.swim_lane_id ? lanesById.get(a.swim_lane_id)?.order ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+    const orderB = b.swim_lane_id ? lanesById.get(b.swim_lane_id)?.order ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+    if (orderA !== orderB) return orderA - orderB;
+    if (a.position !== b.position) return a.position - b.position;
+    const updatedCmp = (b.updated_at ?? "").localeCompare(a.updated_at ?? "");
+    if (updatedCmp !== 0) return updatedCmp;
+    return a.id.localeCompare(b.id);
+  };
+  // Resolve the ordered root list for a given group key. Priority
+  // mode ignores overrides entirely — the composite comparator IS
+  // the source of truth there. Start-date mode consults the
+  // per-group override first: any ids present in the override
+  // survive in that order (dropping ones no longer visible), and
+  // any roots missing from the override append at the end in
+  // default chronological order so a newly-scheduled item joins
+  // the list without disappearing until the user re-orders again.
+  //
+  // `preserveInputOrder` (auto-schedule preview) still short-
+  // circuits both branches so its caller-supplied order wins.
+  const orderRoots = (rs: Project[], groupKey: string): Project[] => {
+    if (preserveInputOrder) return rs.slice();
+    if (sortMode === "priority") return rs.slice().sort(byPriority);
+    // startDate (default) with optional per-group override.
+    const override = overrideByGroup?.[groupKey];
+    if (!override || override.length === 0) return rs.slice().sort(byStart);
+    const byIdLocal = new Map(rs.map((r) => [r.id, r] as const));
+    const seen = new Set<string>();
+    const ordered: Project[] = [];
+    for (const id of override) {
+      const p = byIdLocal.get(id);
+      if (p) { ordered.push(p); seen.add(id); }
+    }
+    const trailing = rs.filter((r) => !seen.has(r.id)).sort(byStart);
+    return [...ordered, ...trailing];
+  };
   const inSet = new Set(projects.map((p) => p.id));
 
   // Roots = projects whose nearest ancestor in the current set is
@@ -1848,7 +2354,15 @@ function groupTreeRows(
   };
 
   if (groupBy === "none") {
-    const sorted = roots.slice().sort(byStart);
+    // `preserveInputOrder` is opt-in for callers that need the
+    // caller-supplied `projects` array order to survive rendering —
+    // currently only the auto-schedule proposal preview, which
+    // hands us projects in the PM's drag-to-rank order so their #2
+    // pick shouldn't slide to row #6 just because its `start_date`
+    // ended up later than four other items. Default remains the
+    // byStart sort the main Roadmap view expects when the user
+    // picks "no grouping".
+    const sorted = orderRoots(roots, "all");
     const flat = sorted.flatMap((r) => rowsFor(r.id));
     return [{ key: "all", label: null, rows: flat }];
   }
@@ -1922,7 +2436,7 @@ function groupTreeRows(
     .map(([k, rs]) => ({
       key: k,
       label: labels.get(k) ?? k,
-      rows: rs.slice().sort(byStart).flatMap((r) => rowsFor(r.id)),
+      rows: orderRoots(rs, k).flatMap((r) => rowsFor(r.id)),
       color: colors.get(k),
     }))
     .sort((a, b) => {
@@ -1937,6 +2451,194 @@ function groupTreeRows(
 
 function byStart(a: Project, b: Project) {
   return (a.start_date ?? "").localeCompare(b.start_date ?? "");
+}
+
+/**
+ * A "cluster" is a top-level row plus any of its expanded subtask
+ * rows that should visually ride along when the user drags the
+ * root to reorder. Since `groupTreeRows` already emits a flat
+ * `rows` list where each root is immediately followed by its
+ * (currently-expanded) descendants, chunking is a single linear
+ * pass keyed off `row.depth === 0`.
+ *
+ * Orphan subtask rows (a subtask whose root got filtered out and
+ * is now surfacing as its own root — see the "orphan root"
+ * fallback in `groupTreeRows`) start their own cluster. The
+ * `depth === 0` invariant that `rowsFor` guarantees for real
+ * roots doesn't apply to those, so this guard preserves them
+ * without inventing a synthetic parent.
+ */
+/**
+ * Sortable-id encoding for dnd-kit. Multi-value groupings (team,
+ * kpi) intentionally duplicate the same root project across
+ * multiple groups; using the raw project id as the sortable id
+ * would collide in dnd-kit's droppable registry (the same
+ * `useDroppable({ id })` overwrites the previous one, so only the
+ * last-mounted context would receive drop events for that id).
+ *
+ * We split on the LAST "::" so a user-authored tag containing
+ * "::" (unusual but not impossible under tag-based grouping)
+ * still decodes correctly — the root-id half is always a UUID
+ * from the backend and never contains "::" itself, making the
+ * final occurrence the unambiguous separator.
+ */
+function makeSortableId(groupKey: string, rootId: string): string {
+  return `${groupKey}::${rootId}`;
+}
+function parseSortableId(id: string): { groupKey: string; rootId: string } | null {
+  const idx = id.lastIndexOf("::");
+  if (idx < 0) return null;
+  return { groupKey: id.slice(0, idx), rootId: id.slice(idx + 2) };
+}
+
+function clusterRootsWithSubtasks(rows: TreeRow[]): LabelCluster[] {
+  const out: LabelCluster[] = [];
+  let current: LabelCluster | null = null;
+  for (const row of rows) {
+    if (row.depth === 0 || !current) {
+      current = { rootId: row.project.id, rows: [row] };
+      out.push(current);
+    } else {
+      current.rows.push(row);
+    }
+  }
+  return out;
+}
+
+type LabelCluster = { rootId: string; rows: TreeRow[] };
+
+/**
+ * One root row (plus any expanded-subtask rows underneath it)
+ * rendered as a single dnd-kit sortable item. Only the root row
+ * exposes the drag grip; subtask rows render exactly as before
+ * (no grip, no listeners) so users can't try to reorder a subtask
+ * — the priority rank is a root-level concept and mixing subtask
+ * reorder into the same UX would be ambiguous.
+ *
+ * The whole cluster shares one `useSortable` transform so a drag
+ * lifts the root's title AND every visible subtask underneath it
+ * in one visual chunk. Dropping the cluster commits a reorder of
+ * roots within the group; the subtasks come along for the ride
+ * because they always render under their root.
+ *
+ * `reorderEnabled` gates the grip: when false (viewer, PDF
+ * export, auto-schedule preview) the row renders identically to
+ * the pre-feature layout — no grip, no cursor-grab, no dnd-kit
+ * hooks.
+ */
+function SortableLabelCluster(props: {
+  cluster: LabelCluster;
+  groupKey: string;
+  reorderEnabled: boolean;
+  onOpen: (id: string) => void;
+  onToggleExpand: (id: string) => void;
+}) {
+  const { cluster, groupKey, reorderEnabled, onOpen, onToggleExpand } = props;
+  const sortable = useSortable({
+    // Sortable id is namespaced by group so multi-value
+    // groupings (team, kpi) that duplicate the same project
+    // across groups don't collide in dnd-kit's droppable
+    // registry. The drag-end handler decodes this back into
+    // (groupKey, rootId) via `parseSortableId`.
+    id: makeSortableId(groupKey, cluster.rootId),
+    disabled: !reorderEnabled,
+  });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(sortable.transform),
+    transition: sortable.transition,
+    // Lift the dragged cluster above its neighbors so the grip and
+    // truncated titles sit on top during the arm-out translation.
+    zIndex: sortable.isDragging ? 10 : undefined,
+    // Slight fade on the dragged item echoes the Board card drag —
+    // makes it obvious which cluster the user is currently moving.
+    opacity: sortable.isDragging ? 0.6 : 1,
+    // Sortable items must be block-flow so the parent's vertical
+    // stack still lays out at ROW_HEIGHT increments; a plain div
+    // handles that naturally.
+    position: "relative",
+  };
+  return (
+    <div ref={sortable.setNodeRef} style={style}>
+      {cluster.rows.map((row, idx) => {
+        const p = row.project;
+        const isRoot = idx === 0;
+        return (
+          <div
+            key={`lbl-${p.id}`}
+            role="button"
+            tabIndex={0}
+            aria-label={p.title}
+            onClick={() => onOpen(p.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onOpen(p.id);
+              }
+            }}
+            className="flex cursor-pointer items-center gap-1 border-b border-wp-stone bg-white px-2 text-left text-xs transition-colors hover:bg-wp-stone/30 focus:bg-wp-stone/40 focus:outline-none"
+            style={{ height: ROW_HEIGHT }}
+          >
+            {/* Drag grip — only on the root row and only when
+                reorder is enabled. Uses `stopPropagation` on
+                click so tapping the grip (without dragging) can't
+                accidentally open the detail panel; the same
+                stopPropagation is applied to keyboard events so
+                Enter / Space on the grip is a no-op instead of a
+                second "open project" fire. */}
+            {isRoot && reorderEnabled ? (
+              <button
+                type="button"
+                className="flex h-4 w-4 shrink-0 cursor-grab items-center justify-center rounded text-wp-slate/50 hover:bg-wp-stone/60 hover:text-wp-ink active:cursor-grabbing"
+                aria-label={`Drag to reorder ${p.title}`}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                {...sortable.attributes}
+                {...sortable.listeners}
+              >
+                <GripVertical size={12} />
+              </button>
+            ) : null}
+            {/* Indent scales with depth so nesting is obvious. */}
+            <div style={{ width: row.depth * DEPTH_INDENT_PX, flexShrink: 0 }} />
+            {row.hasChildren ? (
+              <button
+                type="button"
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-wp-slate hover:bg-wp-stone/60 hover:text-wp-ink"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleExpand(p.id);
+                }}
+                title={row.isExpanded ? "Hide subtasks" : "Show subtasks"}
+                aria-label={row.isExpanded ? `Collapse ${p.title}` : `Expand ${p.title}`}
+              >
+                {row.isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              </button>
+            ) : (
+              <div className="w-4 shrink-0" />
+            )}
+            {row.project.type === "epic" ? (
+              <Layers size={11} className="shrink-0 text-wp-red" aria-label="Epic" />
+            ) : null}
+            {p.dates_locked ? (
+              <span
+                className="inline-flex shrink-0 items-center text-wp-slate"
+                title="Dates locked. Auto-scheduler will not change dates for this item."
+                aria-label="Dates locked"
+              >
+                <Lock size={11} />
+              </span>
+            ) : null}
+            <span
+              className={`min-w-0 flex-1 truncate ${row.depth > 0 ? "text-wp-slate" : "text-wp-ink"}`}
+              title={p.title}
+            >
+              {p.title}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function pickBase(colorBy: ColorBy, lane?: SwimLane, team?: Team, owner?: User): string {

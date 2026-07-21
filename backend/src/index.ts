@@ -18,6 +18,8 @@ import { tshirtSizesRouter } from "./routes/tshirtSizes.js";
 import { aiReferenceEstimatesRouter } from "./routes/aiReferenceEstimates.js";
 import { importsRouter } from "./routes/imports.js";
 import { projectsRouter } from "./routes/projects.js";
+import { aiHeadlineRouter } from "./routes/aiHeadline.js";
+import { roadmapOverviewsRouter } from "./routes/roadmapOverviews.js";
 import { projectCommentsRouter } from "./routes/comments.js";
 import { projectDeadlinesRouter } from "./routes/deadlines.js";
 import { projectDependenciesRouter } from "./routes/dependencies.js";
@@ -69,6 +71,17 @@ app.use("/api/tshirt-sizes", authenticate, groupScope, tshirtSizesRouter);
 app.use("/api/ai-reference-estimates", authenticate, groupScope, aiReferenceEstimatesRouter);
 app.use("/api/imports", authenticate, groupScope, importsRouter);
 app.use("/api/projects", authenticate, groupScope, projectsRouter);
+// AI-backed roadmap headline. Mounted separately from /api/projects
+// because it summarizes a slice of the whole roadmap rather than a
+// single project — the prompt is caller-assembled and none of the
+// existing project routes fit its shape.
+app.use("/api/ai", authenticate, groupScope, aiHeadlineRouter);
+// PM-authored overview text keyed by (current group, roadmap
+// filter fingerprint). Mounted alongside the AI headline router
+// because the two features share the same per-view fingerprint;
+// see backend/src/routes/roadmapOverviews.ts for the endpoint
+// contract.
+app.use("/api/roadmap-overviews", authenticate, groupScope, roadmapOverviewsRouter);
 app.use("/api/projects/:id/comments", authenticate, groupScope, projectCommentsRouter);
 app.use("/api/projects/:id/deadlines", authenticate, groupScope, projectDeadlinesRouter);
 app.use("/api/projects/:id/dependencies", authenticate, groupScope, projectDependenciesRouter);
