@@ -255,6 +255,7 @@ export function RoadmapView() {
           groupBy={groupBy}
           zoom={zoom}
           visibleProjectIds={headlineVisibleIds}
+          pdfMode={pdfMode}
         />
         <div className="flex flex-col gap-2 border-b border-wp-stone bg-white/60 px-4 py-2">
           {/* Row 1: timeframe + sort-by + action(s). Kept compact so

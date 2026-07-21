@@ -39,6 +39,7 @@ export function RoadmapOverview({
   groupBy,
   zoom,
   visibleProjectIds,
+  pdfMode = false,
 }: {
   filters: FilterState;
   groupBy: GroupBy;
@@ -50,6 +51,14 @@ export function RoadmapOverview({
    * corresponds to one AI-generated summary.
    */
   visibleProjectIds: string[];
+  /**
+   * When true, the populated read-only body renders at its full,
+   * uncapped height with no scrollbar so the PDF exporter can
+   * snapshot every line. In normal (non-export) rendering the body
+   * is capped to ~6 lines and scrolls internally to keep the
+   * roadmap page compact.
+   */
+  pdfMode?: boolean;
 }) {
   const me = useMe();
   const canWrite = useCanWrite();
@@ -241,7 +250,22 @@ export function RoadmapOverview({
               <Pencil size={13} />
             </button>
           ) : null}
-          <div className="whitespace-pre-wrap pr-8 text-sm leading-relaxed text-wp-ink">
+          {/* Cap the read-only body to ~6 lines with an internal
+              scroll so a long overview doesn't push the Gantt
+              timeline off the initial viewport. In PDF export mode
+              (`pdfMode=true`) the cap and overflow are dropped so
+              html-to-image can capture the full body — the
+              exporter flushSync's the pdfMode flip before snapshot,
+              so the fully-expanded DOM is guaranteed to be present
+              at capture time. Height is expressed in `em` so it
+              tracks the text-sm/leading-relaxed line-height without
+              a magic pixel constant. */}
+          <div
+            className={cn(
+              "whitespace-pre-wrap pr-8 text-sm leading-relaxed text-wp-ink",
+              !pdfMode && "max-h-[calc(1.625em*6)] overflow-y-auto",
+            )}
+          >
             {persisted}
           </div>
           <div className="mt-2 border-t border-wp-stone/60 pt-2 text-[11px] text-wp-slate/80">

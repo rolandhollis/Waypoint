@@ -1431,8 +1431,25 @@ export function GanttTimeline(props: Props) {
                 parent. Inside the row, the label side is itself
                 `sticky left-0` so H-scroll keeps the header spacer
                 and the resize divider aligned with the label
-                column below. */}
-            <div className="sticky top-0 z-20 flex bg-white">
+                column below.
+
+                `min-w-max` on the row is what makes the horizontal
+                sticky actually work: a plain block-level flex row
+                takes its parent's width (100% of the card), which
+                becomes the sticky child's containing block. Sticky
+                left-0 can only offset a child within its containing
+                block, so once the card is scrolled past
+                (cardWidth - labelWidth) the sticky column runs into
+                the containing block's right edge and starts riding
+                off-screen with the row. Extending the row's used
+                width to `max-content` (= labelColumnPx + chartWidth)
+                gives sticky-left-0 room to travel across the entire
+                horizontal scroll range. The chart SVG is `shrink-0`
+                so `min-w-max` doesn't change the visible layout in
+                the "fits without scroll" case — the row just matches
+                the card width there. Same rationale applies to the
+                body row below. */}
+            <div className="sticky top-0 z-20 flex min-w-max bg-white">
               <div className="sticky left-0 z-30 flex bg-white shrink-0">
                 <div
                   className="border-b border-wp-stone bg-wp-stone/40 shrink-0"
@@ -1466,8 +1483,15 @@ export function GanttTimeline(props: Props) {
                 move/up events on the bar's captured element even
                 if the pointer physically wanders up into the
                 sticky header, so the header SVG doesn't need its
-                own handlers. */}
-            <div className="flex">
+                own handlers.
+
+                `min-w-max` is needed here for the same containing-
+                block reason as the header row above — see that
+                comment. Without it, `sticky left-0` releases the
+                label column once the card is scrolled past
+                (cardWidth - labelWidth), which is exactly the
+                "labels scroll off-screen" bug this row exhibited. */}
+            <div className="flex min-w-max">
               <div className="sticky left-0 z-10 flex bg-white shrink-0">
                 <div className="shrink-0" style={{ width: resolvedLabelColumnPx }}>
                   {labelBody}
