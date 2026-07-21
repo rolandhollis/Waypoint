@@ -9,6 +9,7 @@ export function applyFilters(projects: Project[], f: FilterState): Project[] {
     if (f.teamIds.length && !p.teams.some((t) => f.teamIds.includes(t))) return false;
     if (f.swimLaneIds.length && (!p.swim_lane_id || !f.swimLaneIds.includes(p.swim_lane_id))) return false;
     if (f.tags.length && !p.tags.some((t) => f.tags.includes(t))) return false;
+    if (f.keyStrategicOnly && !p.is_key_strategic) return false;
     if (f.dateFrom || f.dateTo) {
       const start = p.start_date ? new Date(`${p.start_date}T00:00:00`).getTime() : null;
       const end = p.target_date ? new Date(`${p.target_date}T00:00:00`).getTime() : null;
@@ -27,6 +28,7 @@ export function countActiveFilters(f: FilterState): number {
   return (
     f.ownerIds.length + f.teamIds.length + f.swimLaneIds.length +
     f.tags.length +
+    (f.keyStrategicOnly ? 1 : 0) +
     (f.dateFrom ? 1 : 0) + (f.dateTo ? 1 : 0)
   );
 }

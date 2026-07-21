@@ -64,6 +64,11 @@ const AUDITED_FIELDS = [
   "dev_estimate_sourced_by_dev",
   "dates_locked",
   "hidden_from_roadmap",
+  "is_key_strategic",
+  // Ranked list drag audits: PrioritizationView's PUT also lands a
+  // single summary event, but per-project rank changes made via
+  // PATCH (admin correction path) still audit here.
+  "global_priority",
 ] as const;
 type AuditedField = (typeof AUDITED_FIELDS)[number];
 
@@ -563,6 +568,24 @@ const projectBaseSchema = z.object({
    */
   hidden_from_roadmap: z.boolean().optional(),
   /**
+   * PM-controlled "this is a strategic bet" flag (migration 038).
+   * Feeds a star icon in the detail modal, the Prioritization
+   * Column A toggle, and the Roadmap's "Key strategic only"
+   * filter chip. Default false at the DB level.
+   */
+  is_key_strategic: z.boolean().optional(),
+  /**
+   * Global 1..N priority rank across every roadmap-eligible project
+   * in the current group. Normally rewritten in bulk by PUT
+   * /api/prioritization (which also cascades the resulting order
+   * onto per-lane `position` values in the same transaction). Kept
+   * PATCH-writable so an admin can hand-correct a single row from
+   * a support session without walking the drag UI; must be a
+   * non-negative integer (0 is the "unranked" sentinel that
+   * migration 037 defaults to).
+   */
+  global_priority: z.number().int().min(0).optional(),
+  /**
    * Per-phase estimate provenance metadata. Optional and out-of-band
    * (leading underscore) so it stays clearly distinct from the
    * persisted project columns above — it drives WHICH of the nine
@@ -603,6 +626,8 @@ const PROJECT_COLUMN_KEYS = [
   "dev_estimate_sourced_by_dev",
   "dates_locked",
   "hidden_from_roadmap",
+  "is_key_strategic",
+  "global_priority",
 ] as const;
 
 /**
@@ -729,6 +754,21 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
     );
     const position = maxRows[0]?.next ?? 0;
 
+    // Global-priority seed on create: land new items at the bottom
+    // of the tenant-wide ranked list so they don't out-rank any
+    // existing PM-curated pick. PUT /api/prioritization renumbers
+    // the whole eligible set from 1..N; a brand-new row will
+    // typically be shuffled up-front by the PM the next time they
+    // open the Prioritization tab, so "bottom" is the least-
+    // surprising default. Falls back to 1 when the group has zero
+    // ranked rows (MAX() → NULL).
+    const { rows: gpRows } = await client.query<{ next: number }>(
+      `SELECT COALESCE(MAX(global_priority), 0) + 1 AS next
+         FROM projects WHERE group_id = $1 AND deleted_at IS NULL`,
+      [groupId],
+    );
+    const nextGlobalPriority = gpRows[0]?.next ?? 1;
+
     // Stamp per-phase provenance for any phase whose START or END
     // date is non-null in the create body. New projects have no
     // pre-existing dates to cascade off, so every stamped phase is
@@ -762,12 +802,12 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
           start_date, target_date, dev_start_date, dev_end_date,
           optimization_start_date, optimization_end_date,
           excluded_from_capacity, dev_estimate_sourced_by_dev, dates_locked,
-          hidden_from_roadmap, created_by,
+          hidden_from_roadmap, is_key_strategic, global_priority, created_by,
           discovery_updated_at, discovery_updated_by_user_id, discovery_updated_source,
           development_updated_at, development_updated_by_user_id, development_updated_source,
           post_dev_updated_at, post_dev_updated_by_user_id, post_dev_updated_source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-               $21,$22,$23,$24,$25,$26,$27,$28,$29) RETURNING id`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+               $23,$24,$25,$26,$27,$28,$29,$30,$31) RETURNING id`,
       [
         groupId,
         body.title,
@@ -788,6 +828,8 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
         body.dev_estimate_sourced_by_dev ?? false,
         body.dates_locked ?? false,
         body.hidden_from_roadmap ?? false,
+        body.is_key_strategic ?? false,
+        nextGlobalPriority,
         req.user!.id,
         phaseStamps.discovery.at,
         phaseStamps.discovery.by,

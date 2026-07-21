@@ -260,6 +260,22 @@ export type ProjectRow = {
   description: string;
   swim_lane_id: string | null;
   position: number;
+  /**
+   * User-controlled 1..N ranking across every project eligible for
+   * the Roadmap (see routes/prioritization.ts and the frontend
+   * PrioritizationView). Lower value = higher priority. Not unique
+   * per group; ties break by updated_at DESC then id ASC on read.
+   *
+   * Default 0 (see migration 037) so unranked rows sit at the top
+   * until the PM opens the Prioritization tab; the tab surfaces a
+   * one-click "seed from current order" affordance to promote every
+   * item out of the shared-0 bucket on first visit.
+   *
+   * A PUT to /api/prioritization ALSO cascades the resulting order
+   * onto per-lane `position` values so the Board / Roadmap Priority
+   * sort track the user's global choice without a second write.
+   */
+  global_priority: number;
   owner_id: string | null;
   teams: string[];
   tags: string[];
@@ -302,6 +318,16 @@ export type ProjectRow = {
    * FALSE so unmigrated behavior is preserved.
    */
   dates_locked: boolean;
+  /**
+   * PM-controlled "this is a strategic bet" marker (migration 038).
+   * Surfaces as a checkbox in the item detail modal, a click-to-toggle
+   * star icon on Prioritization Column A rows, a read-only star next
+   * to Column B rows and Gantt row labels, and drives the Roadmap's
+   * "Key strategic only" filter chip. Default FALSE — nothing flips
+   * this on automatically. No downstream logic (capacity, scheduler,
+   * dependencies) reads the flag; it is a pure UI hint.
+   */
+  is_key_strategic: boolean;
   /**
    * Per-project "hide from the Roadmap view" flag (migration 035).
    * When TRUE the project is unconditionally excluded from the

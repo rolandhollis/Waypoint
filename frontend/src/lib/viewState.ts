@@ -23,11 +23,21 @@ export type FilterState = {
   dateFrom: string | null;
   dateTo: string | null;
   search: string;
+  /**
+   * When true, only projects with `is_key_strategic === true` pass
+   * the filter. Off by default so a first-time visit shows every
+   * eligible item. Rendered on the Roadmap FilterBar as a compact
+   * star-icon toggle chip; consumed by `applyFilters` alongside
+   * every other predicate in the filter set. Migration 038 seeds
+   * the underlying flag on the DB side.
+   */
+  keyStrategicOnly: boolean;
 };
 
 export const emptyFilters: FilterState = {
   ownerIds: [], teamIds: [], swimLaneIds: [], tags: [],
   dateFrom: null, dateTo: null, search: "",
+  keyStrategicOnly: false,
 };
 
 type PerView = {
@@ -407,7 +417,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 11,
+      version: 12,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -515,6 +525,21 @@ export const useViewStore = create<Store>()(
         // presentation by unchecking the new control.
         if (version < 11 && typeof persisted.showConflicts !== "boolean") {
           persisted.showConflicts = true;
+        }
+        // < v12: added the `keyStrategicOnly` filter used by the
+        // Roadmap tab's "Key strategic only" chip (migration 038).
+        // Backfill every per-view filter slot to the "chip off"
+        // default so returning users see every project on first
+        // load and only opt in by clicking the new control.
+        if (version < 12) {
+          const ensureFlag = (fs: unknown) => {
+            if (fs && typeof fs === "object" && typeof (fs as { keyStrategicOnly?: unknown }).keyStrategicOnly !== "boolean") {
+              (fs as { keyStrategicOnly: boolean }).keyStrategicOnly = false;
+            }
+          };
+          if (persisted.board?.filters) ensureFlag(persisted.board.filters);
+          if (persisted.roadmap?.filters) ensureFlag(persisted.roadmap.filters);
+          if (persisted.ezestimates?.filters) ensureFlag(persisted.ezestimates.filters);
         }
         return persisted;
       },

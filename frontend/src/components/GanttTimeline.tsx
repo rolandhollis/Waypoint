@@ -14,7 +14,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronDown, ChevronRight, GripVertical, Layers, Lock } from "lucide-react";
+import { ChevronDown, ChevronRight, GripVertical, Layers, Lock, Star } from "lucide-react";
 import { api } from "../lib/api";
 import { reindexAfterMove } from "../lib/boardReorder";
 import { computeOverloads, overloadsForProject, projectSpan, type OverloadInterval } from "../lib/capacity";
@@ -1486,6 +1486,17 @@ export function GanttTimeline(props: Props) {
           onto the new element cleanly. */}
       <div
         ref={useMonolithic ? null : scrollRef}
+        // `data-roadmap-capture-root` marks this element as the
+        // capture target for the "Copy image to clipboard" button in
+        // RoadmapView. It wraps both the label column and the chart
+        // (via the sticky-layout branch) OR just the chart when the
+        // monolithic path is active — in either case it's the outer
+        // Gantt card, which is exactly what we want to hand to
+        // `html-to-image`. Any callers that don't want their embed
+        // to be discoverable by the roadmap copy button can override
+        // via a wrapper of their own; the auto-schedule preview
+        // renders its own toolbar so it doesn't share the button.
+        data-roadmap-capture-root="true"
         className={useMonolithic
           ? (pdfMode ? "card-surface" : "card-surface overflow-hidden")
           : "card-surface max-h-[calc(100vh-240px)] overflow-auto"}
@@ -2717,6 +2728,18 @@ function SortableLabelCluster(props: {
               >
                 <Lock size={11} />
               </span>
+            ) : null}
+            {/* Subtle "★" prefix on the row label when the item is a
+                key strategic bet (migration 038). Same red fill as
+                the detail modal + Prioritization row so the accent
+                is consistent across surfaces; small (12px) so it
+                doesn't crowd the label column. */}
+            {p.is_key_strategic ? (
+              <Star
+                size={12}
+                className="shrink-0 fill-wp-red text-wp-red"
+                aria-label="Key strategic item"
+              />
             ) : null}
             <span
               className={`min-w-0 flex-1 truncate ${row.depth > 0 ? "text-wp-slate" : "text-wp-ink"}`}

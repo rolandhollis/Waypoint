@@ -2,7 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Lock, LockOpen, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Lock, LockOpen, Star, X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
 import { AuditEventBody, auditActorLabel, timelineEntryToRenderEntry } from "../lib/auditRender";
@@ -414,12 +414,27 @@ export function ProjectDetailPanel({
                 ) : null}
               </div>
               <Dialog.Title asChild>
-                <input
-                  className="input !border-transparent !bg-transparent !p-0 text-lg font-semibold focus:!border-wp-red focus:!bg-white focus:!px-2"
-                  value={merged.title}
-                  disabled={!canWrite}
-                  onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
-                />
+                <div className="flex items-center gap-1.5">
+                  {/* Subtle "★" cue next to the title when the item
+                      is flagged as a key strategic bet (migration 038).
+                      Filled red to match the existing accent
+                      colour palette; rendered read-only here — the
+                      actual toggle lives in the checkbox below the
+                      title metadata. */}
+                  {merged.is_key_strategic ? (
+                    <Star
+                      size={18}
+                      className="shrink-0 fill-wp-red text-wp-red"
+                      aria-label="Key strategic item"
+                    />
+                  ) : null}
+                  <input
+                    className="input !border-transparent !bg-transparent !p-0 text-lg font-semibold focus:!border-wp-red focus:!bg-white focus:!px-2"
+                    value={merged.title}
+                    disabled={!canWrite}
+                    onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
+                  />
+                </div>
               </Dialog.Title>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-wp-slate">
                 {lane ? <span>Lane: <span className="text-wp-ink">{lane.name}</span></span> : null}
@@ -431,6 +446,38 @@ export function ProjectDetailPanel({
                   </span>
                 ) : null}
               </div>
+              {/* "Key strategic item" toggle (migration 038). Placed
+                  in the header block so the flag reads as a top-level
+                  property of the project — same tier as its title,
+                  lane, and owner. Uses the shared draft/Save flow so
+                  the change lands in the same PATCH as any other
+                  pending edits and appears once in the audit trail
+                  ("key strategic" via FIELD_LABELS). Read-only for
+                  viewers — the star badge above still surfaces the
+                  current state. */}
+              <label className="mt-1.5 flex cursor-pointer items-center gap-1.5 text-xs text-wp-ink">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-wp-red"
+                  disabled={!canWrite}
+                  checked={!!merged.is_key_strategic}
+                  onChange={(e) => setDraft((d) => ({
+                    ...d,
+                    is_key_strategic: e.target.checked,
+                  }))}
+                />
+                <Star
+                  size={12}
+                  className={merged.is_key_strategic ? "fill-wp-red text-wp-red" : "text-wp-slate/60"}
+                  aria-hidden
+                />
+                <span>
+                  Key strategic item
+                  <span className="ml-1 text-wp-slate/70">
+                    (highlights it in the Prioritization list and the Roadmap filter chip)
+                  </span>
+                </span>
+              </label>
             </div>
             <div className="flex items-center gap-0.5">
               {/* Prev/next through the surrounding view's items.

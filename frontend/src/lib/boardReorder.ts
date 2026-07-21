@@ -11,6 +11,17 @@ import type { Project } from "./types";
  * Extracted from BoardView so the Roadmap's Priority-mode drag path
  * can share the same optimistic-cache-update math and stay bit-for-bit
  * identical to what the Board writes. Never mutates its input.
+ *
+ * Scope note (Prioritization tab, migration 037): a Board drag
+ * writes ONLY to per-lane `position`. It intentionally does NOT
+ * touch `global_priority` — the Prioritization tab is the sole
+ * source of truth for the global 1..N rank, and having a lane
+ * drag silently overwrite the global order would be surprising
+ * (the two surfaces express different semantics: per-lane
+ * per-column stack vs cross-lane priority list). The reverse
+ * direction IS wired: PUT /api/prioritization cascades the global
+ * rank back onto per-lane `position` so this function's outputs
+ * stay consistent with what the Prioritization view has written.
  */
 export function reindexAfterMove(
   prev: Project[],

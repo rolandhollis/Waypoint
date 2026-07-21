@@ -192,6 +192,40 @@ export function useProjects() {
   });
 }
 
+/**
+ * Ranked list of every roadmap-eligible project in the current
+ * group, sorted `(global_priority ASC, updated_at DESC, id ASC)`.
+ * Backs the Prioritization tab; see backend/src/routes/prioritization.ts
+ * for the eligibility predicate.
+ *
+ * Poll cadence matches the Board / Roadmap so a concurrent edit
+ * in another tab flows into the drag surface within a few seconds.
+ * A drag-triggered PUT invalidates this key optimistically before
+ * the server round-trip so the local list moves immediately.
+ */
+export type PrioritizationRow = {
+  id: string;
+  title: string;
+  description: string;
+  team_ids: string[];
+  team_names: string[];
+  start_date: string;
+  optimization_end_date: string;
+  swim_lane_id: string | null;
+  global_priority: number;
+  position: number;
+  is_key_strategic: boolean;
+};
+
+export function usePrioritization(enabled = true) {
+  return useQuery({
+    queryKey: ["prioritization"],
+    queryFn: () => api<PrioritizationRow[]>("/prioritization"),
+    refetchInterval: POLL_MS,
+    enabled,
+  });
+}
+
 export function useProjectHistory(id: string) {
   return useQuery({
     queryKey: ["projectHistory", id],

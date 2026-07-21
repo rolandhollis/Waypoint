@@ -59,6 +59,9 @@ const COLUMN_ALIASES: Record<string, string> = {
   hidden_from_roadmap: "hidden_from_roadmap",
   hide_from_roadmap: "hidden_from_roadmap",
   hidden: "hidden_from_roadmap",
+  is_key_strategic: "is_key_strategic",
+  key_strategic: "is_key_strategic",
+  key_strategic_item: "is_key_strategic",
 };
 
 /** Fields whose value is a comma-separated list at CSV time. */
@@ -101,6 +104,13 @@ export type ResolvedRow = {
    * defaulting to false.
    */
   hidden_from_roadmap: boolean;
+  /**
+   * Optional per-project "Key strategic item" flag (migration 038).
+   * Defaults to FALSE when the column is absent or blank. Same
+   * boolean-ish parser as `hidden_from_roadmap`; unrecognized
+   * literals surface as a row error.
+   */
+  is_key_strategic: boolean;
 };
 
 type PreviewRow = {
@@ -214,6 +224,7 @@ const commitSchema = z.object({
         optimization_start_date: z.string().nullable().optional(),
         optimization_end_date: z.string().nullable().optional(),
         hidden_from_roadmap: z.boolean().optional(),
+        is_key_strategic: z.boolean().optional(),
       }),
     )
     .min(1)
@@ -278,12 +289,12 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
               type, parent_id,
               start_date, target_date, dev_start_date, dev_end_date,
               optimization_start_date, optimization_end_date,
-              hidden_from_roadmap, created_by,
+              hidden_from_roadmap, is_key_strategic, created_by,
               discovery_updated_at, discovery_updated_by_user_id, discovery_updated_source,
               development_updated_at, development_updated_by_user_id, development_updated_source,
               post_dev_updated_at, post_dev_updated_by_user_id, post_dev_updated_source)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'epic',NULL,$8,$9,$10,$11,$12,$13,$14,$15,
-                   $16,$17,$18,$19,$20,$21,$22,$23,$24)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'epic',NULL,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+                   $17,$18,$19,$20,$21,$22,$23,$24,$25)
            RETURNING id`,
           [
             groupId,
@@ -300,6 +311,7 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
             row.optimization_start_date ?? null,
             row.optimization_end_date ?? null,
             row.hidden_from_roadmap ?? false,
+            row.is_key_strategic ?? false,
             req.user!.id,
             discoveryPresent ? stampedAt : null,
             discoveryPresent ? userId : null,
@@ -445,6 +457,22 @@ function resolveRow(args: {
     }
   }
 
+  // Optional "Key strategic item" flag. Same parsing rules as
+  // hidden_from_roadmap above — blank cell defaults to false; only
+  // recognized boolean-ish spellings pass without an error.
+  let is_key_strategic = false;
+  const rawKeyStrategic = raw.is_key_strategic;
+  if (rawKeyStrategic !== undefined && rawKeyStrategic.trim() !== "") {
+    const parsed = parseBooleanish(rawKeyStrategic);
+    if (parsed === null) {
+      errors.push(
+        `invalid is_key_strategic "${rawKeyStrategic}" — use true/false, yes/no, 1/0, or leave blank`,
+      );
+    } else {
+      is_key_strategic = parsed;
+    }
+  }
+
   const resolved: ResolvedRow | null = errors.length
     ? null
     : {
@@ -460,6 +488,7 @@ function resolveRow(args: {
         optimization_start_date: dates.optimization_start_date ?? null,
         optimization_end_date: dates.optimization_end_date ?? null,
         hidden_from_roadmap,
+        is_key_strategic,
       };
 
   return { line, raw, resolved, errors, warnings };

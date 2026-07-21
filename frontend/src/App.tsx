@@ -6,6 +6,7 @@ import { useMockUserStore } from "./lib/mockUser";
 import { setUnauthorizedHandler } from "./lib/api";
 import { cn } from "./lib/cn";
 import { BoardView } from "./views/BoardView";
+import { PrioritizationView } from "./views/PrioritizationView";
 import { RoadmapView } from "./views/RoadmapView";
 import { StatusReportView } from "./views/StatusReportView";
 import { KpiReportView } from "./views/KpiReportView";
@@ -119,6 +120,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/board" replace />} />
           <Route path="/board" element={<BoardView />} />
+          <Route path="/prioritization" element={<PrioritizationView />} />
           <Route path="/roadmap" element={<RoadmapView />} />
           <Route path="/status-report" element={<StatusReportView />} />
           <Route path="/ezestimates" element={<EZEstimatesView />} />
@@ -222,6 +224,7 @@ function TopBar() {
         </div>
         <nav className="flex items-center gap-1">
           <NavItem to="/board" active={location.pathname.startsWith("/board")}>Board</NavItem>
+          <NavItem to="/prioritization" active={location.pathname.startsWith("/prioritization")}>Prioritization</NavItem>
           <NavItem to="/roadmap" active={location.pathname.startsWith("/roadmap")}>Roadmap</NavItem>
           <NavItem to="/status-report" active={location.pathname.startsWith("/status-report")}>Status Report</NavItem>
           <NavItem to="/ezestimates" active={location.pathname.startsWith("/ezestimates")}>EZEstimates</NavItem>

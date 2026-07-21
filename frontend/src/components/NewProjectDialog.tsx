@@ -169,6 +169,19 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
       // new item starts visible. The field is threaded onto the
       // preview object so the shared Project type stays satisfied.
       hidden_from_roadmap: false,
+      // "Key strategic item" is not exposed in the create dialog —
+      // toggling lives on the detail modal / Prioritization row.
+      // Every new item starts non-strategic; the preview object
+      // threads the field through so the shared Project type is
+      // satisfied without shipping a value on the wire.
+      is_key_strategic: false,
+      // Global priority is server-assigned on insert (see the
+      // POST handler in backend/src/routes/projects.ts, which
+      // seeds new rows at `MAX + 1` so they land at the bottom
+      // of the tenant-wide list). The preview object never hits
+      // the DB, so 0 is fine here — the capacity sweep doesn't
+      // consult this field.
+      global_priority: 0,
       // No provenance stamped in the preview object — this row
       // never lands in the DB (it's fed to the capacity sweep only).
       // Real inserts get their `<phase>_updated_*` columns filled by

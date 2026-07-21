@@ -263,6 +263,16 @@ export type Project = {
   description: string;
   swim_lane_id: string | null;
   position: number;
+  /**
+   * User-controlled global 1..N rank across every roadmap-eligible
+   * project in the current group (see PrioritizationView). Lower
+   * value = higher priority; multiple rows may share a value, in
+   * which case ties break by updated_at DESC then id ASC everywhere
+   * this field is read. Default 0 means "unranked" (see migration
+   * 037) — the Prioritization view detects an all-zero eligible set
+   * and offers a one-click seed from the current display order.
+   */
+  global_priority: number;
   owner_id: string | null;
   /**
    * Ordered team memberships (M:N via `project_teams`). Order IS
@@ -335,6 +345,15 @@ export type Project = {
    * Estimates section.
    */
   hidden_from_roadmap: boolean;
+  /**
+   * PM-controlled "this is a strategic bet" marker (migration 038).
+   * Feeds a star badge next to the title in the item detail modal,
+   * a click-to-toggle star on Prioritization Column A rows, a
+   * read-only star next to Column B rows and Gantt row labels, and
+   * powers the Roadmap's "Key strategic only" filter chip. Default
+   * false — nothing auto-flips this on.
+   */
+  is_key_strategic: boolean;
   /**
    * PM flag: has an engineer signed off on the dev-phase estimate?
    * Default false — new rows are provisional until dev confirms.

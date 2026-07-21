@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { FileDown, Wand2, X } from "lucide-react";
+import { ClipboardCopy, FileDown, Loader2, Wand2, X } from "lucide-react";
 import { useCanWrite, useKpis, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { applyFilters } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
@@ -67,16 +67,26 @@ export function RoadmapView() {
     [roadmapOverrideByGroup],
   );
   // Transient toast surfaced when a Priority-mode drag tries to
-  // cross swim lanes. Owned by RoadmapView (not GanttTimeline) so
-  // the message renders outside the Gantt's scroll container and
-  // survives the SVG re-render that follows the snap-back. Auto-
+  // cross swim lanes OR when the "Copy image" button reports its
+  // result. Owned by RoadmapView (not GanttTimeline) so the
+  // message renders outside the Gantt's scroll container and
+  // survives the SVG re-render that follows a snap-back. Auto-
   // clears after ~6s or on next explicit dismissal.
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  //
+  // The `variant` field controls color only — the layout, position,
+  // and dismiss affordance are shared. `info` is the original amber
+  // cross-lane rejection; `success` is the emerald "copied" ack;
+  // `error` is a red "copy failed" nudge that points the user at
+  // the PDF exporter as a fallback.
+  type ToastVariant = "info" | "success" | "error";
+  const [toast, setToast] = useState<
+    { message: string; variant: ToastVariant } | null
+  >(null);
   useEffect(() => {
-    if (!toastMessage) return;
-    const t = window.setTimeout(() => setToastMessage(null), 6000);
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 6000);
     return () => window.clearTimeout(t);
-  }, [toastMessage]);
+  }, [toast]);
   // Roadmap Gantt's left label column width is user-controlled via
   // a divider between the label and chart columns. The persisted
   // value lives in the zustand store (survives reloads); we mirror
@@ -109,6 +119,13 @@ export function RoadmapView() {
   // static artefact).
   const exportRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
+  // Busy flag for the "Copy image" button. Kept separate from
+  // `exporting` so the two actions can independently show / clear
+  // their spinners without stepping on each other (e.g. user
+  // starts a PDF export, then clicks copy before the export
+  // resolves — both should be able to run concurrently since they
+  // read the same DOM without mutating it).
+  const [copyingImage, setCopyingImage] = useState(false);
   // Toggled on immediately before the PDF snapshot and off after
   // it resolves. When true, GanttTimeline clamps its chart to
   // `today - 30 days` and paints a soft left-edge fade on bars
@@ -177,6 +194,56 @@ export function RoadmapView() {
       alert("PDF export failed. Check the browser console for details.");
     } finally {
       setExporting(false);
+    }
+  }
+
+  async function handleCopyImage() {
+    if (copyingImage) return;
+    // Find the Gantt's outer scroll card — it wraps both the label
+    // column and the visible chart area without any surrounding
+    // page chrome. The data attribute is applied in GanttTimeline
+    // on the same element that carries `scrollRef` in the sticky
+    // layout branch, which is exactly the "capture what's visible"
+    // root the copy button targets. Scoped to `exportRef` so a
+    // future embed of the Gantt elsewhere on the page (e.g. a
+    // preview modal) doesn't accidentally get picked up first.
+    const root = exportRef.current?.querySelector<HTMLElement>(
+      '[data-roadmap-capture-root="true"]',
+    );
+    if (!root) {
+      setToast({
+        message: "Couldn't find the roadmap surface to copy. Try again after it finishes loading.",
+        variant: "error",
+      });
+      return;
+    }
+    setCopyingImage(true);
+    try {
+      // Dynamic-import so html-to-image (~200kB gzipped) doesn't
+      // land in the initial bundle for users who never click the
+      // button. Roadmap is the app's most-hit tab, so the initial
+      // render cost matters more than the ~200ms lazy fetch on
+      // first click.
+      const { copyRoadmapToClipboard } = await import("../lib/copyRoadmapToClipboard");
+      const stamp = new Date().toISOString().slice(0, 10);
+      const result = await copyRoadmapToClipboard(root, `roadmap-${stamp}`);
+      if (result.status === "clipboard") {
+        setToast({ message: "Copied roadmap to clipboard.", variant: "success" });
+      } else {
+        setToast({
+          message: "Clipboard image copy isn't supported in this browser. Downloaded a PNG instead.",
+          variant: "info",
+        });
+      }
+    } catch (err) {
+      console.error("Copy roadmap image failed", err);
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
+      setToast({
+        message: `Clipboard copy failed${detail}. Try again or use Export PDF.`,
+        variant: "error",
+      });
+    } finally {
+      setCopyingImage(false);
     }
   }
 
@@ -259,7 +326,7 @@ export function RoadmapView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <FilterBar view="roadmap" showGrouping showColorBy />
+      <FilterBar view="roadmap" showGrouping showColorBy showKeyStrategicToggle />
       {/* Everything from here down is captured by the PDF exporter.
           Wrapped in a single ref-bound div so the exporter has one
           well-defined subtree to snapshot; the wrapper itself adds
@@ -410,6 +477,29 @@ export function RoadmapView() {
                 keeps this control cluster out of the snapshot so the
                 exported PDF isn't dominated by app chrome. */}
             <div className="flex items-center gap-2" data-pdf-exclude="true">
+              {/* Copy the currently-visible roadmap surface (label
+                  column + visible dates, no scrollbar chrome) to
+                  the OS clipboard as a PNG so the user can paste
+                  straight into Google Slides / Docs / Keynote.
+                  Falls back to downloading the PNG in browsers
+                  that block clipboard image writes (Firefox
+                  without ClipboardItem, plain-HTTP contexts).
+                  See `copyRoadmapToClipboard.ts` for the capture
+                  contract — this button is the only caller. */}
+              <button
+                type="button"
+                className="btn-secondary !py-1 !text-xs"
+                onClick={handleCopyImage}
+                disabled={copyingImage}
+                title="Copy the currently-visible roadmap as a PNG to your clipboard (falls back to a download if the browser blocks it)"
+              >
+                {copyingImage ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <ClipboardCopy size={12} />
+                )}
+                {copyingImage ? "Copying…" : "Copy image"}
+              </button>
               <button
                 type="button"
                 className="btn-secondary !py-1 !text-xs"
@@ -481,9 +571,11 @@ export function RoadmapView() {
               overrideByGroup={roadmapOverrideByGroup}
               onReorderOverride={setRoadmapOverride}
               onReorderCrossLaneRejected={() =>
-                setToastMessage(
-                  "Priority order is per swim lane. Move this item to a different lane on the Board view to change lanes.",
-                )
+                setToast({
+                  message:
+                    "Priority order is per swim lane. Move this item to a different lane on the Board view to change lanes.",
+                  variant: "info",
+                })
               }
               showConflicts={showConflicts}
             />
@@ -579,27 +671,44 @@ export function RoadmapView() {
         />
       ) : null}
 
-      {/* Cross-lane reorder rejection toast. Fixed to the bottom
-          center so it doesn't cover the FilterBar or the top row
-          of the Gantt; auto-dismisses after ~6s (see the effect
-          above) and offers a manual × to close early. Pointer
+      {/* Shared bottom-center toast — used by both the cross-lane
+          reorder rejection and the "Copy image" result. Fixed to
+          the bottom center so it doesn't cover the FilterBar or the
+          top row of the Gantt; auto-dismisses after ~6s (see the
+          effect above) and offers a manual × to close early. Pointer
           events on the toast body are enabled only on the close
           button — the surrounding fixed wrapper stays inert so the
           toast doesn't accidentally intercept a Gantt bar click
-          under it. */}
-      {toastMessage ? (
+          under it. Variant switches only the color palette; the
+          layout is identical across success / info / error so the
+          user sees a consistent widget shape. */}
+      {toast ? (
         <div
           role="status"
           aria-live="polite"
           className="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4"
         >
-          <div className="pointer-events-auto flex max-w-md items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-lg">
-            <span className="mt-0.5 flex-1">{toastMessage}</span>
+          <div
+            className={
+              toast.variant === "success"
+                ? "pointer-events-auto flex max-w-md items-start gap-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 shadow-lg"
+                : toast.variant === "error"
+                  ? "pointer-events-auto flex max-w-md items-start gap-2 rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-900 shadow-lg"
+                  : "pointer-events-auto flex max-w-md items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 shadow-lg"
+            }
+          >
+            <span className="mt-0.5 flex-1">{toast.message}</span>
             <button
               type="button"
-              onClick={() => setToastMessage(null)}
+              onClick={() => setToast(null)}
               aria-label="Dismiss notification"
-              className="shrink-0 rounded p-0.5 text-amber-700 hover:bg-amber-100 hover:text-amber-900"
+              className={
+                toast.variant === "success"
+                  ? "shrink-0 rounded p-0.5 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-900"
+                  : toast.variant === "error"
+                    ? "shrink-0 rounded p-0.5 text-rose-700 hover:bg-rose-100 hover:text-rose-900"
+                    : "shrink-0 rounded p-0.5 text-amber-700 hover:bg-amber-100 hover:text-amber-900"
+              }
             >
               <X size={12} />
             </button>

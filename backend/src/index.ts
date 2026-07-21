@@ -18,6 +18,7 @@ import { tshirtSizesRouter } from "./routes/tshirtSizes.js";
 import { aiReferenceEstimatesRouter } from "./routes/aiReferenceEstimates.js";
 import { importsRouter } from "./routes/imports.js";
 import { projectsRouter } from "./routes/projects.js";
+import { prioritizationRouter } from "./routes/prioritization.js";
 import { aiHeadlineRouter } from "./routes/aiHeadline.js";
 import { roadmapOverviewsRouter } from "./routes/roadmapOverviews.js";
 import { projectCommentsRouter } from "./routes/comments.js";
@@ -71,6 +72,11 @@ app.use("/api/tshirt-sizes", authenticate, groupScope, tshirtSizesRouter);
 app.use("/api/ai-reference-estimates", authenticate, groupScope, aiReferenceEstimatesRouter);
 app.use("/api/imports", authenticate, groupScope, importsRouter);
 app.use("/api/projects", authenticate, groupScope, projectsRouter);
+// Global 1..N prioritization surface. Backs the Prioritization tab
+// in the frontend; PUT here also cascades onto per-lane
+// `projects.position` so Board / Roadmap Priority-sort track the
+// user's global choice. See backend/src/routes/prioritization.ts.
+app.use("/api/prioritization", authenticate, groupScope, prioritizationRouter);
 // AI-backed roadmap headline. Mounted separately from /api/projects
 // because it summarizes a slice of the whole roadmap rather than a
 // single project — the prompt is caller-assembled and none of the

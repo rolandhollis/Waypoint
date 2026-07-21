@@ -298,6 +298,8 @@ export const FIELD_LABELS: Record<string, string> = {
   dev_estimate_sourced_by_dev: "dev estimate confirmed",
   dates_locked: "dates locked",
   hidden_from_roadmap: "hidden from roadmap",
+  is_key_strategic: "key strategic",
+  global_priority: "global priority",
 };
 
 function isBlank(v: unknown): boolean {
