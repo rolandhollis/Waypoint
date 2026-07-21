@@ -18,6 +18,7 @@ import { UnscheduledList } from "../components/UnscheduledList";
 import { PhaseLegend } from "../components/PhaseLegend";
 import { ColorLegend } from "../components/ColorLegend";
 import { RoadmapHelper } from "../components/RoadmapHelper";
+import { RoadmapQuartersView } from "../components/RoadmapQuartersView";
 
 export function RoadmapView() {
   const projects = useProjects();
@@ -379,6 +380,21 @@ export function RoadmapView() {
                   >
                     All
                   </button>
+                  {/* "Quarters" swaps in a wholly different layout
+                      (RoadmapQuartersView) — a horizontal set of
+                      quarter columns rather than a Gantt. Kept on
+                      the same segmented control so the timeframe
+                      cluster still reads as one pick; all other
+                      Roadmap surfaces (Overview, Headline, Recent
+                      Changes, Unscheduled) render alongside as they
+                      do for the Gantt zooms. */}
+                  <button
+                    className={`border-l border-wp-stone px-2 py-1 ${zoom === "quarters" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                    onClick={() => setZoom("quarters")}
+                    title="Show a By Quarter column layout (current + next 3 quarters)"
+                  >
+                    Quarters
+                  </button>
                 </div>
               </div>
               {/* Sort-by segmented control. "Start date" is the
@@ -553,7 +569,31 @@ export function RoadmapView() {
             html-to-image's foreignObject clone silently cropping the
             SVG's tail to the visible viewport. */}
         <div className={pdfMode ? "flex-1" : "flex-1 overflow-auto"}>
-          {scheduledInViewport.length ? (
+          {zoom === "quarters" ? (
+            // By-quarter layout: four columns (current + next 3),
+            // items placed by completion quarter (optimization_end_date)
+            // and sorted by the roadmap priority composite. All
+            // upstream filters — including "Key strategic only" —
+            // have already been applied via `applyFilters` +
+            // `visibleProjects`, and the quarters component itself
+            // drops items missing `optimization_end_date` or
+            // falling outside the four-column window. Copy Image
+            // + PDF export continue to work because the quarters
+            // container carries the same `data-roadmap-capture-root`
+            // attribute the Gantt uses and lives inside `exportRef`.
+            //
+            // The "Show conflicts" toggle intentionally has no
+            // visible effect here — the quarters view is a summary
+            // surface with no per-item warnings to gate.
+            <RoadmapQuartersView
+              projects={scheduled}
+              lanes={lanes.data ?? []}
+              teams={teams.data ?? []}
+              users={users.data ?? []}
+              onOpen={setSelectedId}
+              pdfMode={pdfMode}
+            />
+          ) : scheduledInViewport.length ? (
             <GanttTimeline
               projects={scheduledInViewport}
               lanes={lanes.data ?? []}

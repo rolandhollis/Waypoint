@@ -43,7 +43,7 @@ export function RoadmapOverview({
 }: {
   filters: FilterState;
   groupBy: GroupBy;
-  zoom: "3mo" | "6mo" | "1yr" | "all";
+  zoom: "3mo" | "6mo" | "1yr" | "all" | "quarters";
   /**
    * Ordered array of the scheduled project ids currently in the
    * Gantt viewport. Same list RoadmapHeadline consumes so the two

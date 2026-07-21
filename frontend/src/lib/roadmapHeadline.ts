@@ -68,12 +68,17 @@ export function toWireGroupBy(groupBy: GroupBy): HeadlineGroupBy {
  * next 3 months") without asking Claude to translate an internal
  * code.
  */
-export function timeframeLabelFor(zoom: "3mo" | "6mo" | "1yr" | "all"): string {
+export function timeframeLabelFor(zoom: "3mo" | "6mo" | "1yr" | "all" | "quarters"): string {
     switch (zoom) {
     case "3mo": return "3 months";
     case "6mo": return "6 months";
     case "1yr": return "1 year";
     case "all": return "All";
+    // "quarters" surfaces a wholly different layout (RoadmapQuartersView)
+    // but the AI Roadmap Headline still asks for a text label; use the
+    // next-four-quarters window the view actually renders so the prompt
+    // reads naturally ("in the next four quarters …").
+    case "quarters": return "Next four quarters";
   }
 }
 
@@ -202,7 +207,7 @@ export function computeHeadlineGroups(
  */
 export type HeadlineFingerprintInputs = {
   groupBy: GroupBy;
-  zoom: "3mo" | "6mo" | "1yr" | "all";
+  zoom: "3mo" | "6mo" | "1yr" | "all" | "quarters";
   filters: {
     ownerIds: string[];
     teamIds: string[];

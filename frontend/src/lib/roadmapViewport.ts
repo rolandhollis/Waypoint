@@ -16,17 +16,22 @@ import type { Project } from "./types";
  * Roadmap Gantt "zoom" (timeframe) options. The three fixed windows
  * anchor a fresh view around today; "all" is a dynamic window that
  * spans from the earliest scheduled item to the latest so PMs can
- * see everything on one screen.
+ * see everything on one screen; "quarters" is a wholly different
+ * layout (RoadmapQuartersView) — the Gantt never renders in that
+ * mode, but the value still lives on the same `zoom` state so the
+ * timeframe segmented control can toggle between all five options.
  */
-export type Zoom = "3mo" | "6mo" | "1yr" | "all";
+export type Zoom = "3mo" | "6mo" | "1yr" | "all" | "quarters";
 
 /**
  * Fixed timeframe length (in months, forward-from-today) for each
- * non-"all" zoom. "all" is derived from the visible project set and
- * therefore has no fixed value here — callers that need a numeric
- * width should special-case zoom === "all".
+ * non-"all" / non-"quarters" zoom. "all" is derived from the visible
+ * project set and therefore has no fixed value here; "quarters"
+ * short-circuits the whole Gantt chart-range pipeline so it also
+ * has no entry. Callers that need a numeric width should special-
+ * case those two zooms.
  */
-export const TIMEFRAME_MONTHS: Record<Exclude<Zoom, "all">, number> = {
+export const TIMEFRAME_MONTHS: Record<Exclude<Zoom, "all" | "quarters">, number> = {
   "3mo": 3,
   "6mo": 6,
   "1yr": 12,
@@ -44,7 +49,7 @@ export const TIMEFRAME_MONTHS: Record<Exclude<Zoom, "all">, number> = {
  * Values chosen historically to keep the preview modal's bars
  * readable at typical modal widths (~700–900px chart column).
  */
-export const DAY_PX: Record<Exclude<Zoom, "all">, number> = {
+export const DAY_PX: Record<Exclude<Zoom, "all" | "quarters">, number> = {
   "3mo": 16,
   "6mo": 8,
   "1yr": 3.5,
@@ -275,6 +280,18 @@ export function computeRoadmapForwardDays(
   latestProjectEnd: Date | null,
   today: Date = new Date(),
 ): number {
+  // "quarters" doesn't render a Gantt at all — RoadmapView routes
+  // to a wholly different component (RoadmapQuartersView) that
+  // computes its own quarter columns. Callers that do reach here
+  // in quarters mode (defensive path, e.g. RoadmapHelper reusing
+  // the constant) get the same forward span as the 1-year zoom
+  // so nothing crashes and the numeric contract stays stable.
+  if (zoom === "quarters") {
+    return Math.max(
+      1,
+      differenceInCalendarDays(addMonths(today, 12), today),
+    );
+  }
   if (zoom !== "all") {
     return Math.max(
       1,

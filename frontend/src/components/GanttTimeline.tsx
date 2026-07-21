@@ -397,7 +397,11 @@ export function GanttTimeline(props: Props) {
     // fit against the full totalDays because the modal shows the
     // batch end-to-end without a forward-focused viewport.
     if (useMonolithic) {
-      if (zoom !== "all") return DAY_PX[zoom];
+      // "quarters" never reaches this branch in practice — RoadmapView
+      // routes to a wholly different component for that zoom — but
+      // the widened Zoom union now includes it, so guard against it
+      // here alongside "all" to keep `DAY_PX[zoom]` typed correctly.
+      if (zoom !== "all" && zoom !== "quarters") return DAY_PX[zoom];
       const fit = computeRoadmapFitDayPx({
         containerWidth,
         spanDays: totalDays,
@@ -425,7 +429,12 @@ export function GanttTimeline(props: Props) {
       includeResizer: canResizeLabelColumn,
     });
     if (fit != null) return fit;
-    return zoom === "all" ? ALL_ZOOM_FALLBACK_DAY_PX : DAY_PX[zoom];
+    // Same "quarters never lands here" note as above — the branch is
+    // structurally unreachable when RoadmapView is the caller, but
+    // the widened Zoom union means we still have to satisfy the
+    // exhaustiveness check for `DAY_PX[zoom]`.
+    if (zoom === "all" || zoom === "quarters") return ALL_ZOOM_FALLBACK_DAY_PX;
+    return DAY_PX[zoom];
   }, [
     pdfMode, useMonolithic, zoom, containerWidth, totalDays, forwardDays,
     resolvedLabelColumnPx, canResizeLabelColumn,
