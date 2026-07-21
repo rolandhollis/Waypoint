@@ -6,7 +6,7 @@ import { applyFilters } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { indexById } from "../lib/hierarchy";
-import { isProjectInRoadmapViewport, type Zoom } from "../lib/roadmapViewport";
+import { computeRoadmapChartRange, isProjectInRoadmapViewport, type Zoom } from "../lib/roadmapViewport";
 import { computeHeadlineGroups } from "../lib/roadmapHeadline";
 import { FilterBar } from "../components/FilterBar";
 import { GanttTimeline } from "../components/GanttTimeline";
@@ -187,11 +187,23 @@ export function RoadmapView() {
   const unscheduled = filtered.filter((p) => !computePhases(p).scheduled);
 
   // Viewport filter: hide scheduled rows whose entire span sits
-  // outside the currently-visible timeframe. Keeps the Gantt from
-  // wasting vertical space on rows the PM has to scroll past to
-  // see. Only affects the Gantt — the Unscheduled list, Recent
+  // outside the currently-visible chart range. Keeps the Gantt
+  // from wasting vertical space on rows the PM has to scroll past
+  // to see. Only affects the Gantt — the Unscheduled list, Recent
   // Changes, and Auto-scheduler picker still see the full
   // `visibleProjects` / `scheduled` / `unscheduled` sets.
+  //
+  // Chart range comes from the same helper GanttTimeline uses so
+  // both surfaces agree on what "in the chart" means. The
+  // interactive chart extends past the selected forward timeframe
+  // to include ongoing projects (left) and projects reaching past
+  // the timeframe (right), so this predicate is intentionally
+  // permissive: any scheduled item whose span overlaps
+  // [chartStart, chartEnd] survives. In practice that's every
+  // scheduled item with a computable span — the extended range is
+  // derived from those very spans — but the check remains as a
+  // safety net for items without plottable dates and future
+  // callers that pre-crop the chart.
   //
   // Edge case: an epic that's itself out-of-range but has any
   // in-range subtask is kept so those subtask rows still have a
@@ -199,15 +211,15 @@ export function RoadmapView() {
   // whether the subtasks are actually visible; if all of an epic's
   // subtasks fall out of the viewport the epic simply loses its
   // chevron affordance (hasChildren derives from the passed list
-  // inside GanttTimeline). See the file-header notes in
-  // `lib/roadmapViewport.ts` for the precise date-range predicate.
-  //
-  // When zoom === "all" `isProjectInRoadmapViewport` short-circuits
-  // to true, so this filter naturally becomes a no-op.
+  // inside GanttTimeline).
+  const { chartStart, chartEnd } = computeRoadmapChartRange({
+    projects: scheduled,
+    zoom,
+  });
   const scheduledById = indexById(scheduled);
   const inRangeIds = new Set<string>();
   for (const p of scheduled) {
-    if (isProjectInRoadmapViewport(p, zoom)) inRangeIds.add(p.id);
+    if (isProjectInRoadmapViewport(p, chartStart, chartEnd)) inRangeIds.add(p.id);
   }
   const finalIds = new Set(inRangeIds);
   for (const id of inRangeIds) {
