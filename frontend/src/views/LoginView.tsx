@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { Eye, EyeOff, LogIn } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { consumePostLoginRedirect } from "../lib/postLoginRedirect";
 import type { User } from "../lib/types";
 
 /**
@@ -33,7 +34,15 @@ export function LoginView() {
     onSuccess: async () => {
       // Prime the cache and drop any prior 401 error state.
       await qc.invalidateQueries();
-      navigate("/board", { replace: true });
+      // Honor a stashed post-login redirect if one is present —
+      // that's how deep-links (e.g. a shared roadmap URL with
+      // filter params) survive the mandatory bounce through the
+      // login screen. `consumePostLoginRedirect` clears the stash
+      // and rejects anything that doesn't look like a same-origin
+      // path, so a poisoned session store can't turn login into
+      // an open redirect.
+      const target = consumePostLoginRedirect() ?? "/board";
+      navigate(target, { replace: true });
     },
     onError: (err) => {
       if (err instanceof ApiError) {

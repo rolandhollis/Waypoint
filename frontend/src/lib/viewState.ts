@@ -273,6 +273,28 @@ type Store = {
    * discards a stale summary.
    */
   setRoadmapHeadline: (groupId: string, entry: RoadmapHeadlineCacheEntry | null) => void;
+  /**
+   * Atomically overwrite every roadmap-affecting slice from a
+   * decoded URL payload. Used by RoadmapView on mount when the
+   * incoming URL carries at least one shareable-state param — the
+   * URL is authoritative over the whole roadmap surface in that
+   * case (filters, colorBy, groupBy, sort mode, show-conflicts,
+   * timeframe), so this setter takes the full snapshot in one
+   * `set(...)` call rather than firing six separate writes and
+   * six re-render passes. Optional fields left `undefined` fall
+   * through to the pre-existing store value so a partial URL
+   * (e.g. only `?zoom=1yr`) doesn't wipe unrelated persisted
+   * prefs — but `filters` is always required because URL absence
+   * of a filter param means "cleared", not "keep persisted."
+   */
+  hydrateRoadmapFromUrl: (patch: {
+    filters: FilterState;
+    colorBy?: ColorBy;
+    groupBy?: GroupBy;
+    roadmapSort?: RoadmapSort;
+    showConflicts?: boolean;
+    roadmapTimeframe?: Zoom;
+  }) => void;
   clear: (view: ViewKey) => void;
 };
 
@@ -432,6 +454,31 @@ export const useViewStore = create<Store>()(
             next[groupId] = entry;
           }
           return { roadmapHeadline: { byGroupId: next } };
+        }),
+      // Bulk URL → store rehydration. Everything the roadmap URL
+      // owns is overwritten in a single `set(...)`, so subscribers
+      // see the whole new slice in one commit (no partial states
+      // where zoom has updated but filters haven't yet). The full
+      // `filters` object is spread over the persisted roadmap
+      // slice's other fields (colorBy / groupBy) so any of the
+      // three can independently fall back to the pre-hydration
+      // value when the URL didn't carry it.
+      hydrateRoadmapFromUrl: (patch) =>
+        set((s) => {
+          const nextRoadmap: PerView = {
+            filters: patch.filters,
+            colorBy: patch.colorBy ?? s.roadmap.colorBy,
+            groupBy: patch.groupBy ?? s.roadmap.groupBy,
+          };
+          return {
+            roadmap: nextRoadmap,
+            roadmapSort: patch.roadmapSort ?? s.roadmapSort,
+            showConflicts:
+              patch.showConflicts !== undefined
+                ? patch.showConflicts
+                : s.showConflicts,
+            roadmapTimeframe: patch.roadmapTimeframe ?? s.roadmapTimeframe,
+          };
         }),
       clear: (view) => set((s) => ({
         ...s,

@@ -19,6 +19,10 @@ import { ResetPasswordView } from "./views/ResetPasswordView";
 import { ReminderBanner } from "./components/ReminderBanner";
 import { UserSwitcher } from "./components/UserSwitcher";
 import { GroupSwitcher } from "./components/GroupSwitcher";
+import {
+  consumePostLoginRedirect,
+  stashPostLoginRedirect,
+} from "./lib/postLoginRedirect";
 
 export function App() {
   const health = useHealth();
@@ -53,10 +57,34 @@ export function App() {
       if (!isPasswordMode) return;
       const path = window.location.pathname;
       if (path === "/reset-password" || path === "/forgot-password") return;
+      // Stash the URL the user was on (pathname + search) so the
+      // post-login redirect can take them straight back to the same
+      // filtered view — critical for shareable roadmap links, but
+      // helpful on every deep-linked route. `stashPostLoginRedirect`
+      // itself no-ops on the auth-flow paths so a stray 401 fired
+      // while already on `/login` can't overwrite an earlier stash.
+      stashPostLoginRedirect(window.location.pathname, window.location.search);
       navigate("/login", { replace: true });
     });
     return () => setUnauthorizedHandler(null);
   }, [qc, navigate, isPasswordMode]);
+
+  // Deep-link preservation for the "no session yet" initial-visit
+  // case. When password mode is confirmed but `/users/me` has
+  // resolved to null (the wildcard `<Navigate to="/login" />` below
+  // is about to render), snapshot the current path + search so
+  // LoginView can restore it on success. Kept as an effect (not
+  // inline in the redirect element) so a full-page reload on
+  // `/roadmap?zoom=1yr` still stashes the intended destination
+  // before react-router replaces the URL with `/login`. Runs at
+  // most once per navigation because the auth-flow guard short-
+  // circuits `stashPostLoginRedirect`.
+  useEffect(() => {
+    if (!isPasswordMode) return;
+    if (me.isLoading) return;
+    if (me.data) return;
+    stashPostLoginRedirect(location.pathname, location.search);
+  }, [isPasswordMode, me.isLoading, me.data, location.pathname, location.search]);
 
   if (health.isLoading || !health.data) {
     return <FullscreenMessage title="Loading…" />;
@@ -179,7 +207,13 @@ function MockLoginScreen() {
     // Bust every cached response — including any prior 401 on /users/me —
     // so React Query refetches with the new x-mock-user-id header.
     await qc.invalidateQueries();
-    navigate("/board", { replace: true });
+    // Mirror the password-mode redirect: if the user landed here
+    // from a deep link that stashed its destination, take them
+    // straight back to it instead of the /board default. Keeps
+    // shareable-URL behavior consistent between mock and password
+    // auth modes for local development.
+    const target = consumePostLoginRedirect() ?? "/board";
+    navigate(target, { replace: true });
   }
 
   return (

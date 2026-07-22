@@ -1,12 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ClipboardCopy, FileDown, Loader2, Wand2, X } from "lucide-react";
+import { ClipboardCopy, FileDown, Link2, Loader2, Wand2, X } from "lucide-react";
 import { useCanWrite, useKpis, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { applyFilters } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { indexById } from "../lib/hierarchy";
 import { computeRoadmapChartRange, isProjectInRoadmapViewport } from "../lib/roadmapViewport";
+import {
+  decodeRoadmapState,
+  encodeRoadmapState,
+  hasAnyRoadmapUrlParam,
+} from "../lib/roadmapUrlState";
 import { computeHeadlineGroups } from "../lib/roadmapHeadline";
 import { FilterBar } from "../components/FilterBar";
 import { GanttTimeline } from "../components/GanttTimeline";
@@ -120,6 +125,68 @@ export function RoadmapView() {
   // control makes the pick both live and persistent in one write.
   const zoom = useViewStore((s) => s.roadmapTimeframe);
   const setZoom = useViewStore((s) => s.setRoadmapTimeframe);
+  const hydrateRoadmapFromUrl = useViewStore((s) => s.hydrateRoadmapFromUrl);
+
+  // One-way URL → store ingest on mount. Any roadmap-owned param in
+  // `location.search` (see `roadmapUrlState.ts`) means Alice
+  // deep-linked a specific view — the URL is authoritative over the
+  // persisted store in that case, so we overwrite the whole
+  // roadmap slice atomically. Zero params ⇒ persisted store wins
+  // (the historical behavior). Unknown / malformed values are
+  // dropped by the decoder so a stale bookmark degrades to a
+  // no-op rather than wedging state. Deliberately runs ONCE per
+  // mount so subsequent store → URL sync (below) can't feedback-
+  // loop back into the store.
+  const hydratedFromUrlRef = useRef(false);
+  useEffect(() => {
+    if (hydratedFromUrlRef.current) return;
+    hydratedFromUrlRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    if (!hasAnyRoadmapUrlParam(params)) return;
+    hydrateRoadmapFromUrl(decodeRoadmapState(params));
+  }, [hydrateRoadmapFromUrl]);
+
+  // Store → URL sync. Every roadmap-owned slice is projected back
+  // to `location.search` via `history.replaceState` (NEVER push —
+  // the roadmap is not a navigable history) after a short debounce
+  // so a burst of setFilters calls (e.g. paste into search box,
+  // dragging the date picker) collapses to a single URL write.
+  // Encoding happens in `roadmapUrlState.ts` and omits any field
+  // that matches the store default, so a bare `/roadmap` view
+  // never accumulates default noise in the address bar.
+  //
+  // Kept above the loading early-return per the hook-order rule
+  // enforced elsewhere in this component.
+  const urlSyncTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (urlSyncTimerRef.current !== null) {
+      window.clearTimeout(urlSyncTimerRef.current);
+    }
+    urlSyncTimerRef.current = window.setTimeout(() => {
+      const params = encodeRoadmapState({
+        filters,
+        colorBy,
+        groupBy,
+        roadmapSort,
+        showConflicts,
+        roadmapTimeframe: zoom,
+      });
+      const qs = params.toString();
+      // Preserve the existing history state object so any router
+      // metadata react-router stashed there survives — we're only
+      // rewriting the URL, not the navigation entry.
+      const nextUrl = qs
+        ? `${window.location.pathname}?${qs}`
+        : window.location.pathname;
+      window.history.replaceState(window.history.state, "", nextUrl);
+    }, 200);
+    return () => {
+      if (urlSyncTimerRef.current !== null) {
+        window.clearTimeout(urlSyncTimerRef.current);
+        urlSyncTimerRef.current = null;
+      }
+    };
+  }, [filters, colorBy, groupBy, roadmapSort, showConflicts, zoom]);
   const [helperOpen, setHelperOpen] = useState(false);
   // Ref-bound to the roadmap "content" wrapper — everything except
   // the FilterBar. Passed to the PDF exporter so the download
@@ -203,6 +270,37 @@ export function RoadmapView() {
       alert("PDF export failed. Check the browser console for details.");
     } finally {
       setExporting(false);
+    }
+  }
+
+  async function handleCopyLink() {
+    // Grab `location.href` fresh (rather than a memoized value) so
+    // the URL reflects the debounced sync's most recent write, even
+    // if the user clicks while a URL-sync timeout is still pending
+    // — since the sync itself uses `history.replaceState` synchronously
+    // inside its callback the address bar is always up to date by
+    // the time the user reaches for it, and worst case we fall
+    // ~200ms behind the very latest filter tweak.
+    const href = window.location.href;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(href);
+        setToast({ message: "Link copied to clipboard.", variant: "success" });
+        return;
+      }
+      // Clipboard API unavailable (older browser, non-secure
+      // context). Fall through to the shared error toast so the
+      // user knows to copy from the address bar manually — same
+      // pattern the Copy image button uses for its unsupported
+      // path, minus the file-download fallback which doesn't
+      // apply to a text link.
+      throw new Error("Clipboard API unavailable");
+    } catch (err) {
+      console.error("Copy roadmap link failed", err);
+      setToast({
+        message: "Couldn't copy the link. Copy it from your browser's address bar instead.",
+        variant: "error",
+      });
     }
   }
 
@@ -501,6 +599,24 @@ export function RoadmapView() {
                 keeps this control cluster out of the snapshot so the
                 exported PDF isn't dominated by app chrome. */}
             <div className="flex items-center gap-2" data-pdf-exclude="true">
+              {/* Copy the current roadmap URL (with every filter /
+                  view-setting param encoded — see
+                  `roadmapUrlState.ts`) to the OS clipboard so the
+                  user can hand a teammate the exact view they're
+                  looking at. The debounced store → URL sync keeps
+                  the address bar current, so `location.href` is
+                  authoritative at click time. Success + failure
+                  both surface through the shared bottom-center
+                  toast the Copy image button already uses. */}
+              <button
+                type="button"
+                className="btn-secondary !py-1 !text-xs"
+                onClick={handleCopyLink}
+                title="Copy a link to this roadmap view (with every filter and setting) to your clipboard"
+              >
+                <Link2 size={12} />
+                Copy link
+              </button>
               {/* Copy the currently-visible roadmap surface (label
                   column + visible dates, no scrollbar chrome) to
                   the OS clipboard as a PNG so the user can paste
