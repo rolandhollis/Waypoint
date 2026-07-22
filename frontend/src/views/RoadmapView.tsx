@@ -6,7 +6,7 @@ import { applyFilters } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { indexById } from "../lib/hierarchy";
-import { computeRoadmapChartRange, isProjectInRoadmapViewport, type Zoom } from "../lib/roadmapViewport";
+import { computeRoadmapChartRange, isProjectInRoadmapViewport } from "../lib/roadmapViewport";
 import { computeHeadlineGroups } from "../lib/roadmapHeadline";
 import { FilterBar } from "../components/FilterBar";
 import { GanttTimeline } from "../components/GanttTimeline";
@@ -111,7 +111,15 @@ export function RoadmapView() {
 
   const canWrite = useCanWrite();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [zoom, setZoom] = useState<Zoom>("6mo");
+  // Roadmap timeframe (Gantt zoom bucket OR the "quarters" swap-in
+  // that renders `RoadmapQuartersView` instead of the Gantt) lives
+  // in the persisted zustand store so a reload lands the PM back on
+  // the same view they left — including whether they were in the
+  // Quarters column layout. See `viewState.ts` for the migration +
+  // default handling. Passing the setter directly to the segmented
+  // control makes the pick both live and persistent in one write.
+  const zoom = useViewStore((s) => s.roadmapTimeframe);
+  const setZoom = useViewStore((s) => s.setRoadmapTimeframe);
   const [helperOpen, setHelperOpen] = useState(false);
   // Ref-bound to the roadmap "content" wrapper — everything except
   // the FilterBar. Passed to the PDF exporter so the download

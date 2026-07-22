@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { Zoom } from "./roadmapViewport";
 import type { RoadmapHeadlineCacheEntry } from "./types";
 
 export type ViewKey = "board" | "roadmap" | "ezestimates";
@@ -169,6 +170,23 @@ type Store = {
    */
   showConflicts: boolean;
   /**
+   * Persisted Roadmap timeframe / zoom selection. Same field the
+   * segmented timeframe control writes to — the five values map
+   * 1:1 to the Gantt zoom buckets plus the "Quarters" swap-in that
+   * renders `RoadmapQuartersView` in place of the Gantt. Persisting
+   * this single field covers both "which timeframe was picked" and
+   * "was Quarters selected" because Quarters lives on the same enum.
+   *
+   * Default `"6mo"` matches the historical local-state default so a
+   * first-time visit (or any migrated user without an explicit pick)
+   * lands on the exact same view as before. The scroll-to-today
+   * effect in `GanttTimeline` keys off `zoom` changes and the first
+   * measured commit, so a reload with a persisted 3mo/6mo/1yr/All
+   * value still snaps today ~half an inch from the left on mount;
+   * Quarters bypasses the Gantt entirely and needs no scroll snap.
+   */
+  roadmapTimeframe: Zoom;
+  /**
    * Persisted Admin-view tab state. `adminActiveTab` is the currently
    * open top-level tab (or `null` = "no explicit pick yet — fall back
    * to whatever the URL / default resolution picks"). `adminSubTabs`
@@ -232,6 +250,15 @@ type Store = {
    * computation, only whether the resulting visuals paint.
    */
   setShowConflicts: (v: boolean) => void;
+  /**
+   * Set the persisted Roadmap timeframe. Accepts any `Zoom` value
+   * (including `"quarters"`), which is what lets the same setter
+   * back the whole segmented control including the Quarters swap-
+   * in. No side-effects beyond writing the field — the Gantt's
+   * scroll-to-today snap is driven by the same `zoom` change
+   * downstream so it re-runs on picks and on reload-into-Gantt.
+   */
+  setRoadmapTimeframe: (zoom: Zoom) => void;
   setAdminActiveTab: (key: AdminTopTabKey) => void;
   setAdminSubTab: (parent: keyof AdminSubTabState, key: string) => void;
   /** EZEstimates-only "Created" dropdown. Null clears the filter
@@ -312,6 +339,10 @@ export const useViewStore = create<Store>()(
       // roadmap has always rendered. Users who prefer the clean-
       // presentation mode opt in explicitly via the checkbox.
       showConflicts: true,
+      // Historical local-state default was `"6mo"` — kept here so a
+      // first-time visit lands on the exact same six-month Gantt
+      // returning users had before the pick started persisting.
+      roadmapTimeframe: "6mo",
       // Admin tab state starts empty so the view falls back to its
       // "first visible tab" default until the user actually picks
       // one (which persists via setAdminActiveTab below).
@@ -384,6 +415,7 @@ export const useViewStore = create<Store>()(
       clearRoadmapOverrides: () =>
         set((s) => ({ ...s, roadmapOverrideByGroup: {} })),
       setShowConflicts: (v) => set(() => ({ showConflicts: v })),
+      setRoadmapTimeframe: (zoom) => set(() => ({ roadmapTimeframe: zoom })),
       setAdminActiveTab: (key) => set(() => ({ adminActiveTab: key })),
       setAdminSubTab: (parent, key) =>
         set((s) => ({ adminSubTabs: { ...s.adminSubTabs, [parent]: key } })),
@@ -417,7 +449,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 12,
+      version: 13,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -540,6 +572,24 @@ export const useViewStore = create<Store>()(
           if (persisted.board?.filters) ensureFlag(persisted.board.filters);
           if (persisted.roadmap?.filters) ensureFlag(persisted.roadmap.filters);
           if (persisted.ezestimates?.filters) ensureFlag(persisted.ezestimates.filters);
+        }
+        // < v13: added persisted Roadmap timeframe (`roadmapTimeframe`,
+        // one of "3mo" | "6mo" | "1yr" | "all" | "quarters"). Backfill
+        // to the historical local-state default so returning users see
+        // the exact same six-month Gantt they had before the pick
+        // started persisting — this is a pure defaulting migration
+        // with no behavior change for anyone who hasn't touched the
+        // timeframe control. The "Quarters" pick shares this same
+        // field (it's just another value on the same enum), so no
+        // additional state is needed to remember Quarters vs Gantt.
+        if (version < 13) {
+          const validZooms = ["3mo", "6mo", "1yr", "all", "quarters"];
+          if (
+            typeof persisted.roadmapTimeframe !== "string"
+            || !validZooms.includes(persisted.roadmapTimeframe)
+          ) {
+            persisted.roadmapTimeframe = "6mo";
+          }
         }
         return persisted;
       },
