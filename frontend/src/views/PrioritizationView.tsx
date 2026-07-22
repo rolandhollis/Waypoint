@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { cn } from "../lib/cn";
-import { readableOn, tint } from "../lib/colors";
+import { pillTextColor, tint } from "../lib/colors";
 import {
   useCanWrite,
   usePrioritization,
@@ -661,7 +661,11 @@ function SortableRow(props: {
   const dateRange = formatDateRange(row.start_date, row.optimization_end_date);
   const chipColor = primaryTeam?.color ?? null;
   const chipBg = chipColor ? tint(chipColor, 0.16) : null;
-  const chipFg = chipColor ? readableOn(chipColor) : null;
+  // `pillTextColor(chipColor)` — not `readableOn(chipColor)` — is what
+  // clears WCAG AA on the pale-tint bg. The older call passed the raw
+  // team color and got back near-white text for any dark-saturated hue
+  // (magenta / purple / blue), which then vanished on the pale tint.
+  const chipFg = chipColor ? pillTextColor(chipColor) : null;
   const chipBorder = chipColor ? tint(chipColor, 0.4) : null;
 
   return (
@@ -851,7 +855,11 @@ function DragPreview(props: {
   const dateRange = formatDateRange(row.start_date, row.optimization_end_date);
   const chipColor = primaryTeam?.color ?? null;
   const chipBg = chipColor ? tint(chipColor, 0.16) : null;
-  const chipFg = chipColor ? readableOn(chipColor) : null;
+  // Match SortableRow: pillTextColor picks a darkened team-hue that
+  // clears WCAG AA against the pale-tint bg so the drag preview stays
+  // readable for magenta / purple / cyan teams that used to render as
+  // near-white text.
+  const chipFg = chipColor ? pillTextColor(chipColor) : null;
   const chipBorder = chipColor ? tint(chipColor, 0.4) : null;
 
   return (

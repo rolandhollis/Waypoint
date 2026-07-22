@@ -4,7 +4,7 @@ import { useRef } from "react";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy } from "../lib/viewState";
 import { cn } from "../lib/cn";
-import { readableOn, tint } from "../lib/colors";
+import { pillTextColor, tint } from "../lib/colors";
 import { computePhases } from "../lib/phaseCompute";
 import { StatusPill } from "./StatusPill";
 import { LaneMoveMenu } from "./LaneMoveMenu";
@@ -140,15 +140,16 @@ export function ProjectCard(props: {
             {projectTeams.map((t) => {
               // Colored text-only chips (`color: t.color` on white) ran
               // straight into a readability wall for light team colors
-              // like yellow. Swap to tint-bg + colored border + a text
-              // color picked from the effective bg luminance so every
-              // team hex reads cleanly against the card surface.
+              // like yellow. Swap to tint-bg + colored border + a
+              // darkened team-hue text via `pillTextColor` so every
+              // team hex reads cleanly against the card surface while
+              // still communicating the team's color identity.
               const bg = tint(t.color, 0.14);
               return (
                 <span
                   key={t.id}
                   className="chip"
-                  style={{ borderColor: t.color, background: bg, color: readableOn(bg) }}
+                  style={{ borderColor: t.color, background: bg, color: pillTextColor(t.color) }}
                   title={`Team: ${t.name}`}
                 >
                   {t.name}

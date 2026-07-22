@@ -718,6 +718,12 @@ export function RoadmapView() {
               groupBy={groupBy}
               onOpen={setSelectedId}
               pdfMode={pdfMode}
+              // Signals the Quarters view that un-starring an item
+              // will vanish it from the current filtered view, so
+              // the star-toggle click can gate on a confirm modal.
+              // No effect on any other direction (mark-as-strategic
+              // stays silent).
+              keyStrategicFilterActive={filters.keyStrategicOnly}
             />
           ) : scheduledInViewport.length ? (
             <GanttTimeline

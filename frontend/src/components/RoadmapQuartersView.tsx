@@ -1,5 +1,7 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { Star } from "lucide-react";
+import * as Dialog from "@radix-ui/react-dialog";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   addQuarters,
   endOfQuarter,
@@ -9,8 +11,10 @@ import {
   parseISO,
   startOfQuarter,
 } from "date-fns";
+import { api } from "../lib/api";
 import { cn } from "../lib/cn";
-import { readableOn, tint } from "../lib/colors";
+import { pillTextColor, tint } from "../lib/colors";
+import { useCanWrite } from "../lib/queries";
 import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
 import type { GroupBy } from "../lib/viewState";
 
@@ -58,6 +62,7 @@ export function RoadmapQuartersView({
   onOpen,
   now = new Date(),
   pdfMode = false,
+  keyStrategicFilterActive = false,
 }: {
   projects: Project[];
   lanes: SwimLane[];
@@ -86,11 +91,70 @@ export function RoadmapQuartersView({
    * `pdfMode` bookend the Gantt uses.
    */
   pdfMode?: boolean;
+  /**
+   * Mirror of the caller's `roadmap.filters.keyStrategicOnly` chip
+   * state. When true AND the user clicks the star to *un-mark* an
+   * item as key strategic, we intercept the click with a confirm
+   * modal — otherwise the toggle would silently vanish the card
+   * from the current (key-strategic-only) view with no undo path.
+   * The `false → true` direction always fires silently regardless
+   * of this flag; adding a star can never remove an item from the
+   * filtered set.
+   */
+  keyStrategicFilterActive?: boolean;
 }) {
   const teamsById = useMemo(() => new Map(teams.map((t) => [t.id, t])), [teams]);
   const usersById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
   const lanesById = useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
   const kpisById = useMemo(() => new Map(kpis.map((k) => [k.id, k])), [kpis]);
+
+  // The Quarters view is the ONLY roadmap surface where the strategic-
+  // star affordance is interactive: clicking a card's star flips
+  // `is_key_strategic` with an optimistic PATCH that mirrors the
+  // GanttTimeline `patchMutation` pattern (cache snapshot + rollback
+  // on error, invalidate on settle). Every other star render site on
+  // the roadmap (Gantt row label, Prioritization Column B, detail
+  // header title) stays display-only.
+  const canWrite = useCanWrite();
+  const qc = useQueryClient();
+  const strategicToggle = useMutation({
+    mutationFn: (v: { id: string; next: boolean }) =>
+      api<Project>(`/projects/${v.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_key_strategic: v.next }),
+      }),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: ["projects"] });
+      const prev = qc.getQueryData<Project[]>(["projects"]);
+      if (prev) {
+        qc.setQueryData<Project[]>(
+          ["projects"],
+          prev.map((p) => (p.id === v.id ? { ...p, is_key_strategic: v.next } : p)),
+        );
+      }
+      return { prev };
+    },
+    onError: (_err, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["projects"], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["projects"] }),
+  });
+  // When the "Key strategic only" chip is on, un-starring an item
+  // would silently remove it from the current view — one-click,
+  // no undo. Intercept that specific transition with a confirm
+  // modal; every other path (marking as strategic, or unstarring
+  // with the filter off) fires the mutation immediately, matching
+  // the pre-existing behavior.
+  const [confirmingUnstar, setConfirmingUnstar] = useState<Project | null>(null);
+  const onToggleKeyStrategic = canWrite
+    ? (p: Project) => {
+        if (p.is_key_strategic && keyStrategicFilterActive) {
+          setConfirmingUnstar(p);
+          return;
+        }
+        strategicToggle.mutate({ id: p.id, next: !p.is_key_strategic });
+      }
+    : null;
 
   // Build the four-quarter window anchored on today. `startOfQuarter`
   // hands us the first day of the current quarter; each subsequent
@@ -343,11 +407,29 @@ export function RoadmapQuartersView({
     </div>
   );
 
+  // Rendered in both the ungrouped and grouped return paths so a
+  // click on any card's star — no matter which layout is active —
+  // routes through the same confirmation. Node is a no-op when
+  // `confirmingUnstar` is null (Radix skips the portal entirely).
+  const confirmDialog = (
+    <UnstarConfirmDialog
+      project={confirmingUnstar}
+      onCancel={() => setConfirmingUnstar(null)}
+      onConfirm={() => {
+        if (confirmingUnstar) {
+          strategicToggle.mutate({ id: confirmingUnstar.id, next: false });
+        }
+        setConfirmingUnstar(null);
+      }}
+    />
+  );
+
   // -----------------------------------------------------------------
   // Ungrouped path — historical 4-column card layout, unchanged.
   // -----------------------------------------------------------------
   if (groupBy === "none" || groups === null) {
     return (
+      <>
       <div className="p-4" data-roadmap-capture-root="true">
         {totalCount === 0 ? emptyMessage : null}
         <div
@@ -398,6 +480,7 @@ export function RoadmapQuartersView({
                         team={p.teams[0] ? teamsById.get(p.teams[0]) : undefined}
                         owner={p.owner_id ? usersById.get(p.owner_id) : undefined}
                         onOpen={onOpen}
+                        onToggleKeyStrategic={onToggleKeyStrategic}
                       />
                     ))
                   )}
@@ -407,6 +490,8 @@ export function RoadmapQuartersView({
           })}
         </div>
       </div>
+      {confirmDialog}
+      </>
     );
   }
 
@@ -430,6 +515,7 @@ export function RoadmapQuartersView({
               : "Group";
 
   return (
+    <>
     <div className="p-4" data-roadmap-capture-root="true">
       {totalCount === 0 ? emptyMessage : null}
 
@@ -494,6 +580,7 @@ export function RoadmapQuartersView({
                 teamsById={teamsById}
                 usersById={usersById}
                 onOpen={onOpen}
+                onToggleKeyStrategic={onToggleKeyStrategic}
               />
             );
           })}
@@ -540,6 +627,7 @@ export function RoadmapQuartersView({
                             team={p.teams[0] ? teamsById.get(p.teams[0]) : undefined}
                             owner={p.owner_id ? usersById.get(p.owner_id) : undefined}
                             onOpen={onOpen}
+                            onToggleKeyStrategic={onToggleKeyStrategic}
                           />
                         ))}
                       </div>
@@ -552,6 +640,8 @@ export function RoadmapQuartersView({
         ))}
       </div>
     </div>
+    {confirmDialog}
+    </>
   );
 }
 
@@ -578,6 +668,7 @@ function GroupRow({
   teamsById,
   usersById,
   onOpen,
+  onToggleKeyStrategic,
 }: {
   group: GroupView;
   columns: { key: string }[];
@@ -586,6 +677,13 @@ function GroupRow({
   teamsById: Map<string, Team>;
   usersById: Map<string, User>;
   onOpen: (id: string) => void;
+  /**
+   * Non-null on the Quarters view when the caller can write — see
+   * the parent `RoadmapQuartersView` mutation. `null` when the user
+   * is a viewer OR when the star should stay non-interactive; the
+   * card renders a plain read-only star in that case.
+   */
+  onToggleKeyStrategic: ((p: Project) => void) | null;
 }) {
   const border = isLastRow ? "" : "border-b";
   return (
@@ -629,6 +727,7 @@ function GroupRow({
                     team={p.teams[0] ? teamsById.get(p.teams[0]) : undefined}
                     owner={p.owner_id ? usersById.get(p.owner_id) : undefined}
                     onOpen={onOpen}
+                    onToggleKeyStrategic={onToggleKeyStrategic}
                   />
                 ))}
               </div>
@@ -694,25 +793,47 @@ function GroupLabel({
  * detail modal without hunting for a specific affordance. Team
  * chip (primary team only), a star for `is_key_strategic`, and
  * an owner initial live in a single row below the title.
+ *
+ * The outer element is a `div[role="button"]` rather than a real
+ * `<button>` so the strategic-star toggle can nest as its own
+ * `<button>` without violating "no interactive-in-interactive"
+ * HTML. Enter / Space are wired through by hand to match native
+ * button keyboard activation.
  */
 function QuarterItemCard({
   project,
   team,
   owner,
   onOpen,
+  onToggleKeyStrategic,
 }: {
   project: Project;
   team: Team | undefined;
   owner: User | undefined;
   onOpen: (id: string) => void;
+  /**
+   * When non-null the star renders as a clickable button that flips
+   * `is_key_strategic`; when null (viewer role, or any surface that
+   * wants to keep the star display-only) it renders as a plain icon
+   * with the same fill/outline styling.
+   */
+  onToggleKeyStrategic: ((p: Project) => void) | null;
 }) {
   const teamBg = team ? tint(team.color, 0.14) : null;
+  const canToggleStar = onToggleKeyStrategic !== null;
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onOpen(project.id)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen(project.id);
+        }
+      }}
       className={cn(
-        "group flex w-full flex-col gap-1.5 rounded-md border border-wp-stone bg-white px-2.5 py-2 text-left transition",
+        "group flex w-full cursor-pointer flex-col gap-1.5 rounded-md border border-wp-stone bg-white px-2.5 py-2 text-left transition",
         "hover:border-wp-red/40 hover:shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-red/40",
       )}
       title={project.title}
@@ -724,19 +845,66 @@ function QuarterItemCard({
         >
           {project.title}
         </div>
-        {project.is_key_strategic ? (
+        {canToggleStar ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              // Row-open sits on the outer div; stop the star click
+              // from bubbling up so the detail modal doesn't fire on
+              // a toggle.
+              e.stopPropagation();
+              onToggleKeyStrategic!(project);
+            }}
+            onKeyDown={(e) => {
+              // Same reason as above for keyboard activation — the
+              // outer div's onKeyDown also opens the modal on
+              // Enter / Space, which we don't want when focus is on
+              // the star.
+              e.stopPropagation();
+            }}
+            aria-label={
+              project.is_key_strategic
+                ? "Unmark as key strategic"
+                : "Mark as key strategic"
+            }
+            aria-pressed={project.is_key_strategic}
+            title={
+              project.is_key_strategic
+                ? "Key strategic \u2014 click to unmark"
+                : "Mark as key strategic"
+            }
+            className={cn(
+              "mt-0.5 inline-flex shrink-0 cursor-pointer items-center justify-center rounded p-0.5 transition hover:bg-wp-stone/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-red/40",
+              project.is_key_strategic
+                ? "text-wp-red hover:text-wp-red/80"
+                : "text-wp-slate/40 hover:text-wp-slate",
+            )}
+          >
+            <Star
+              size={12}
+              className={project.is_key_strategic ? "fill-wp-red" : ""}
+            />
+          </button>
+        ) : (
           <Star
             size={12}
-            className="mt-0.5 shrink-0 fill-wp-red text-wp-red"
-            aria-label="Key strategic"
+            className={cn(
+              "mt-0.5 shrink-0",
+              project.is_key_strategic
+                ? "fill-wp-red text-wp-red"
+                : "text-wp-slate/40",
+            )}
+            aria-label={
+              project.is_key_strategic ? "Key strategic" : "Not key strategic"
+            }
           />
-        ) : null}
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-wp-slate">
         {team && teamBg ? (
           <span
             className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] leading-none"
-            style={{ borderColor: team.color, background: teamBg, color: readableOn(teamBg) }}
+            style={{ borderColor: team.color, background: teamBg, color: pillTextColor(team.color) }}
             title={`Team: ${team.name}`}
           >
             {team.name}
@@ -752,7 +920,7 @@ function QuarterItemCard({
           </span>
         ) : null}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -762,4 +930,95 @@ function initials(name: string): string {
     .slice(0, 2)
     .map((s) => s[0]?.toUpperCase() ?? "")
     .join("");
+}
+
+/**
+ * Confirm dialog surfaced when the user clicks the strategic-star
+ * to *un-mark* an item while the roadmap's "Key strategic only"
+ * filter is active. Without this interstitial the click would
+ * silently drop the card out of the current view — one accidental
+ * click, no undo. Cancel gets autofocus and is styled as the
+ * primary path so a stray Enter closes without mutating.
+ *
+ * Uses the same Radix Dialog primitive the rest of the app
+ * standardizes on (see `PhaseDatePromptModal`, `StatusUpdateModal`).
+ * The component is unmounted entirely when `project === null`;
+ * Radix handles the portal / overlay lifecycle.
+ */
+function UnstarConfirmDialog({
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  project: Project | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  // Cancel button ref for explicit programmatic focus. Radix
+  // Dialog's default is to focus the first focusable descendant,
+  // which would be the Radix-injected close (X) button if we had
+  // one — we don't, so the default lands on Cancel already, but
+  // pinning it explicitly via `onOpenAutoFocus` keeps the focus
+  // target stable if we later add a close button in the header.
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+
+  // Keep the last non-null project so the modal content doesn't
+  // flash to empty during Radix's exit animation frame — the
+  // parent nulls `project` synchronously on confirm/cancel, but
+  // Radix keeps the DOM mounted for a beat afterward.
+  const [snapshot, setSnapshot] = useState<Project | null>(project);
+  useEffect(() => {
+    if (project) setSnapshot(project);
+  }, [project]);
+
+  const open = project !== null;
+  const displayed = project ?? snapshot;
+
+  return (
+    <Dialog.Root
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onCancel();
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40" />
+        <Dialog.Content
+          className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg bg-white p-5 shadow-xl outline-none"
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            cancelRef.current?.focus();
+          }}
+        >
+          <Dialog.Title className="text-base font-semibold text-wp-ink">
+            Remove from key-strategic filter?
+          </Dialog.Title>
+          <Dialog.Description className="mt-2 text-sm text-wp-slate">
+            You're viewing a report filtered to key-strategic items. Removing the star from{" "}
+            <span className="font-medium text-wp-ink">
+              &ldquo;{displayed?.title ?? ""}&rdquo;
+            </span>{" "}
+            will hide it from this view.
+          </Dialog.Description>
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              ref={cancelRef}
+              type="button"
+              className="btn-primary"
+              onClick={onCancel}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={onConfirm}
+            >
+              Remove star
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
 }

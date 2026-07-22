@@ -18,6 +18,7 @@ import { Check, ChevronDown, GripVertical, Star, X } from "lucide-react";
 import { useMemo } from "react";
 import type { Team } from "../lib/types";
 import { cn } from "../lib/cn";
+import { pillTextColor } from "../lib/colors";
 
 /**
  * Multi-select for team memberships. Trigger shows the picked teams as
@@ -261,7 +262,13 @@ function StaticTeamChip({
   return (
     <span
       className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs"
-      style={{ borderColor: team.color, background: `${team.color}18`, color: team.color }}
+      // `color` is the inherited foreground for the primary star +
+      // "Primary" badge inside `ChipBody` (the team name itself sets
+      // `text-wp-ink` and doesn't inherit). Passing the raw team hex
+      // failed WCAG AA for dark-saturated hues like magenta / purple
+      // on the pale team-tint bg; `pillTextColor` returns a darkened
+      // team-hue that clears 4.5:1 while still identifying the team.
+      style={{ borderColor: team.color, background: `${team.color}18`, color: pillTextColor(team.color) }}
     >
       <ChipBody team={team} isPrimary={isPrimary} onRemove={onRemove} />
     </span>
@@ -293,7 +300,10 @@ function SortableTeamChip({
     opacity: isDragging ? 0.6 : 1,
     borderColor: team.color,
     background: `${team.color}18`,
-    color: team.color,
+    // Same recipe as `StaticTeamChip`: darkened team-hue for the
+    // inherited-color children (primary star + "PRIMARY" badge) so
+    // they clear WCAG AA on the pale tint bg for every palette hue.
+    color: pillTextColor(team.color),
   };
   return (
     <span

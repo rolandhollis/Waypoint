@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "../lib/cn";
-import { readableOn, tint } from "../lib/colors";
+import { pillTextColor, tint } from "../lib/colors";
 import {
   useProjects,
   useSwimLanes,
@@ -401,7 +401,11 @@ function FinderRow(props: {
   const dateRange = formatFinderDateRange(row.start_date, row.optimization_end_date);
   const chipColor = primaryTeam?.color ?? null;
   const chipBg = chipColor ? tint(chipColor, 0.16) : null;
-  const chipFg = chipColor ? readableOn(chipColor) : null;
+  // `pillTextColor(chipColor)` — not `readableOn(chipColor)` — is what
+  // clears WCAG AA on the pale-tint bg. The older call passed the raw
+  // team color and got back near-white text for any dark-saturated hue
+  // (magenta / purple / blue), which then vanished on the pale tint.
+  const chipFg = chipColor ? pillTextColor(chipColor) : null;
   const chipBorder = chipColor ? tint(chipColor, 0.4) : null;
 
   return (
@@ -479,14 +483,21 @@ function FinderRow(props: {
             {/* Read-only star cue for key strategic items — the
                 toggle lives in Column A and the detail modal; here
                 it's purely informational so the finder stays a
-                finder, not another editing surface. */}
-            {row.is_key_strategic ? (
-              <Star
-                size={11}
-                className="shrink-0 fill-wp-red text-wp-red"
-                aria-label="Key strategic item"
-              />
-            ) : null}
+                finder, not another editing surface. Rendered for
+                every row (filled / red when set, outline / muted
+                slate when not) so the strategic vs. non-strategic
+                state is visible at a glance without hovering. */}
+            <Star
+              size={11}
+              className={
+                row.is_key_strategic
+                  ? "shrink-0 fill-wp-red text-wp-red"
+                  : "shrink-0 text-wp-slate/40"
+              }
+              aria-label={
+                row.is_key_strategic ? "Key strategic item" : "Not key strategic"
+              }
+            />
             <span className="truncate">{row.title}</span>
           </div>
           <div className="mt-0.5 inline-flex items-center gap-1 text-[10px] text-wp-slate">

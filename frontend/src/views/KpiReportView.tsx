@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { differenceInCalendarDays, format } from "date-fns";
 import { useKpis, useProjects, useSwimLanes, useTeams } from "../lib/queries";
-import { readableOn, tint } from "../lib/colors";
+import { pillTextColor, tint } from "../lib/colors";
 import { computePhases } from "../lib/phaseCompute";
 import type { Project, SwimLane, Team } from "../lib/types";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
@@ -224,15 +224,16 @@ function ProjectRow(props: {
             {projectTeams.map((t) => {
               // Same readability fix as the Board card team chip: a
               // low-alpha tint reads as near-white on every card, so
-              // let the text color track the effective bg luminance
-              // instead of reusing the raw team color (which vanishes
-              // for yellows and other light hexes).
+              // route the text through `pillTextColor` — a darkened
+              // team-hue variant guaranteed to clear WCAG AA on the
+              // pale tint bg — instead of reusing the raw team color
+              // (which vanishes for yellows and other light hexes).
               const bg = tint(t.color, 0.14);
               return (
                 <span
                   key={t.id}
                   className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs"
-                  style={{ borderColor: t.color, background: bg, color: readableOn(bg) }}
+                  style={{ borderColor: t.color, background: bg, color: pillTextColor(t.color) }}
                 >
                   {t.name}
                 </span>

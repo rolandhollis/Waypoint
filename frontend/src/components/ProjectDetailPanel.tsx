@@ -426,19 +426,26 @@ export function ProjectDetailPanel({
               </div>
               <Dialog.Title asChild>
                 <div className="flex items-center gap-1.5">
-                  {/* Subtle "★" cue next to the title when the item
-                      is flagged as a key strategic bet (migration 038).
-                      Filled red to match the existing accent
-                      colour palette; rendered read-only here — the
-                      actual toggle lives in the checkbox below the
-                      title metadata. */}
-                  {merged.is_key_strategic ? (
-                    <Star
-                      size={18}
-                      className="shrink-0 fill-wp-red text-wp-red"
-                      aria-label="Key strategic item"
-                    />
-                  ) : null}
+                  {/* Star cue next to the title (migration 038).
+                      Always rendered so the strategic vs. non-
+                      strategic state is visible at a glance —
+                      filled + red when active, outline + muted
+                      slate when not. Display-only here; the
+                      actual toggle lives in the checkbox below
+                      the title metadata. */}
+                  <Star
+                    size={18}
+                    className={
+                      merged.is_key_strategic
+                        ? "shrink-0 fill-wp-red text-wp-red"
+                        : "shrink-0 text-wp-slate/40"
+                    }
+                    aria-label={
+                      merged.is_key_strategic
+                        ? "Key strategic item"
+                        : "Not key strategic"
+                    }
+                  />
                   <input
                     className="input !border-transparent !bg-transparent !p-0 text-lg font-semibold focus:!border-wp-red focus:!bg-white focus:!px-2"
                     value={merged.title}

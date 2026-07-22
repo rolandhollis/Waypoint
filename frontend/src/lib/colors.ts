@@ -41,6 +41,93 @@ export function readableOn(bgColor: string): string {
   return relativeLuminance(rEff, gEff, bEff) > 0.5 ? WP_INK : "#ffffff";
 }
 
+/**
+ * Pick a legible text color for a chip / pill whose background is a
+ * light tint of `teamColor` on white (as produced by `tint(color,
+ * ~0.14-0.16)` at every team-pill site in the app).
+ *
+ * Returns a darkened variant of the team hue: hue and saturation are
+ * preserved, but lightness is clamped low enough that the text clears
+ * WCAG AA (≥ 4.5:1) at small-text sizes for every hue in the current
+ * TEAM_PALETTE — including the pinks / purples / cyans / yellows that
+ * used to fail when the older code passed the raw team color into
+ * `readableOn()` and got back a near-white foreground for any hue with
+ * luminance ≤ 0.5.
+ *
+ * We keep the hue (instead of collapsing to wp-ink) so the pill still
+ * *reads* as its team color: a "Mobile App" pill is dark magenta on
+ * pale magenta rather than generic dark on pale magenta. That
+ * preserves the "at-a-glance which team" affordance the original
+ * design was aiming for.
+ *
+ * Non-hex / near-gray inputs fall back to wp-ink so the chip stays
+ * legible without producing a muddy near-gray that would look broken.
+ */
+export function pillTextColor(teamColor: string): string {
+  const rgba = parseHex(teamColor);
+  if (!rgba) return WP_INK;
+  const { h, s, l } = rgbToHsl(rgba.r, rgba.g, rgba.b);
+  // Effectively-gray hues have no hue identity to preserve; wp-ink
+  // reads cleaner than a low-sat brownish clamp for those.
+  if (s < 0.12) return WP_INK;
+  // 0.22 was chosen empirically against every color in TEAM_PALETTE /
+  // SWIM_LANE_PALETTE / KPI_PALETTE / GROUP_PALETTE: the worst-case
+  // hue (bright lime #84CC16 on its own ~0.14 tint) still lands at
+  // ~6:1 contrast, and pinks / purples / cyans clear 10:1+. Going
+  // deeper (e.g. 0.15) darkens genuinely dark palette entries needlessly;
+  // going lighter (e.g. 0.30) drops lime / yellow below 4.5:1.
+  const cappedL = Math.min(l, 0.22);
+  return hslToHex(h, s, cappedL);
+}
+
+/**
+ * Convert an RGB triple (0..255 channels) to HSL with h in [0, 360),
+ * and s, l in [0, 1]. Standard formula, factored out so
+ * `pillTextColor` can operate in a perceptually-cleaner space than
+ * naive RGB multiplication (which shifts hue for non-neutral colors
+ * and produces olive text on pink teams).
+ */
+function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === rn) h = ((gn - bn) / d) % 6;
+  else if (max === gn) h = (bn - rn) / d + 2;
+  else h = (rn - gn) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s, l };
+}
+
+/** Inverse of `rgbToHsl` — returns a 7-char `#RRGGBB` string. */
+function hslToHex(h: number, s: number, l: number): string {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const hp = h / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r1 = 0;
+  let g1 = 0;
+  let b1 = 0;
+  if (hp >= 0 && hp < 1) { r1 = c; g1 = x; }
+  else if (hp < 2) { r1 = x; g1 = c; }
+  else if (hp < 3) { g1 = c; b1 = x; }
+  else if (hp < 4) { g1 = x; b1 = c; }
+  else if (hp < 5) { r1 = x; b1 = c; }
+  else { r1 = c; b1 = x; }
+  const m = l - c / 2;
+  const to = (v: number) =>
+    Math.max(0, Math.min(255, Math.round((v + m) * 255)))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${to(r1)}${to(g1)}${to(b1)}`;
+}
+
 function isHexColor(v: string): boolean {
   return /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(v);
 }

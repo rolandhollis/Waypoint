@@ -19,7 +19,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { ChevronDown, GripVertical, X } from "lucide-react";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
-import { readableOn, tint } from "../lib/colors";
+import { pillTextColor, tint } from "../lib/colors";
 import type { Project, SwimLane, Team } from "../lib/types";
 import { Collapsible } from "./Collapsible";
 import { MutationErrorBanner } from "./MutationErrorBanner";
@@ -256,15 +256,17 @@ function SortRow({
           {projectTeams.length ? (
             <div className="flex shrink-0 items-center gap-1">
               {projectTeams.map((t) => {
-                // Same luminance-driven readability as the Board card
-                // team chip — light hexes need dark text against the
-                // tint, dark hexes need white.
+                // Same readability recipe as the Board card team chip:
+                // pale team-color tint bg + `pillTextColor` for a
+                // darkened team-hue text that clears WCAG AA on every
+                // hue in the palette (the old readableOn(rawColor)
+                // path produced white-on-pink for magenta teams).
                 const bg = tint(t.color, 0.14);
                 return (
                   <span
                     key={t.id}
                     className="inline-flex max-w-[8rem] items-center truncate rounded-full border px-1.5 py-0 text-[10px] leading-4"
-                    style={{ borderColor: t.color, background: bg, color: readableOn(bg) }}
+                    style={{ borderColor: t.color, background: bg, color: pillTextColor(t.color) }}
                     title={t.name}
                   >
                     {t.name}

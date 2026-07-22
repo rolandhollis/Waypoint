@@ -2745,18 +2745,23 @@ function SortableLabelCluster(props: {
                 <Lock size={11} />
               </span>
             ) : null}
-            {/* Subtle "★" prefix on the row label when the item is a
-                key strategic bet (migration 038). Same red fill as
-                the detail modal + Prioritization row so the accent
-                is consistent across surfaces; small (12px) so it
-                doesn't crowd the label column. */}
-            {p.is_key_strategic ? (
-              <Star
-                size={12}
-                className="shrink-0 fill-wp-red text-wp-red"
-                aria-label="Key strategic item"
-              />
-            ) : null}
+            {/* Strategic-bet indicator on the row label (migration
+                038). Always rendered so viewers can tell filled-vs-
+                empty apart at a glance without a hover / detail
+                click; filled + red when active, outline + muted
+                slate when not. Display-only on the Gantt — the
+                click-to-toggle affordance lives on the Quarters
+                view. */}
+            <Star
+              size={12}
+              className={
+                p.is_key_strategic
+                  ? "shrink-0 fill-wp-red text-wp-red"
+                  : "shrink-0 text-wp-slate/40"
+              }
+              aria-label={p.is_key_strategic ? "Key strategic item" : "Not key strategic"}
+            />
+
             <span
               className={`min-w-0 flex-1 truncate ${row.depth > 0 ? "text-wp-slate" : "text-wp-ink"}`}
               title={p.title}
