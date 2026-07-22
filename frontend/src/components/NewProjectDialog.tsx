@@ -1,6 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { format, parseISO } from "date-fns";
 import { X } from "lucide-react";
 import { api } from "../lib/api";
 import { useIsAdmin, useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
@@ -17,6 +18,15 @@ import { MutationErrorBanner } from "./MutationErrorBanner";
 import { PairedDates } from "./PairedDates";
 import { ProjectPicker } from "./ProjectPicker";
 import { TeamMultiSelect } from "./TeamMultiSelect";
+
+/**
+ * Render an ISO `YYYY-MM-DD` string as `Mon d, yyyy` for inline
+ * hint text (e.g. "Empty — will default to Aug 17, 2026 on the
+ * roadmap."). Matches the "MMM d, yyyy" style used elsewhere.
+ */
+function formatIsoDateShort(iso: string): string {
+  return format(parseISO(iso), "MMM d, yyyy");
+}
 
 /**
  * The dialog shows a "Swim lane" picker pre-selected to either the
@@ -335,15 +345,32 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
                   label="Development"
                   hint={!eff.target ? "Development picks up from Discovery's ‘Ready for dev’ when set — you can still schedule it independently." : undefined}
                 >
+                  {/* Pass RAW draft values (not `eff.*`) so unset
+                      pickers look unset. The cascade-computed
+                      fallback is surfaced via per-input hints so
+                      the PM knows what the roadmap will show if
+                      they submit without filling these in. Mirrors
+                      the ProjectDetailPanel fix — the create form
+                      had the identical phantom-dates confusion. */}
                   <PairedDates
                     startLabel="Start"
-                    startValue={eff.devStart}
+                    startValue={merged.dev_start_date}
                     startMin={eff.target}
                     onStartChange={(v) => setDate("dev_start_date", v)}
+                    startHint={
+                      !merged.dev_start_date && eff.devStart
+                        ? `Empty — will default to ${formatIsoDateShort(eff.devStart)} on the roadmap.`
+                        : undefined
+                    }
                     endLabel="End"
-                    endValue={eff.devEnd}
-                    endMin={eff.devStart}
+                    endValue={merged.dev_end_date}
+                    endMin={merged.dev_start_date ?? eff.target}
                     onEndChange={(v) => setDate("dev_end_date", v)}
+                    endHint={
+                      !merged.dev_end_date && eff.devEnd
+                        ? `Empty — will default to ${formatIsoDateShort(eff.devEnd)} on the roadmap.`
+                        : undefined
+                    }
                   />
                   <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-wp-ink">
                     <input
@@ -365,15 +392,28 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
                   label="Post-Dev Optimization"
                   hint={!eff.devEnd && !eff.target ? "Post-Dev cascades from Development's end when set — you can still schedule it independently." : undefined}
                 >
+                  {/* Same pattern as the Development block above:
+                      raw draft values in the pickers, cascade
+                      fallback disclosed inline. */}
                   <PairedDates
                     startLabel="Start"
-                    startValue={eff.optStart}
+                    startValue={merged.optimization_start_date}
                     startMin={eff.devEnd}
                     onStartChange={(v) => setDate("optimization_start_date", v)}
+                    startHint={
+                      !merged.optimization_start_date && eff.optStart
+                        ? `Empty — will default to ${formatIsoDateShort(eff.optStart)} on the roadmap.`
+                        : undefined
+                    }
                     endLabel="End"
-                    endValue={eff.optEnd}
-                    endMin={eff.optStart}
+                    endValue={merged.optimization_end_date}
+                    endMin={merged.optimization_start_date ?? eff.devEnd}
                     onEndChange={(v) => setDate("optimization_end_date", v)}
+                    endHint={
+                      !merged.optimization_end_date && eff.optEnd
+                        ? `Empty — will default to ${formatIsoDateShort(eff.optEnd)} on the roadmap.`
+                        : undefined
+                    }
                   />
                 </PhaseField>
               </div>

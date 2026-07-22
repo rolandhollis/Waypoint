@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { format } from "date-fns";
+import { format, parseISO } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Lock, LockOpen, Star, X } from "lucide-react";
 import { api } from "../lib/api";
@@ -51,6 +51,17 @@ const PHASE_FIELD_TO_KEY: Record<string, "discovery" | "development" | "post_dev
  * from ordinary field edits.
  */
 const PHASE_DATE_FIELD_NAMES = Object.keys(PHASE_FIELD_TO_KEY) as ReadonlyArray<keyof Project>;
+
+/**
+ * Render an ISO `YYYY-MM-DD` string as `Mon d, yyyy` for inline
+ * hint text (e.g. "Empty — will default to Aug 17, 2026 on the
+ * roadmap."). Kept local to the panel to avoid pulling a new
+ * shared helper for a one-line format; matches the "MMM d, yyyy"
+ * style already used elsewhere (`GanttTimeline.tsx`).
+ */
+function formatIsoDateShort(iso: string): string {
+  return format(parseISO(iso), "MMM d, yyyy");
+}
 
 export function ProjectDetailPanel({
   id,
@@ -710,15 +721,32 @@ export function ProjectDetailPanel({
                 className="col-span-2"
                 hint={!eff.target ? "Development picks up from Discovery's ‘Ready for dev’ when set — you can still schedule it independently." : undefined}
               >
+                {/* Pass the RAW stored values (not `eff.*`) so empty
+                    pickers look empty. The cascade-computed fallback
+                    is disclosed via per-input hints instead so users
+                    can tell "stored" from "auto-preview" — a
+                    project loaded with `dev_start_date=null` no
+                    longer silently displays the discovery target as
+                    if it were committed dev-start data. */}
                 <PairedDates
                   startLabel="Start"
-                  startValue={eff.devStart}
+                  startValue={merged.dev_start_date}
                   startMin={eff.target}
                   onStartChange={(v) => markPhaseDateChange("dev_start_date", v)}
+                  startHint={
+                    !merged.dev_start_date && eff.devStart
+                      ? `Empty — will default to ${formatIsoDateShort(eff.devStart)} on the roadmap.`
+                      : undefined
+                  }
                   endLabel="End"
-                  endValue={eff.devEnd}
-                  endMin={eff.devStart}
+                  endValue={merged.dev_end_date}
+                  endMin={merged.dev_start_date ?? eff.target}
                   onEndChange={(v) => markPhaseDateChange("dev_end_date", v)}
+                  endHint={
+                    !merged.dev_end_date && eff.devEnd
+                      ? `Empty — will default to ${formatIsoDateShort(eff.devEnd)} on the roadmap.`
+                      : undefined
+                  }
                   disabled={!canWrite || merged.dates_locked}
                 />
                 <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-wp-ink">
@@ -745,15 +773,30 @@ export function ProjectDetailPanel({
                 className="col-span-2"
                 hint={!eff.devEnd && !eff.target ? "Post-Dev cascades from Development's end when set — you can still schedule it independently." : undefined}
               >
+                {/* Same pattern as the Development block — show raw
+                    stored values, disclose the cascade fallback via
+                    per-input hints so an unset Post-Dev picker
+                    reads as unset rather than as an auto-preview
+                    coincidentally matching the roadmap default. */}
                 <PairedDates
                   startLabel="Start"
-                  startValue={eff.optStart}
+                  startValue={merged.optimization_start_date}
                   startMin={eff.devEnd}
                   onStartChange={(v) => markPhaseDateChange("optimization_start_date", v)}
+                  startHint={
+                    !merged.optimization_start_date && eff.optStart
+                      ? `Empty — will default to ${formatIsoDateShort(eff.optStart)} on the roadmap.`
+                      : undefined
+                  }
                   endLabel="End"
-                  endValue={eff.optEnd}
-                  endMin={eff.optStart}
+                  endValue={merged.optimization_end_date}
+                  endMin={merged.optimization_start_date ?? eff.devEnd}
                   onEndChange={(v) => markPhaseDateChange("optimization_end_date", v)}
+                  endHint={
+                    !merged.optimization_end_date && eff.optEnd
+                      ? `Empty — will default to ${formatIsoDateShort(eff.optEnd)} on the roadmap.`
+                      : undefined
+                  }
                   disabled={!canWrite || merged.dates_locked}
                 />
               </Field>
