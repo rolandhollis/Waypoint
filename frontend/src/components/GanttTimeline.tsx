@@ -2511,33 +2511,40 @@ function groupTreeRows(
       const l = lanes.find((x) => x.id === p.swim_lane_id);
       put(l?.id ?? UNASSIGNED_KEY, l?.name ?? "Unassigned", l?.order, p);
     } else if (groupBy === "team") {
-      if (p.teams.length === 0) {
-        put(UNASSIGNED_KEY, "Unassigned", undefined, p);
+      // Multi-value dimension routed to a SINGLE bucket keyed on the
+      // primary (index 0) team. The `teams` array is ranked by the
+      // PM in the detail panel (drag-reorder in TeamMultiSelect;
+      // stored order-preservingly in `project_teams.position`), so
+      // index 0 is the authoritative "this team owns the slot on
+      // the roadmap" pick. Secondary teams still surface as extra
+      // chips on the row label, and team filtering still matches
+      // any team anywhere in the array (see filtering.ts) — the
+      // primary-only rule only governs group placement.
+      const primaryId = p.teams[0] ?? null;
+      const primaryTeam = primaryId ? teams.find((x) => x.id === primaryId) : undefined;
+      if (primaryTeam) {
+        put(primaryTeam.id, primaryTeam.name, primaryTeam.order, p);
       } else {
-        for (const teamId of p.teams) {
-          const t = teams.find((x) => x.id === teamId);
-          if (!t) continue;
-          put(t.id, t.name, t.order, p);
-        }
+        put(UNASSIGNED_KEY, "Unassigned", undefined, p);
       }
     } else if (groupBy === "tag") {
       const primary = p.tags[0] ?? null;
       put(primary ?? UNASSIGNED_KEY, primary ? `#${primary}` : "No tag", undefined, p);
     } else if (groupBy === "kpi") {
-      // KPI is multi-value: a project with N KPIs shows up under all N
-      // groups. Roots with zero KPIs land in the shared UNASSIGNED
-      // bucket rendered at the bottom as "(no KPI)". Unknown KPI ids
-      // on a project (e.g. a KPI deleted since the project was last
-      // saved) are silently skipped; treating them as unassigned
-      // would incorrectly merge them with projects that have no
-      // KPIs at all.
-      const known = (p.kpis ?? [])
-        .map((kid) => kpis.find((x) => x.id === kid))
-        .filter((k): k is Kpi => Boolean(k));
-      if (known.length === 0) {
-        put(UNASSIGNED_KEY, "(no KPI)", undefined, p);
+      // Multi-value dimension routed to a SINGLE bucket keyed on the
+      // primary (index 0) KPI. Same rationale as team grouping above:
+      // each project appears exactly once on the roadmap, in the
+      // group corresponding to its highest-ranked KPI. Unknown KPI
+      // ids (deleted since the project was last saved) are skipped
+      // and we fall through to the "(no KPI)" bucket rather than
+      // silently promoting a secondary KPI — that promotion would
+      // be invisible to the PM and hard to debug.
+      const primaryKpiId = (p.kpis ?? [])[0] ?? null;
+      const primaryKpi = primaryKpiId ? kpis.find((x) => x.id === primaryKpiId) : undefined;
+      if (primaryKpi) {
+        put(primaryKpi.id, primaryKpi.name, primaryKpi.order, p, primaryKpi.color);
       } else {
-        for (const k of known) put(k.id, k.name, k.order, p, k.color);
+        put(UNASSIGNED_KEY, "(no KPI)", undefined, p);
       }
     }
   }

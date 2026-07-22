@@ -547,7 +547,7 @@ export function ProjectDetailPanel({
               <Field
                 label="Teams"
                 hint={merged.teams.length > 1
-                  ? "Drag chips to reorder — first chip is the primary team, then secondary, and so on."
+                  ? "Drag chips to reorder — the primary (first) team drives Roadmap group placement; secondary teams still count for filtering and capacity."
                   : undefined}
               >
                 <TeamMultiSelect

@@ -258,24 +258,19 @@ export function RoadmapQuartersView({
         return [{ key: UNASSIGNED_KEY, label: "Unassigned", color: null, sortKey: null }];
       }
       if (groupBy === "team") {
-        if (p.teams.length === 0) {
-          return [{ key: UNASSIGNED_KEY, label: "Unassigned", color: null, sortKey: null }];
+        // Multi-value dimension routed to a SINGLE bucket keyed on
+        // the primary (index 0) team. Matches the Gantt's
+        // `groupTreeRows` behavior — the PM ranks `teams` in the
+        // detail panel and index 0 is the authoritative slot on
+        // the roadmap. Secondary teams still surface as chips on
+        // the per-item card, and team filtering still matches any
+        // team anywhere in the array (see filtering.ts).
+        const primaryId = p.teams[0] ?? null;
+        const primaryTeam = primaryId ? teamsById.get(primaryId) : undefined;
+        if (primaryTeam) {
+          return [{ key: primaryTeam.id, label: primaryTeam.name, color: primaryTeam.color, sortKey: primaryTeam.order }];
         }
-        // Multi-value: an item with N teams appears in N group
-        // rows. Matches the Gantt's `groupTreeRows` behavior.
-        const out: { key: string; label: string; color: string | null; sortKey: number | null }[] = [];
-        for (const teamId of p.teams) {
-          const t = teamsById.get(teamId);
-          if (!t) continue;
-          out.push({ key: t.id, label: t.name, color: t.color, sortKey: t.order });
-        }
-        // If every team id was unknown (all deleted since save),
-        // fall through to unassigned so the item still surfaces
-        // somewhere rather than disappearing entirely.
-        if (out.length === 0) {
-          return [{ key: UNASSIGNED_KEY, label: "Unassigned", color: null, sortKey: null }];
-        }
-        return out;
+        return [{ key: UNASSIGNED_KEY, label: "Unassigned", color: null, sortKey: null }];
       }
       if (groupBy === "tag") {
         // Gantt uses the primary (first) tag only — single-value.
@@ -284,16 +279,17 @@ export function RoadmapQuartersView({
         return [{ key: UNASSIGNED_KEY, label: "No tag", color: null, sortKey: null }];
       }
       if (groupBy === "kpi") {
-        // Multi-value: an item with N KPIs appears in N group
-        // rows. Unknown KPI ids (deleted since save) skipped,
-        // matching the Gantt.
-        const known = p.kpis
-          .map((kid) => kpisById.get(kid))
-          .filter((k): k is Kpi => Boolean(k));
-        if (known.length === 0) {
-          return [{ key: UNASSIGNED_KEY, label: "(no KPI)", color: null, sortKey: null }];
+        // Multi-value dimension routed to a SINGLE bucket keyed on
+        // the primary (index 0) KPI. Same rationale as team grouping
+        // — each item appears exactly once, under its highest-ranked
+        // KPI. Unknown KPI ids (deleted since save) fall through to
+        // "(no KPI)" so a secondary KPI is never silently promoted.
+        const primaryKpiId = p.kpis[0] ?? null;
+        const primaryKpi = primaryKpiId ? kpisById.get(primaryKpiId) : undefined;
+        if (primaryKpi) {
+          return [{ key: primaryKpi.id, label: primaryKpi.name, color: primaryKpi.color, sortKey: primaryKpi.order }];
         }
-        return known.map((k) => ({ key: k.id, label: k.name, color: k.color, sortKey: k.order }));
+        return [{ key: UNASSIGNED_KEY, label: "(no KPI)", color: null, sortKey: null }];
       }
       return [];
     };

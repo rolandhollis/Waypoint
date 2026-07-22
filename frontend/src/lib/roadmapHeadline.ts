@@ -164,26 +164,29 @@ export function computeHeadlineGroups(
       const l = p.swim_lane_id ? maps.lanesById.get(p.swim_lane_id) : null;
       put(l?.id ?? UNASSIGNED_KEY, l?.name ?? "Unassigned", l?.order ?? Number.MAX_SAFE_INTEGER, p);
     } else if (groupBy === "team") {
-      if (p.teams.length === 0) {
+      // Multi-value dimension routed to a SINGLE bucket keyed on the
+      // primary (index 0) team so the AI Headline sees the same
+      // grouping the Gantt / Quarters views render on screen. See
+      // GanttTimeline.groupTreeRows for the canonical rationale.
+      const primaryId = p.teams[0] ?? null;
+      const primaryTeam = primaryId ? maps.teamsById.get(primaryId) : undefined;
+      if (primaryTeam) {
+        put(primaryTeam.id, primaryTeam.name, primaryTeam.order ?? Number.MAX_SAFE_INTEGER, p);
+      } else {
         put(UNASSIGNED_KEY, "Unassigned", Number.MAX_SAFE_INTEGER, p);
-        } else {
-        for (const teamId of p.teams) {
-          const t = maps.teamsById.get(teamId);
-          if (!t) continue;
-          put(t.id, t.name, t.order ?? Number.MAX_SAFE_INTEGER, p);
-        }
       }
     } else if (groupBy === "tag") {
       const primary = p.tags[0] ?? null;
       put(primary ?? UNASSIGNED_KEY, primary ? `#${primary}` : "No tag", Number.MAX_SAFE_INTEGER, p);
       } else if (groupBy === "kpi") {
-      const known = (p.kpis ?? [])
-        .map((id) => maps.kpisById.get(id))
-        .filter((k): k is Kpi => Boolean(k));
-      if (known.length === 0) {
-        put(UNASSIGNED_KEY, "(no KPI)", Number.MAX_SAFE_INTEGER, p);
+      // Multi-value dimension routed to a SINGLE bucket keyed on the
+      // primary (index 0) KPI, matching the Gantt / Quarters views.
+      const primaryKpiId = (p.kpis ?? [])[0] ?? null;
+      const primaryKpi = primaryKpiId ? maps.kpisById.get(primaryKpiId) : undefined;
+      if (primaryKpi) {
+        put(primaryKpi.id, primaryKpi.name, primaryKpi.order ?? Number.MAX_SAFE_INTEGER, p);
       } else {
-        for (const k of known) put(k.id, k.name, k.order ?? Number.MAX_SAFE_INTEGER, p);
+        put(UNASSIGNED_KEY, "(no KPI)", Number.MAX_SAFE_INTEGER, p);
       }
     }
   }

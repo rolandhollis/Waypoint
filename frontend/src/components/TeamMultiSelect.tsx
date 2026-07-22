@@ -14,7 +14,7 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Check, ChevronDown, GripVertical, X } from "lucide-react";
+import { Check, ChevronDown, GripVertical, Star, X } from "lucide-react";
 import { useMemo } from "react";
 import type { Team } from "../lib/types";
 import { cn } from "../lib/cn";
@@ -31,6 +31,12 @@ import { cn } from "../lib/cn";
  * carries a small grip on the left; dragging it reorders the chip and
  * fires `onChange` with the new array so the existing PATCH plumbing
  * ships the new order to the server.
+ *
+ * The index-0 chip (whenever there are 2+ teams) also carries a
+ * small "Primary" badge + star glyph. The Roadmap groups items by
+ * their primary team only, so this affordance tells the PM which
+ * team drives the item's roadmap placement and how to change it
+ * (drag another chip to the front).
  */
 export function TeamMultiSelect({
   value,
@@ -107,20 +113,26 @@ export function TeamMultiSelect({
                 items={selectedTeams.map((t) => t.id)}
                 strategy={horizontalListSortingStrategy}
               >
-                {selectedTeams.map((t) => (
+                {selectedTeams.map((t, i) => (
                   <SortableTeamChip
                     key={t.id}
                     team={t}
+                    isPrimary={i === 0}
                     onRemove={(e) => remove(t.id, e)}
                   />
                 ))}
               </SortableContext>
             </DndContext>
           ) : (
-            selectedTeams.map((t) => (
+            selectedTeams.map((t, i) => (
               <StaticTeamChip
                 key={t.id}
                 team={t}
+                // Only badge the primary chip when there's more than
+                // one team assigned — a single chip has no "primary"
+                // vs "secondary" to disambiguate, so the star would
+                // read as decoration and pointlessly crowd the row.
+                isPrimary={i === 0 && selectedTeams.length > 1}
                 onRemove={disabled ? undefined : (e) => remove(t.id, e)}
               />
             ))
@@ -178,22 +190,47 @@ export function TeamMultiSelect({
  * static single-chip case and the sortable multi-chip case render
  * an identical body; only the wrapper element and the optional grip
  * differ.
+ *
+ * When `isPrimary` is true the chip carries a small filled star in
+ * place of the color dot so the PM sees which chip drives roadmap
+ * placement at a glance. Primary status = index 0 in the ordered
+ * `teams` array; reordering the chips (drag the grip) is what
+ * changes the primary designation.
  */
 function ChipBody({
   team,
+  isPrimary,
   onRemove,
 }: {
   team: Team;
+  isPrimary: boolean;
   onRemove?: (e: React.MouseEvent) => void;
 }) {
   return (
     <>
-      <span
-        aria-hidden
-        className="inline-block h-2 w-2 rounded-full"
-        style={{ background: team.color }}
-      />
+      {isPrimary ? (
+        <Star
+          size={10}
+          className="fill-current"
+          aria-label="Primary team"
+          role="img"
+        />
+      ) : (
+        <span
+          aria-hidden
+          className="inline-block h-2 w-2 rounded-full"
+          style={{ background: team.color }}
+        />
+      )}
       <span className="text-wp-ink">{team.name}</span>
+      {isPrimary ? (
+        <span
+          className="rounded-sm border border-current px-1 py-0 text-[9px] font-semibold uppercase tracking-wide"
+          title="Primary team — drives roadmap group placement. Drag chips to change the primary."
+        >
+          Primary
+        </span>
+      ) : null}
       {onRemove ? (
         <span
           role="button"
@@ -214,9 +251,11 @@ function ChipBody({
  */
 function StaticTeamChip({
   team,
+  isPrimary,
   onRemove,
 }: {
   team: Team;
+  isPrimary: boolean;
   onRemove?: (e: React.MouseEvent) => void;
 }) {
   return (
@@ -224,7 +263,7 @@ function StaticTeamChip({
       className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs"
       style={{ borderColor: team.color, background: `${team.color}18`, color: team.color }}
     >
-      <ChipBody team={team} onRemove={onRemove} />
+      <ChipBody team={team} isPrimary={isPrimary} onRemove={onRemove} />
     </span>
   );
 }
@@ -238,9 +277,11 @@ function StaticTeamChip({
  */
 function SortableTeamChip({
   team,
+  isPrimary,
   onRemove,
 }: {
   team: Team;
+  isPrimary: boolean;
   onRemove: (e: React.MouseEvent) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -272,7 +313,7 @@ function SortableTeamChip({
       >
         <GripVertical size={10} />
       </span>
-      <ChipBody team={team} onRemove={onRemove} />
+      <ChipBody team={team} isPrimary={isPrimary} onRemove={onRemove} />
     </span>
   );
 }
