@@ -84,11 +84,15 @@ export function RoadmapQuartersView({
    */
   now?: Date;
   /**
-   * When true, drop the per-column max-height / overflow-y-auto
-   * constraints so the PDF exporter captures every item in every
-   * column (no clipped bodies). The interactive view keeps the
-   * caps so the page itself doesn't grow — matching the same
-   * `pdfMode` bookend the Gantt uses.
+   * PDF-mode flag threaded from `RoadmapView` for parity with the
+   * Gantt exporter. Historically switched the per-column and
+   * per-cell overflow behavior so the exporter captured every
+   * item, but the interactive view now *also* renders every item
+   * (no per-cell max-height / scroll — the outer roadmap area
+   * scrolls the document instead), so this prop is currently a
+   * no-op inside the Quarters view. Retained for API stability
+   * with the caller in `RoadmapView` and in case a future
+   * PDF-only bookend re-uses it.
    */
   pdfMode?: boolean;
   /**
@@ -445,14 +449,14 @@ export function RoadmapQuartersView({
                 key={col.key}
                 className={cn(
                   "flex flex-col rounded-lg border border-wp-stone bg-white shadow-sm",
-                  pdfMode
-                    ? "overflow-visible"
-                    : "max-h-[calc(100vh-320px)] overflow-hidden",
                 )}
               >
                 {/* Sticky header — pins to the top of the column so
-                    the quarter label stays visible while the body
-                    scrolls internally. */}
+                    the quarter label stays visible while the outer
+                    roadmap scroller (`RoadmapView`) scrolls the
+                    document. The column itself no longer has an
+                    internal scroller: every item in every quarter
+                    renders in full and the column grows to fit. */}
                 <div className="sticky top-0 z-10 border-b border-wp-stone bg-white/95 px-3 py-2 backdrop-blur-sm">
                   <div className="flex items-baseline justify-between gap-2">
                     <div className="text-sm font-semibold text-wp-ink">{col.label}</div>
@@ -462,12 +466,7 @@ export function RoadmapQuartersView({
                   </div>
                   <div className="text-[11px] text-wp-slate">{col.subline}</div>
                 </div>
-                <div
-                  className={cn(
-                    "flex-1 space-y-2 px-2 py-2",
-                    pdfMode ? "overflow-visible" : "overflow-y-auto",
-                  )}
-                >
+                <div className="flex-1 space-y-2 px-2 py-2">
                   {items.length === 0 ? (
                     <div className="px-2 py-4 text-center text-[11px] italic text-wp-slate/70">
                       No items completing this quarter
@@ -477,7 +476,7 @@ export function RoadmapQuartersView({
                       <QuarterItemCard
                         key={p.id}
                         project={p}
-                        team={p.teams[0] ? teamsById.get(p.teams[0]) : undefined}
+                        teams={resolveTeams(p, teamsById)}
                         owner={p.owner_id ? usersById.get(p.owner_id) : undefined}
                         onOpen={onOpen}
                         onToggleKeyStrategic={onToggleKeyStrategic}
@@ -576,7 +575,6 @@ export function RoadmapQuartersView({
                 group={group}
                 columns={columns}
                 isLastRow={isLastRow}
-                pdfMode={pdfMode}
                 teamsById={teamsById}
                 usersById={usersById}
                 onOpen={onOpen}
@@ -624,7 +622,7 @@ export function RoadmapQuartersView({
                           <QuarterItemCard
                             key={p.id}
                             project={p}
-                            team={p.teams[0] ? teamsById.get(p.teams[0]) : undefined}
+                            teams={resolveTeams(p, teamsById)}
                             owner={p.owner_id ? usersById.get(p.owner_id) : undefined}
                             onOpen={onOpen}
                             onToggleKeyStrategic={onToggleKeyStrategic}
@@ -664,7 +662,6 @@ function GroupRow({
   group,
   columns,
   isLastRow,
-  pdfMode,
   teamsById,
   usersById,
   onOpen,
@@ -673,7 +670,6 @@ function GroupRow({
   group: GroupView;
   columns: { key: string }[];
   isLastRow: boolean;
-  pdfMode: boolean;
   teamsById: Map<string, Team>;
   usersById: Map<string, User>;
   onOpen: (id: string) => void;
@@ -708,10 +704,14 @@ function GroupRow({
           <div
             key={col.key}
             className={cn(
+              // Cells grow to fit their items — no fixed max-height,
+              // no per-cell scroller. The outer roadmap area
+              // (`RoadmapView`) is what actually scrolls when the
+              // grid runs long, so a PM sees every item in every
+              // team-row without hunting inside a nested scroller.
               "min-w-0 border-wp-stone px-2 py-2",
               cellBorder,
               border,
-              pdfMode ? "" : "max-h-[220px] overflow-y-auto",
             )}
           >
             {items.length === 0 ? (
@@ -724,7 +724,7 @@ function GroupRow({
                   <QuarterItemCard
                     key={p.id}
                     project={p}
-                    team={p.teams[0] ? teamsById.get(p.teams[0]) : undefined}
+                    teams={resolveTeams(p, teamsById)}
                     owner={p.owner_id ? usersById.get(p.owner_id) : undefined}
                     onOpen={onOpen}
                     onToggleKeyStrategic={onToggleKeyStrategic}
@@ -790,9 +790,11 @@ function GroupLabel({
 /**
  * Compact per-item card rendered inside a quarter cell. Whole
  * card is the click target so PMs can drill straight into the
- * detail modal without hunting for a specific affordance. Team
- * chip (primary team only), a star for `is_key_strategic`, and
- * an owner initial live in a single row below the title.
+ * detail modal without hunting for a specific affordance. All
+ * assigned teams render as pills in the item's team order
+ * (primary first, then secondaries as ranked in the detail modal);
+ * a star for `is_key_strategic` and an owner initial share the
+ * same row below the title, wrapping if the pill list is long.
  *
  * The outer element is a `div[role="button"]` rather than a real
  * `<button>` so the strategic-star toggle can nest as its own
@@ -802,13 +804,19 @@ function GroupLabel({
  */
 function QuarterItemCard({
   project,
-  team,
+  teams,
   owner,
   onOpen,
   onToggleKeyStrategic,
 }: {
   project: Project;
-  team: Team | undefined;
+  /**
+   * Ordered list of teams assigned to the project — primary (index
+   * 0) first, then secondaries in the order the PM set on the
+   * detail modal. Deleted-team ids are filtered out upstream by
+   * `resolveTeams` so this array only ever holds live teams.
+   */
+  teams: Team[];
   owner: User | undefined;
   onOpen: (id: string) => void;
   /**
@@ -819,7 +827,6 @@ function QuarterItemCard({
    */
   onToggleKeyStrategic: ((p: Project) => void) | null;
 }) {
-  const teamBg = team ? tint(team.color, 0.14) : null;
   const canToggleStar = onToggleKeyStrategic !== null;
   return (
     <div
@@ -901,15 +908,25 @@ function QuarterItemCard({
         )}
       </div>
       <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-wp-slate">
-        {team && teamBg ? (
+        {teams.map((t) => (
           <span
-            className="inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] leading-none"
-            style={{ borderColor: team.color, background: teamBg, color: pillTextColor(team.color) }}
-            title={`Team: ${team.name}`}
+            key={t.id}
+            // `max-w-full truncate` keeps a single very long team name
+            // from blowing out the (narrow) card width — it ellipsizes
+            // inside the pill instead of overflowing horizontally. Every
+            // other pill wraps to the next line naturally via the
+            // parent's `flex-wrap`.
+            className="inline-flex max-w-full items-center truncate rounded-full border px-1.5 py-0.5 text-[10px] leading-none"
+            style={{
+              borderColor: t.color,
+              background: tint(t.color, 0.14),
+              color: pillTextColor(t.color),
+            }}
+            title={`Team: ${t.name}`}
           >
-            {team.name}
+            {t.name}
           </span>
-        ) : null}
+        ))}
         {owner ? (
           <span
             className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-semibold text-white"
@@ -930,6 +947,32 @@ function initials(name: string): string {
     .slice(0, 2)
     .map((s) => s[0]?.toUpperCase() ?? "")
     .join("");
+}
+
+/**
+ * Resolve `project.teams` (an ordered array of team ids — primary
+ * first, secondaries in the order the PM set on the detail modal)
+ * into an ordered array of live `Team` records. Ids that aren't in
+ * `teamsById` (deleted teams that haven't been cleaned up from the
+ * project row yet) are silently dropped so the pill row on the
+ * card never renders a broken chip.
+ *
+ * Order preservation is load-bearing: the Quarters card is the one
+ * roadmap surface where a PM can see the full team assignment
+ * without opening the detail modal, and "primary team leftmost"
+ * matches the same ranking the detail modal, filters, and Gantt
+ * grouping already use.
+ */
+function resolveTeams(
+  project: Project,
+  teamsById: Map<string, Team>,
+): Team[] {
+  const out: Team[] = [];
+  for (const id of project.teams) {
+    const t = teamsById.get(id);
+    if (t) out.push(t);
+  }
+  return out;
 }
 
 /**

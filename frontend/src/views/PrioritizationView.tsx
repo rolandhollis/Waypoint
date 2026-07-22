@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -73,19 +73,36 @@ import {
  */
 export function PrioritizationView() {
   const canWrite = useCanWrite();
-  const prioritization = usePrioritization();
-  const teams = useTeams();
   const qc = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // Raw drag active id (kept as-is: raw project id for column-A
+  // rows, `finder:<id>` for column-B rows). Powers the DragOverlay
+  // and the "dim the finder twin" hint in Column B. Declared before
+  // `usePrioritization` because we forward it to the hook as the
+  // `pausePoll` flag so the 5s background refetch is disabled while
+  // a drag is in flight (mid-drag refetches used to clobber both
+  // `localOrder` and the cached `version` under the user's cursor).
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+
+  const prioritization = usePrioritization({ pausePoll: activeDragId !== null });
+  const teams = useTeams();
 
   // Local optimistic mirror of the server list. Reseeded whenever
   // `prioritization.data` changes (poll refetch, mutation resolve,
   // etc.) so a background update by another user surfaces even
-  // when the tab is idle.
+  // when the tab is idle. Skipped mid-drag: the drag surface owns
+  // `localOrder` while `activeDragId !== null`, and letting a poll
+  // refetch overwrite it would snap the user's in-flight gesture
+  // back to the server snapshot. Combined with the paused poll on
+  // the hook above this is belt-and-braces -- either check alone
+  // would suffice, but keeping both makes the invariant obvious to
+  // anyone reading the drag handlers.
   const [localOrder, setLocalOrder] = useState<PrioritizationRow[]>([]);
   useEffect(() => {
+    if (activeDragId !== null) return;
     if (prioritization.data) setLocalOrder(prioritization.data);
-  }, [prioritization.data]);
+  }, [prioritization.data, activeDragId]);
 
   // Per-row expand state. Keyed by project id; a row toggles its
   // own entry, so multiple rows can be open simultaneously
@@ -130,11 +147,6 @@ export function PrioritizationView() {
     const t = window.setTimeout(() => setToast(null), 6000);
     return () => window.clearTimeout(t);
   }, [toast]);
-
-  // Raw drag active id (kept as-is: raw project id for column-A
-  // rows, `finder:<id>` for column-B rows). Powers the DragOverlay
-  // and the "dim the finder twin" hint in Column B.
-  const [activeDragId, setActiveDragId] = useState<string | null>(null);
 
   // Snapshot of `localOrder` captured at drag start. Used to:
   //   (a) revert to the pre-drag layout if the drag is cancelled
@@ -200,11 +212,17 @@ export function PrioritizationView() {
   });
 
   const reorderMutation = useMutation({
-    mutationFn: (ordered_ids: string[]) =>
-      api<{ updated: number }>("/prioritization", {
-        method: "PUT",
-        body: JSON.stringify({ ordered_ids }),
-      }),
+    mutationFn: (args: { ordered_ids: string[]; expected_version: string }) =>
+      api<{ ok: true; updated: number; audited: number; version: string }>(
+        "/prioritization",
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            ordered_ids: args.ordered_ids,
+            expected_version: args.expected_version,
+          }),
+        },
+      ),
     onMutate: (): { previous: PrioritizationRow[] } => {
       return { previous: prioritization.data ?? [] };
     },
@@ -215,11 +233,40 @@ export function PrioritizationView() {
       // detail cards read the row itself. Invalidate everything
       // ranked-adjacent rather than surgically picking keys --
       // the wire cost is tiny compared to the risk of a stale
-      // surface.
+      // surface. The response body carries the new version
+      // fingerprint; react-query will refetch and pick it up.
       qc.invalidateQueries({ queryKey: ["prioritization"] });
       qc.invalidateQueries({ queryKey: ["projects"] });
     },
-    onError: (err, _ordered, ctx) => {
+    onError: (err, _args, ctx) => {
+      // 409 STALE_PRIORITY_VERSION: a concurrent PM committed a
+      // reorder between this user's GET and PUT. We deliberately
+      // do NOT auto-retry -- the user's mental snapshot of the
+      // list is stale, so silently re-submitting their ids over
+      // the new baseline would be exactly the "silent overwrite"
+      // this fix exists to prevent. Instead: roll back the
+      // optimistic mirror, show a toast, and invalidate the
+      // query so the next fetch reseeds `localOrder` with the
+      // fresh list and version.
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        typeof err.body === "object" &&
+        err.body !== null &&
+        (err.body as { code?: string }).code === "STALE_PRIORITY_VERSION"
+      ) {
+        if (ctx && (ctx as { previous?: PrioritizationRow[] }).previous) {
+          setLocalOrder((ctx as { previous: PrioritizationRow[] }).previous);
+        } else if (prioritization.data) {
+          setLocalOrder(prioritization.data);
+        }
+        setToast({
+          message: "Ranking was updated by someone else. Reloading…",
+          variant: "info",
+        });
+        qc.invalidateQueries({ queryKey: ["prioritization"] });
+        return;
+      }
       // Roll back to the server's last-known snapshot on
       // failure. `ctx.previous` is populated by onMutate above.
       if (ctx && (ctx as { previous?: PrioritizationRow[] }).previous) {
@@ -361,7 +408,18 @@ export function PrioritizationView() {
       if (originalIndex >= 0 && originalIndex === finalIndex) return;
     }
 
-    reorderMutation.mutate(finalOrder.map((p) => p.id));
+    // The reorder writer round-trips the last-known version
+    // fingerprint so the server can 409 on a stale snapshot. If
+    // `version` is undefined (hook hasn't resolved once yet) the
+    // drag surface hasn't rendered any rows either, so this branch
+    // shouldn't be reachable -- but be defensive and skip the PUT
+    // rather than send an empty string that would guarantee a 409.
+    const expectedVersion = prioritization.version;
+    if (!expectedVersion) return;
+    reorderMutation.mutate({
+      ordered_ids: finalOrder.map((p) => p.id),
+      expected_version: expectedVersion,
+    });
   }
 
   function handleDragCancel() {
@@ -370,25 +428,18 @@ export function PrioritizationView() {
     setDragSnapshot(null);
   }
 
-  // First-visit auto-seed: if every eligible row is still at the
-  // default global_priority=0, run a single PUT that materializes
-  // the current display order (server order already sorts by
-  // updated_at DESC then id ASC, matching what we're rendering).
-  // Only fires once per mount (via ref) so a background refetch
-  // that keeps everyone at 0 for some other reason doesn't loop.
-  // Skipped when `canWrite` is false -- viewers can't seed on
-  // behalf of the workspace.
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (!canWrite) return;
-    if (seededRef.current) return;
-    if (!prioritization.data || prioritization.data.length === 0) return;
-    const allZero = prioritization.data.every((r) => r.global_priority === 0);
-    seededRef.current = true;
-    if (!allZero) return;
-    reorderMutation.mutate(prioritization.data.map((p) => p.id));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prioritization.data, canWrite]);
+  // (Formerly an auto-seed useEffect lived here: on first mount
+  // it detected an all-zeros ranking and fired a PUT to materialize
+  // the initial order. That effect has been removed because it
+  // could silently overwrite a legitimate ranking on any client
+  // that briefly saw an all-zeros snapshot -- e.g. a poll landing
+  // mid-migration, a group with a transient empty eligible set, or
+  // a race where the server-side seed hadn't yet propagated. If
+  // the eligible set is genuinely all-zeros the list simply renders
+  // in the server's `updated_at DESC, id ASC` fallback order and
+  // the user's first drag assigns real priorities via the normal
+  // PUT flow. Server-side create/import paths still stamp
+  // MAX+1/MAX+N (see routes/projects.ts and routes/imports.ts).)
 
   const teamsById = useMemo(() => {
     const m = new Map<string, { color: string; name: string }>();

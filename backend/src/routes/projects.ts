@@ -65,10 +65,13 @@ const AUDITED_FIELDS = [
   "dates_locked",
   "hidden_from_roadmap",
   "is_key_strategic",
-  // Ranked list drag audits: PrioritizationView's PUT also lands a
-  // single summary event, but per-project rank changes made via
-  // PATCH (admin correction path) still audit here.
-  "global_priority",
+  // `global_priority` is intentionally NOT in this list. The only
+  // legitimate write path is PUT /api/prioritization, which emits
+  // its own per-project audit events for rank changes (see
+  // routes/prioritization.ts). Keeping the field out of PATCH
+  // prevents accidental clobbers from unrelated code paths (roadmap
+  // drag, ProjectDetailPanel save, CSV round-trip via /projects
+  // etc.) that would otherwise silently overwrite the ranking.
 ] as const;
 type AuditedField = (typeof AUDITED_FIELDS)[number];
 
@@ -574,17 +577,13 @@ const projectBaseSchema = z.object({
    * filter chip. Default false at the DB level.
    */
   is_key_strategic: z.boolean().optional(),
-  /**
-   * Global 1..N priority rank across every roadmap-eligible project
-   * in the current group. Normally rewritten in bulk by PUT
-   * /api/prioritization (which also cascades the resulting order
-   * onto per-lane `position` values in the same transaction). Kept
-   * PATCH-writable so an admin can hand-correct a single row from
-   * a support session without walking the drag UI; must be a
-   * non-negative integer (0 is the "unranked" sentinel that
-   * migration 037 defaults to).
-   */
-  global_priority: z.number().int().min(0).optional(),
+  // Note: `global_priority` is deliberately absent from this schema.
+  // The only write path is PUT /api/prioritization, which is
+  // race-checked with a version fingerprint. A PATCH body carrying
+  // `global_priority` is rejected by Zod (400) so no client-side
+  // stale snapshot can silently overwrite the ranking. POST
+  // /projects still assigns MAX+1 on create; CSV import assigns
+  // MAX+N at the end of the ranked list (see routes/imports.ts).
   /**
    * Per-phase estimate provenance metadata. Optional and out-of-band
    * (leading underscore) so it stays clearly distinct from the
@@ -627,7 +626,6 @@ const PROJECT_COLUMN_KEYS = [
   "dates_locked",
   "hidden_from_roadmap",
   "is_key_strategic",
-  "global_priority",
 ] as const;
 
 /**
@@ -883,6 +881,23 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
 });
 
 projectsRouter.patch("/:id", requireWrite, async (req, res) => {
+  // Explicit reject on `global_priority`. Zod's default is to strip
+  // unknown keys silently -- which would let a stale client body
+  // silently overwrite the ranking through the miss-and-hit surface
+  // it used to take. Surface it as a 400 so misuse is loud rather
+  // than fooling the caller into thinking the write succeeded. The
+  // legitimate write path is PUT /api/prioritization (race-checked
+  // with an expected_version fingerprint).
+  if (
+    req.body &&
+    typeof req.body === "object" &&
+    Object.prototype.hasOwnProperty.call(req.body, "global_priority")
+  ) {
+    throw new HttpError(
+      400,
+      "global_priority is not writable via PATCH /projects/:id — use PUT /api/prioritization",
+    );
+  }
   const body = projectBaseSchema.partial().parse(req.body);
   if (body.swim_lane_id !== undefined) {
     throw new HttpError(400, "use POST /projects/:id/move to change swim_lane_id");

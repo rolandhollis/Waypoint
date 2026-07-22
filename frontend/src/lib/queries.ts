@@ -217,13 +217,68 @@ export type PrioritizationRow = {
   is_key_strategic: boolean;
 };
 
-export function usePrioritization(enabled = true) {
-  return useQuery({
+/**
+ * Server envelope for GET /api/prioritization. The `version` string
+ * is a SHA-1 fingerprint of the full eligible `(id, global_priority)`
+ * set at read time and MUST be echoed back verbatim as
+ * `expected_version` on the next PUT — a mismatch yields a 409
+ * (`STALE_PRIORITY_VERSION`) so the writer refetches instead of
+ * silently overwriting a concurrent PM's rank change.
+ */
+type PrioritizationEnvelope = {
+  rows: PrioritizationRow[];
+  version: string;
+};
+
+/**
+ * Options for `usePrioritization`.
+ *   * `pausePoll` — when true, disables the background refetch
+ *     cadence. Used by the Prioritization drag surface to freeze
+ *     the poll while a drag is in flight so a mid-drag refetch
+ *     can't clobber the local optimistic order or reset the
+ *     cached `expected_version` under the user's cursor.
+ */
+export type UsePrioritizationOptions = {
+  enabled?: boolean;
+  pausePoll?: boolean;
+};
+
+/**
+ * Ranked list plus its server-side version fingerprint. The hook
+ * unwraps the server envelope so `.data` still resolves to
+ * `PrioritizationRow[] | undefined` — matching the pre-envelope
+ * shape so existing readers (`prioritization.data`) don't need to
+ * change. `.version` is the companion field the reorder writer
+ * echoes back as `expected_version`; it's undefined until the first
+ * successful fetch, at which point every render sees the latest
+ * server fingerprint (react-query keeps the returned object stable
+ * between renders when the envelope hasn't changed).
+ */
+export function usePrioritization(
+  optsOrEnabled: UsePrioritizationOptions | boolean = true,
+) {
+  const opts: UsePrioritizationOptions =
+    typeof optsOrEnabled === "boolean" ? { enabled: optsOrEnabled } : optsOrEnabled;
+  const enabled = opts.enabled ?? true;
+  const pausePoll = opts.pausePoll ?? false;
+  const q = useQuery({
     queryKey: ["prioritization"],
-    queryFn: () => api<PrioritizationRow[]>("/prioritization"),
-    refetchInterval: POLL_MS,
+    queryFn: () => api<PrioritizationEnvelope>("/prioritization"),
+    // Pause polling while a drag is in flight so a background
+    // refetch can't reset the cached list (or its `version`) mid-
+    // gesture. When `pausePoll` is false we fall back to the shared
+    // POLL_MS cadence used by the Board/Roadmap.
+    refetchInterval: pausePoll ? false : POLL_MS,
     enabled,
   });
+  return {
+    ...q,
+    data: q.data?.rows,
+    version: q.data?.version,
+  } as Omit<typeof q, "data"> & {
+    data: PrioritizationRow[] | undefined;
+    version: string | undefined;
+  };
 }
 
 export function useProjectHistory(id: string) {

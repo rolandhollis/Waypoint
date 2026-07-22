@@ -1,12 +1,13 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Lock, LockOpen, Star, X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
 import { AuditEventBody, auditActorLabel, timelineEntryToRenderEntry } from "../lib/auditRender";
 import { useCanWrite, useCurrentGroupRole, useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useTshirtSizes, useUsers } from "../lib/queries";
+import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
 import { ancestors, childrenByParent, descendants, indexById } from "../lib/hierarchy";
@@ -130,6 +131,12 @@ export function ProjectDetailPanel({
   useEffect(() => {
     setDraft({});
     setTouchedPhaseFields(new Set());
+    // The arrow-key navigator below listens on `window` so a
+    // sibling can be swapped in while the strategic-star confirm
+    // modal is open — clear the confirmation state on id change
+    // so a stale "Remove star" click can't target the wrong
+    // project's mutation.
+    setConfirmingUnstar(null);
   }, [id]);
 
   const patch = useMutation({
@@ -240,6 +247,72 @@ export function ProjectDetailPanel({
       qc.invalidateQueries({ queryKey: ["projectHistory", id] });
     },
   });
+
+  /**
+   * Interactive strategic-star toggle on the header. Mirrors the
+   * Quarters view's `strategicToggle` mutation shape — optimistic
+   * update on the `["projects"]` cache with rollback on error and
+   * an invalidate on settle — extended to also patch the panel's
+   * own `["project", id]` cache so the merged header star flips
+   * in the same tick as the click. Without the second patch the
+   * user would click and see nothing change until the server
+   * round-trip completed, which reads as a broken toggle.
+   *
+   * Deliberately does NOT `onClose()` the panel (unlike the shared
+   * Save mutation): starring is a one-click header affordance, not
+   * a form field, and the PM is often still editing.
+   */
+  const strategicToggle = useMutation({
+    mutationFn: (v: { next: boolean }) =>
+      api<Project>(`/projects/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_key_strategic: v.next }),
+      }),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: ["projects"] });
+      await qc.cancelQueries({ queryKey: ["project", id] });
+      const prevList = qc.getQueryData<Project[]>(["projects"]);
+      const prevOne = qc.getQueryData<Project>(["project", id]);
+      if (prevList) {
+        qc.setQueryData<Project[]>(
+          ["projects"],
+          prevList.map((p) => (p.id === id ? { ...p, is_key_strategic: v.next } : p)),
+        );
+      }
+      if (prevOne) {
+        qc.setQueryData<Project>(["project", id], { ...prevOne, is_key_strategic: v.next });
+      }
+      return { prevList, prevOne };
+    },
+    onError: (_err, _v, ctx) => {
+      if (ctx?.prevList) qc.setQueryData(["projects"], ctx.prevList);
+      if (ctx?.prevOne) qc.setQueryData(["project", id], ctx.prevOne);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["project", id] });
+    },
+  });
+
+  /**
+   * Mirror of the Roadmap Quarters view's confirm interstitial.
+   * When the user is viewing a filtered surface (Roadmap tab with
+   * "Key strategic only" chip on) and clicks the header star to
+   * *un-mark* an item, closing the modal would silently drop the
+   * card from the underlying view with no undo path. The confirm
+   * gives the user a chance to cancel; every other transition
+   * (marking as strategic, or unstarring with the filter off)
+   * fires the mutation immediately. The panel is opened from many
+   * surfaces (Board, Gantt, Quarters, Prioritization) — reading
+   * the roadmap-tab filter flag here is intentional: only the
+   * Roadmap-tab filter interacts with strategic-only visibility,
+   * so a click sourced from the Board or Prioritization view with
+   * the roadmap filter off will silently pass through as expected.
+   */
+  const keyStrategicFilterActive = useViewStore(
+    (s) => s.roadmap.filters.keyStrategicOnly,
+  );
+  const [confirmingUnstar, setConfirmingUnstar] = useState<Project | null>(null);
 
   // IMPORTANT: every hook below runs on *every* render, even before
   // the project fetch resolves, so the hook order stays stable across
@@ -395,6 +468,7 @@ export function ProjectDetailPanel({
   };
 
   return (
+    <>
     <Dialog.Root open onOpenChange={(o) => { if (!o) onClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/30" />
@@ -430,22 +504,67 @@ export function ProjectDetailPanel({
                       Always rendered so the strategic vs. non-
                       strategic state is visible at a glance —
                       filled + red when active, outline + muted
-                      slate when not. Display-only here; the
-                      actual toggle lives in the checkbox below
-                      the title metadata. */}
-                  <Star
-                    size={18}
-                    className={
-                      merged.is_key_strategic
-                        ? "shrink-0 fill-wp-red text-wp-red"
-                        : "shrink-0 text-wp-slate/40"
-                    }
-                    aria-label={
-                      merged.is_key_strategic
-                        ? "Key strategic item"
-                        : "Not key strategic"
-                    }
-                  />
+                      slate when not. Writable users get a clickable
+                      button (same optimistic-toggle pattern as the
+                      Roadmap Quarters view — see `strategicToggle`
+                      above); viewers keep the display-only icon. */}
+                  {canWrite ? (
+                    <button
+                      type="button"
+                      aria-label={
+                        merged.is_key_strategic
+                          ? "Unmark as key strategic"
+                          : "Mark as key strategic"
+                      }
+                      aria-pressed={merged.is_key_strategic}
+                      title={
+                        merged.is_key_strategic
+                          ? "Key strategic \u2014 click to unmark"
+                          : "Mark as key strategic"
+                      }
+                      onClick={(e) => {
+                        // The header title wraps a Radix Dialog.Title
+                        // and shares a row with the title `<input>`;
+                        // stop the click from bubbling into either.
+                        e.stopPropagation();
+                        if (merged.is_key_strategic && keyStrategicFilterActive) {
+                          setConfirmingUnstar(merged);
+                          return;
+                        }
+                        strategicToggle.mutate({ next: !merged.is_key_strategic });
+                      }}
+                      onKeyDown={(e) => {
+                        // Same reason as onClick — keep Enter / Space
+                        // from bubbling into the surrounding title row.
+                        e.stopPropagation();
+                      }}
+                      className={
+                        "inline-flex shrink-0 cursor-pointer items-center justify-center rounded p-0.5 transition hover:scale-110 hover:bg-wp-stone/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-red/40 " +
+                        (merged.is_key_strategic
+                          ? "text-wp-red hover:text-wp-red/80"
+                          : "text-wp-slate/40 hover:text-wp-slate")
+                      }
+                    >
+                      <Star
+                        size={18}
+                        className={merged.is_key_strategic ? "fill-wp-red" : ""}
+                      />
+                    </button>
+                  ) : (
+                    <Star
+                      size={18}
+                      className={
+                        merged.is_key_strategic
+                          ? "shrink-0 fill-wp-red text-wp-red"
+                          : "shrink-0 text-wp-slate/40"
+                      }
+                      aria-label={
+                        merged.is_key_strategic
+                          ? "Key strategic item"
+                          : "Not key strategic"
+                      }
+                    />
+                  )}
                   <input
                     className="input !border-transparent !bg-transparent !p-0 text-lg font-semibold focus:!border-wp-red focus:!bg-white focus:!px-2"
                     value={merged.title}
@@ -464,38 +583,6 @@ export function ProjectDetailPanel({
                   </span>
                 ) : null}
               </div>
-              {/* "Key strategic item" toggle (migration 038). Placed
-                  in the header block so the flag reads as a top-level
-                  property of the project — same tier as its title,
-                  lane, and owner. Uses the shared draft/Save flow so
-                  the change lands in the same PATCH as any other
-                  pending edits and appears once in the audit trail
-                  ("key strategic" via FIELD_LABELS). Read-only for
-                  viewers — the star badge above still surfaces the
-                  current state. */}
-              <label className="mt-1.5 flex cursor-pointer items-center gap-1.5 text-xs text-wp-ink">
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5 accent-wp-red"
-                  disabled={!canWrite}
-                  checked={!!merged.is_key_strategic}
-                  onChange={(e) => setDraft((d) => ({
-                    ...d,
-                    is_key_strategic: e.target.checked,
-                  }))}
-                />
-                <Star
-                  size={12}
-                  className={merged.is_key_strategic ? "fill-wp-red text-wp-red" : "text-wp-slate/60"}
-                  aria-hidden
-                />
-                <span>
-                  Key strategic item
-                  <span className="ml-1 text-wp-slate/70">
-                    (highlights it in the Prioritization list and the Roadmap filter chip)
-                  </span>
-                </span>
-              </label>
             </div>
             <div className="flex items-center gap-0.5">
               {/* Prev/next through the surrounding view's items.
@@ -979,6 +1066,7 @@ export function ProjectDetailPanel({
               <MutationErrorBanner mutation={patch} className="mb-2" />
               <MutationErrorBanner mutation={archive} className="mb-2" />
               <MutationErrorBanner mutation={lockToggle} className="mb-2" />
+              <MutationErrorBanner mutation={strategicToggle} className="mb-2" />
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <button className="btn-ghost text-xs" onClick={onClose}>Cancel</button>
@@ -1048,6 +1136,17 @@ export function ProjectDetailPanel({
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+    <UnstarConfirmDialog
+      project={confirmingUnstar}
+      onCancel={() => setConfirmingUnstar(null)}
+      onConfirm={() => {
+        if (confirmingUnstar) {
+          strategicToggle.mutate({ next: false });
+        }
+        setConfirmingUnstar(null);
+      }}
+    />
+    </>
   );
 }
 
@@ -1144,5 +1243,90 @@ function TypeBadge({ type }: { type: ProjectType }) {
     >
       {type}
     </span>
+  );
+}
+
+/**
+ * Confirm dialog surfaced when the header star click would drop the
+ * current card out of a filtered Roadmap view (Roadmap tab with the
+ * "Key strategic only" chip on). Mirrors the file-local
+ * `UnstarConfirmDialog` in `RoadmapQuartersView.tsx` — deliberately
+ * kept file-local here rather than extracted to a shared component
+ * so this change stays scoped to the detail panel; extracting the
+ * two copies into a single shared primitive is a reasonable
+ * follow-up but touches Quarters, which is out of scope for now.
+ *
+ * Cancel is autofocused and styled as the primary path so a stray
+ * Enter closes without mutating. Copy is identical to the Quarters
+ * variant so a PM who's seen either surface recognises it.
+ */
+function UnstarConfirmDialog({
+  project,
+  onCancel,
+  onConfirm,
+}: {
+  project: Project | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  // Keep the last non-null project so the modal content doesn't
+  // flash to empty during Radix's exit animation frame — the
+  // parent nulls `project` synchronously on confirm/cancel, but
+  // Radix keeps the DOM mounted for a beat afterward.
+  const [snapshot, setSnapshot] = useState<Project | null>(project);
+  useEffect(() => {
+    if (project) setSnapshot(project);
+  }, [project]);
+
+  const open = project !== null;
+  const displayed = project ?? snapshot;
+
+  return (
+    <Dialog.Root
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) onCancel();
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40" />
+        <Dialog.Content
+          className="fixed left-1/2 top-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg bg-white p-5 shadow-xl outline-none"
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            cancelRef.current?.focus();
+          }}
+        >
+          <Dialog.Title className="text-base font-semibold text-wp-ink">
+            Remove from key-strategic filter?
+          </Dialog.Title>
+          <Dialog.Description className="mt-2 text-sm text-wp-slate">
+            You're viewing a report filtered to key-strategic items. Removing the star from{" "}
+            <span className="font-medium text-wp-ink">
+              &ldquo;{displayed?.title ?? ""}&rdquo;
+            </span>{" "}
+            will hide it from this view.
+          </Dialog.Description>
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              ref={cancelRef}
+              type="button"
+              className="btn-primary"
+              onClick={onCancel}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={onConfirm}
+            >
+              Remove star
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

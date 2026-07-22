@@ -253,17 +253,40 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
     throw new HttpError(400, "cannot import: no swim lanes exist yet");
   }
 
+  // Snapshot the tenant-wide MAX(global_priority) ONCE before the
+  // per-row loop so every imported row lands at the tail of the
+  // ranked list in CSV order (previous behavior fell through to the
+  // DB default of 0, which silently landed imports at the *top* of
+  // the Prioritization view and stomped whatever ordering the PM
+  // had curated). Multiple rows sharing a global_priority is fine
+  // -- the ordering doesn't have a UNIQUE constraint (see migration
+  // 037) and downstream sorts use `updated_at DESC, id ASC` as the
+  // tiebreaker -- but we can hand out fresh 1-apart values here for
+  // free, so we do. A concurrent import racing this SELECT is
+  // harmless for the same reason: the ranks just interleave.
+  const { rows: gpRows } = await query<{ start: number }>(
+    `SELECT COALESCE(MAX(global_priority), 0) AS start
+       FROM projects WHERE group_id = $1 AND deleted_at IS NULL`,
+    [groupId],
+  );
+  const baseGlobalPriority = Number(gpRows[0]?.start ?? 0);
+
   const results: Array<
     | { status: "created"; project_id: string; title: string }
     | { status: "failed"; title: string; error: string }
   > = [];
 
-  for (const row of rows) {
+  for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx]!;
     try {
       // Server-side re-validation of phase-date ordering. The preview
       // catches most of these but a client could bypass the checkbox
       // guard, so we defend on commit too.
       validatePhaseDates(row);
+      // Row-index-based rank so the imported rows appear in CSV
+      // order at the tail of the ranked list. rowIdx starts at 0
+      // so the first imported row lands at baseGlobalPriority + 1.
+      const globalPriority = baseGlobalPriority + rowIdx + 1;
       const created = await withTransaction(async (client) => {
         const { rows: maxRows } = await client.query<{ next: number }>(
           `SELECT COALESCE(MAX(position), -1) + 1 AS next
@@ -289,12 +312,12 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
               type, parent_id,
               start_date, target_date, dev_start_date, dev_end_date,
               optimization_start_date, optimization_end_date,
-              hidden_from_roadmap, is_key_strategic, created_by,
+              hidden_from_roadmap, is_key_strategic, global_priority, created_by,
               discovery_updated_at, discovery_updated_by_user_id, discovery_updated_source,
               development_updated_at, development_updated_by_user_id, development_updated_source,
               post_dev_updated_at, post_dev_updated_by_user_id, post_dev_updated_source)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'epic',NULL,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-                   $17,$18,$19,$20,$21,$22,$23,$24,$25)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'epic',NULL,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                   $18,$19,$20,$21,$22,$23,$24,$25,$26)
            RETURNING id`,
           [
             groupId,
@@ -312,6 +335,7 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
             row.optimization_end_date ?? null,
             row.hidden_from_roadmap ?? false,
             row.is_key_strategic ?? false,
+            globalPriority,
             req.user!.id,
             discoveryPresent ? stampedAt : null,
             discoveryPresent ? userId : null,

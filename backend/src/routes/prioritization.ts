@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { query, withTransaction } from "../db/pool.js";
 import { requireWrite } from "../middleware/auth.js";
@@ -95,6 +96,49 @@ export type PrioritizationRow = {
   is_key_strategic: boolean;
 };
 
+/**
+ * Deterministic fingerprint of the current global ranking for a
+ * group. Hashed in JS from `(id, global_priority)` pairs sorted by
+ * `(global_priority ASC, id ASC)` so the value is stable across
+ * concurrent reads and independent of any row's `updated_at` or
+ * team-array shape.
+ *
+ * Both GET (unlocked read) and PUT (inside the FOR UPDATE
+ * transaction) use this helper -- the PUT feeds it the just-locked
+ * eligible rows so the version it recomputes is guaranteed to
+ * match the state it's about to overwrite.
+ */
+function fingerprintEligible(
+  pairs: ReadonlyArray<{ id: string; global_priority: number }>,
+): string {
+  const sorted = [...pairs].sort((a, b) => {
+    if (a.global_priority !== b.global_priority) {
+      return a.global_priority - b.global_priority;
+    }
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  const canonical = sorted.map((p) => `${p.id}:${p.global_priority}`).join(",");
+  return createHash("sha1").update(canonical).digest("hex");
+}
+
+/**
+ * Load `(id, global_priority)` for the FULL eligible set (no admin
+ * filter) so GET and PUT compute the same fingerprint regardless of
+ * caller role -- the admin-only-lane hiding rule affects what the
+ * list renders, not what the ranking tracks. Called only from GET;
+ * the PUT computes its fingerprint directly from the FOR UPDATE
+ * result set so the read is consistent with the locked snapshot.
+ */
+async function loadEligibleForFingerprint(
+  groupId: string,
+): Promise<Array<{ id: string; global_priority: number }>> {
+  const { rows } = await query<{ id: string; global_priority: number }>(
+    `SELECT p.id, p.global_priority FROM projects p WHERE ${ELIGIBILITY_FRAGMENT}`,
+    [groupId],
+  );
+  return rows;
+}
+
 prioritizationRouter.get("/", async (req, res) => {
   const groupId = req.groupId!;
   const isAdmin = req.userGroupRole === "admin";
@@ -136,7 +180,15 @@ prioritizationRouter.get("/", async (req, res) => {
      ORDER BY p.global_priority ASC, p.updated_at DESC, p.id ASC`,
     [groupId],
   );
-  res.json(rows);
+  // Version fingerprints the FULL eligible set (unaffected by the
+  // admin-only-lane filter above) so GET and PUT always agree on
+  // what "the ranking" is regardless of who's polling. A tiny race
+  // window between the two SELECTs on GET is harmless -- the next
+  // poll converges, and the PUT-side check is authoritative for
+  // stale-write prevention.
+  const fingerprintPairs = await loadEligibleForFingerprint(groupId);
+  const version = fingerprintEligible(fingerprintPairs);
+  res.json({ rows, version });
 });
 
 /**
@@ -167,14 +219,33 @@ const putSchema = z.object({
     .array(z.string().uuid())
     .min(1)
     .max(10_000),
+  /**
+   * Fingerprint of the ranking the client believes it's editing.
+   * Obtained from the last GET /api/prioritization response. If
+   * this doesn't match the just-locked eligible set the PUT
+   * aborts with 409 (STALE_PRIORITY_VERSION) and the client
+   * refetches instead of overwriting a concurrent PM's work.
+   */
+  expected_version: z.string().min(1).max(128),
 });
+
+type PutOk = {
+  kind: "ok";
+  updated: number;
+  audited: number;
+  version: string;
+};
+type PutStale = {
+  kind: "stale";
+  currentVersion: string;
+};
 
 prioritizationRouter.put("/", requireWrite, async (req, res) => {
   const body = putSchema.parse(req.body);
   const groupId = req.groupId!;
   const userId = req.user!.id;
 
-  const result = await withTransaction(async (client) => {
+  const result = await withTransaction<PutOk | PutStale>(async (client) => {
     // Snapshot the currently-eligible set inside the same
     // transaction so a concurrent edit that flips eligibility
     // can't race the reorder. Lock the eligible rows FOR UPDATE
@@ -194,6 +265,17 @@ prioritizationRouter.put("/", requireWrite, async (req, res) => {
       [groupId],
     );
     const eligibleById = new Map(eligible.map((r) => [r.id, r] as const));
+
+    // Version check runs INSIDE the transaction against the
+    // just-locked rows so a concurrent committed PUT is caught
+    // before we overwrite it. Mismatch → return a `stale` sentinel
+    // so the router can emit the documented 409 envelope; the
+    // transaction commits harmlessly (no writes were issued yet)
+    // and the FOR UPDATE locks release for the next writer.
+    const currentVersion = fingerprintEligible(eligible);
+    if (currentVersion !== body.expected_version) {
+      return { kind: "stale", currentVersion };
+    }
 
     // Dedupe defensively -- a stray render loop shouldn't corrupt
     // the sequence. First occurrence wins so the caller's
@@ -274,8 +356,32 @@ prioritizationRouter.put("/", requireWrite, async (req, res) => {
       }
     }
 
-    return { updated: ordered.length, audited: auditWrites };
+    // Fresh fingerprint over the just-written eligible set. The
+    // client caches this as its next `expected_version` so the
+    // very next reorder (before a poll refetch lands) can still
+    // race-check without a round-trip.
+    const nextPairs = ordered.map((id, i) => ({ id, global_priority: i + 1 }));
+    const newVersion = fingerprintEligible(nextPairs);
+    return {
+      kind: "ok",
+      updated: ordered.length,
+      audited: auditWrites,
+      version: newVersion,
+    };
   });
 
-  res.json(result);
+  if (result.kind === "stale") {
+    res.status(409).json({
+      code: "STALE_PRIORITY_VERSION",
+      error: "ranking was updated by someone else; refetch and retry",
+      currentVersion: result.currentVersion,
+    });
+    return;
+  }
+  res.json({
+    ok: true,
+    updated: result.updated,
+    audited: result.audited,
+    version: result.version,
+  });
 });
