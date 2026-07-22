@@ -590,6 +590,8 @@ export function RoadmapView() {
               lanes={lanes.data ?? []}
               teams={teams.data ?? []}
               users={users.data ?? []}
+              kpis={kpis.data ?? []}
+              groupBy={groupBy}
               onOpen={setSelectedId}
               pdfMode={pdfMode}
             />

@@ -1,7 +1,15 @@
 import { useMemo, useState } from "react";
 import { useSortable, SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Calendar, GripVertical, Search, Star, X } from "lucide-react";
+import {
+  Calendar,
+  ChevronDown,
+  ChevronRight,
+  GripVertical,
+  Search,
+  Star,
+  X,
+} from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "../lib/cn";
 import { readableOn, tint } from "../lib/colors";
@@ -70,6 +78,22 @@ export function PrioritizationFinderPanel({
   const [teamFilter, setTeamFilter] = useState<string[]>([]);
   const [laneFilter, setLaneFilter] = useState<string[]>([]);
   const [ownerFilter, setOwnerFilter] = useState<string[]>([]);
+
+  // Per-row expand state for the finder. Local-only (not
+  // persisted, not stored in zustand) so a page refresh or tab
+  // switch resets — the finder is a scan surface, not an editing
+  // surface, and expanded descriptions are cheap to re-open.
+  // Multiple rows can be open at once so users can compare
+  // descriptions side-by-side before deciding which to drag over.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const toggleExpanded = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const projects = useProjects();
   const users = useUsers();
@@ -323,6 +347,8 @@ export function PrioritizationFinderPanel({
                   primaryTeamName={row.team_names[0] ?? null}
                   canWrite={canWrite}
                   activeDragId={activeDragId}
+                  isExpanded={expanded.has(row.id)}
+                  onToggleExpanded={() => toggleExpanded(row.id)}
                 />
               ))}
             </ul>
@@ -340,8 +366,19 @@ function FinderRow(props: {
   primaryTeamName: string | null;
   canWrite: boolean;
   activeDragId: string | null;
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
 }) {
-  const { row, rank, primaryTeam, primaryTeamName, canWrite, activeDragId } = props;
+  const {
+    row,
+    rank,
+    primaryTeam,
+    primaryTeamName,
+    canWrite,
+    activeDragId,
+    isExpanded,
+    onToggleExpanded,
+  } = props;
   const sortableId = FINDER_PREFIX + row.id;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: sortableId,
@@ -369,7 +406,31 @@ function FinderRow(props: {
 
   return (
     <li ref={setNodeRef} style={style} className="bg-white">
-      <div className="flex items-center gap-2 px-2 py-1.5">
+      {/*
+        Row header. Click / Enter / Space anywhere in this region
+        toggles the description preview (same UX as Column A).
+        The drag handle below stops event propagation so grabbing
+        the grip doesn't also flip the expanded state, and dnd-kit's
+        4px pointer-activation on the parent DndContext means a
+        stray click on the grip won't fire a drag. Because
+        `useSortable`'s `listeners` are attached to the grip button
+        only (not this container), clicking the title / caret /
+        empty space never initiates a drag.
+      */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={isExpanded}
+        aria-label={`${isExpanded ? "Collapse" : "Expand"} ${row.title}`}
+        onClick={onToggleExpanded}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggleExpanded();
+          }
+        }}
+        className="flex cursor-pointer items-center gap-2 px-2 py-1.5 hover:bg-wp-stone/30"
+      >
         <button
           type="button"
           {...attributes}
@@ -377,6 +438,10 @@ function FinderRow(props: {
           aria-label={`Drag ${row.title} onto the ranked list`}
           title={canWrite ? "Drag onto the ranked list" : "Read-only — viewers cannot rerank"}
           disabled={!canWrite}
+          // Stop propagation so grabbing the handle (or a stray
+          // click on it) doesn't also toggle the row expand.
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
           className={cn(
             "shrink-0 rounded p-1 text-wp-slate",
             canWrite
@@ -429,7 +494,21 @@ function FinderRow(props: {
             {dateRange}
           </div>
         </div>
+        <span className="inline-flex shrink-0 items-center text-wp-slate" aria-hidden>
+          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </span>
       </div>
+      {isExpanded ? (
+        <div className="border-t border-wp-stone/60 bg-wp-stone/10 px-2 py-2">
+          {row.description?.trim() ? (
+            <div className="whitespace-pre-wrap text-sm text-wp-slate">
+              {row.description}
+            </div>
+          ) : (
+            <div className="text-sm italic text-wp-slate/70">No description.</div>
+          )}
+        </div>
+      ) : null}
     </li>
   );
 }
