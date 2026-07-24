@@ -17,6 +17,8 @@ import {
   type PhaseKey,
   type TshirtBucket,
 } from "../ai/estimator.js";
+import { newlyAddedMentionIds } from "../lib/mentions.js";
+import { fireMentionEmail } from "../notifications/mentionEmail.js";
 
 /** Ordered phase-date fields, earliest → latest. Used by both the
  * internal-ordering validator and the forward-cascade helper. */
@@ -1097,13 +1099,69 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
       }
     }
 
+    // -----------------------------------------------------------------
+    // @mention side-channel — only when the description column was in
+    // this PATCH's body AND its value actually changed. Diff against
+    // the pre-mutation `existing` row (fetched under FOR UPDATE above)
+    // so concurrent edits can't sneak an extra email past the guard.
+    // Self-mentions and non-group-member ids are silently dropped —
+    // matches the semantics used in routes/comments.ts.
+    // -----------------------------------------------------------------
+    const notifyUserIds: string[] = [];
+    if (
+      body.description !== undefined &&
+      body.description !== (existing.description ?? "")
+    ) {
+      const newlyAdded = newlyAddedMentionIds(
+        existing.description ?? "",
+        body.description ?? "",
+      );
+      if (newlyAdded.length > 0) {
+        const { rows: memberRows } = await client.query<{ id: string }>(
+          `SELECT u.id FROM users u
+            WHERE u.id = ANY($1::uuid[])
+              AND (u.is_super_user = TRUE
+                   OR EXISTS (SELECT 1 FROM user_groups ug
+                                WHERE ug.user_id = u.id AND ug.group_id = $2))`,
+          [newlyAdded, groupId],
+        );
+        const filtered = memberRows
+          .map((r) => r.id)
+          .filter((uid) => uid !== req.user!.id);
+        for (const uid of filtered) {
+          await client.query(
+            `INSERT INTO mentions
+               (group_id, project_id, mentioned_user_id, mentioning_user_id,
+                source_type, source_id)
+             VALUES ($1, $2, $3, $4, 'description', NULL)`,
+            [groupId, projectId, uid, req.user!.id],
+          );
+          notifyUserIds.push(uid);
+        }
+      }
+    }
+
     const { rows: finalRows } = await client.query<ProjectRow>(
       `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
       [projectId],
     );
-    return finalRows[0]!;
+    return { row: finalRows[0]!, notifyUserIds, descriptionText: body.description ?? "" };
   });
-  res.json(result);
+
+  // Fire mention emails AFTER commit so a mail-provider hiccup can't
+  // roll back a legitimate description edit. Same fire-and-forget
+  // pattern the comment write path uses.
+  for (const uid of result.notifyUserIds) {
+    fireMentionEmail({
+      mentionedUserId: uid,
+      mentioningUserId: req.user!.id,
+      projectId,
+      sourceType: "description",
+      bodyText: result.descriptionText,
+    });
+  }
+
+  res.json(result.row);
 });
 
 const moveSchema = z.object({

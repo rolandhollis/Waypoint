@@ -100,6 +100,32 @@ export function useUsers(enabled = true) {
 }
 
 /**
+ * Group-scoped user roster available to any authenticated caller
+ * (including viewers), unlike `useUsers()` above which hits the
+ * admin-only `/users` route. Backs the @mention picker on comments
+ * + descriptions. Response is a lean projection — id / name / email
+ * / color — matching what the picker actually needs to render.
+ */
+export type MentionableUser = {
+  id: string;
+  name: string;
+  email: string;
+  color: string;
+};
+
+export function useMentionableUsers(enabled = true) {
+  return useQuery({
+    queryKey: ["mentionableUsers"],
+    queryFn: () => api<MentionableUser[]>("/users/mentionable"),
+    // Cache generously — the roster is small, changes rarely, and a
+    // stale entry only affects who shows up as a suggestion in the
+    // picker (never the write path, which validates ids server-side).
+    staleTime: 60_000,
+    enabled,
+  });
+}
+
+/**
  * The set of groups a specific user belongs to, one row per
  * membership with the per-group role and group metadata. Used by
  * the user-detail modal to render the checkbox editor.

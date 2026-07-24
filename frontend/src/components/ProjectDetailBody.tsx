@@ -7,7 +7,7 @@ import { ChevronLeft, ChevronRight, Lock, LockOpen, Star, X } from "lucide-react
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
 import { AuditEventBody, auditActorLabel, timelineEntryToRenderEntry } from "../lib/auditRender";
-import { useCanWrite, useCurrentGroupRole, useKpis, useMe, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useTshirtSizes, useUsers } from "../lib/queries";
+import { useCanWrite, useCurrentGroupRole, useKpis, useMe, useMentionableUsers, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useTshirtSizes, useUsers } from "../lib/queries";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
@@ -15,6 +15,7 @@ import { ancestors, childrenByParent, descendants, indexById } from "../lib/hier
 import { makeAiEstimateHandlers, type AiEstimatePatchArgs } from "../lib/aiEstimateApply";
 import { AiSuggestPopover } from "./AiSuggestPopover";
 import { CapacityWarning } from "./CapacityWarning";
+import { MentionTextarea } from "./MentionTextarea";
 import { computeOverloads, overloadsForProject } from "../lib/capacity";
 import { KpiPicker } from "./KpiPicker";
 import { MutationErrorBanner } from "./MutationErrorBanner";
@@ -133,6 +134,10 @@ export function ProjectDetailBody({
   const currentRole = useCurrentGroupRole();
   const lanes = useSwimLanes();
   const users = useUsers();
+  // Group-scoped roster for the @mention picker on the description
+  // field below. Available to viewers too (unlike `useUsers` which is
+  // admin-only) so the picker works regardless of the caller's role.
+  const mentionable = useMentionableUsers();
   const teams = useTeams();
   const kpis = useKpis();
   const tshirtSizes = useTshirtSizes();
@@ -883,11 +888,13 @@ export function ProjectDetailBody({
         }
       >
         <Field label="Description" className="mb-3">
-          <textarea
-            className="input min-h-[8rem]"
+          <MentionTextarea
+            value={merged.description ?? ""}
+            onChange={(next) => setDraft((d) => ({ ...d, description: next }))}
+            users={mentionable.data ?? []}
             disabled={!canWrite}
-            value={merged.description}
-            onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+            className="input min-h-[8rem]"
+            placeholder="Use @ to mention a teammate."
           />
         </Field>
 

@@ -3,8 +3,17 @@ import { format } from "date-fns";
 import { Pencil, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { api } from "../lib/api";
-import { useCurrentGroupRole, useMe, useProjectComments, useUsers } from "../lib/queries";
+import {
+  useCurrentGroupRole,
+  useMe,
+  useMentionableUsers,
+  useProjectComments,
+  useUsers,
+} from "../lib/queries";
+import type { MentionableUser } from "../lib/queries";
 import type { ProjectComment, User } from "../lib/types";
+import { MentionText } from "./MentionText";
+import { MentionTextarea } from "./MentionTextarea";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 
 /**
@@ -23,6 +32,12 @@ export function ProjectComments({ projectId }: { projectId: string }) {
   // group rather than the deprecated users.role column.
   const currentUserRole = useCurrentGroupRole() ?? "viewer";
   const users = useUsers();
+  // Mentionable roster is a lean, group-scoped projection available
+  // to viewers as well (unlike `useUsers` which is admin-only). Used
+  // exclusively by the @mention pickers below; the display path
+  // still uses `useUsers` for author metadata to keep the existing
+  // author-chip behavior untouched.
+  const mentionable = useMentionableUsers();
   const comments = useProjectComments(projectId);
   const qc = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -46,13 +61,17 @@ export function ProjectComments({ projectId }: { projectId: string }) {
       <h3 className="text-sm font-semibold text-wp-ink">Comments</h3>
 
       <div className="mt-2 space-y-2">
-        <textarea
-          className="input min-h-[64px] w-full resize-y text-sm"
-          placeholder="Write a comment…"
+        <MentionTextarea
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={setDraft}
+          users={mentionable.data ?? []}
+          className="input min-h-[64px] w-full resize-y text-sm"
+          placeholder="Write a comment… (use @ to mention)"
           onKeyDown={(e) => {
             // Cmd/Ctrl-Enter submits, matching most chat inputs.
+            // MentionTextarea only forwards the event here if the
+            // picker didn't already consume it (arrow / enter / tab
+            // / escape when the popover is open).
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && canSubmit) {
               e.preventDefault();
               create.mutate(draft);
@@ -83,6 +102,7 @@ export function ProjectComments({ projectId }: { projectId: string }) {
               comment={c}
               projectId={projectId}
               users={users.data ?? []}
+              mentionable={mentionable.data ?? []}
               currentUserId={me.data?.id ?? null}
               currentUserRole={currentUserRole}
             />
@@ -99,12 +119,14 @@ function CommentRow({
   comment,
   projectId,
   users,
+  mentionable,
   currentUserId,
   currentUserRole,
 }: {
   comment: ProjectComment;
   projectId: string;
   users: User[];
+  mentionable: readonly MentionableUser[];
   currentUserId: string | null;
   currentUserRole: "admin" | "owner" | "viewer";
 }) {
@@ -192,10 +214,11 @@ function CommentRow({
 
       {editing ? (
         <div className="mt-2 space-y-2">
-          <textarea
-            className="input min-h-[64px] w-full resize-y text-sm"
+          <MentionTextarea
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={setDraft}
+            users={mentionable}
+            className="input min-h-[64px] w-full resize-y text-sm"
           />
           <MutationErrorBanner mutation={patch} />
           <div className="flex items-center gap-2">
@@ -217,7 +240,12 @@ function CommentRow({
           </div>
         </div>
       ) : (
-        <p className="mt-1.5 whitespace-pre-wrap text-sm text-wp-ink">{comment.body}</p>
+        // Render styled mention chips over the plain-text body so
+        // tags stand out visually while the underlying text stays
+        // intact for copy / accessibility (see components/MentionText.tsx).
+        <p className="mt-1.5 whitespace-pre-wrap text-sm text-wp-ink">
+          <MentionText text={comment.body} />
+        </p>
       )}
 
       <MutationErrorBanner mutation={del} className="mt-2" />

@@ -259,6 +259,44 @@ usersRouter.get("/", groupScope, requireAdmin, async (req, res) => {
 });
 
 /**
+ * Group-scoped user roster available to any authenticated caller
+ * (including viewers). Backs the @mention picker on comments +
+ * descriptions in the item detail view.
+ *
+ * Deliberately kept as a peer of GET / (the admin-only roster)
+ * rather than relaxing that route's auth, because GET / carries
+ * additional metadata (password_updated_at, capacity, prefs) that
+ * the admin roster surface renders but a mention picker doesn't
+ * need to expose. The picker sees id / name / email / color only,
+ * which is the same info the item's Owner select in ProjectDetailBody
+ * already surfaces via the admin roster today.
+ *
+ * Same membership filter as GET /: super-users are implicit members
+ * of every group; explicit user_groups rows count for regular users.
+ * Sorted alphabetically so keyboard navigation lands where the user
+ * expects.
+ */
+usersRouter.get("/mentionable", groupScope, async (req, res) => {
+  const { rows } = await query<{
+    id: string;
+    name: string;
+    email: string;
+    color: string;
+  }>(
+    `SELECT u.id, u.name, u.email, u.color
+       FROM users u
+      WHERE u.is_super_user = TRUE
+         OR EXISTS (
+              SELECT 1 FROM user_groups ug
+               WHERE ug.user_id = u.id AND ug.group_id = $1
+            )
+      ORDER BY u.name ASC`,
+    [req.groupId!],
+  );
+  res.json(rows);
+});
+
+/**
  * Guardrail used by every user-mutation endpoint under this router
  * so an admin in group A can never poke at a user who only lives
  * in group B. Super-users are treated as implicit members of every
