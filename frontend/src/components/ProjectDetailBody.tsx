@@ -389,6 +389,56 @@ export function ProjectDetailBody({
   });
 
   /**
+   * Lane-swap mutation for the "Swim lane" dropdown below. Hits the
+   * same POST /:id/move endpoint the Board's drag-drop flow uses so
+   * side effects (terminal-lane completion stamping, position
+   * compaction in both source + destination, status_history + audit
+   * rows) are byte-for-byte identical to a drag. Deliberately does
+   * NOT pre-compute a `position` — the backend defaults to appending
+   * at the tail when omitted, which matches what a Board drop onto
+   * empty lane space would do.
+   *
+   * Optimistic pattern mirrors `strategicToggle` above: snapshot
+   * both `["projects"]` and `["project", id]`, apply the new
+   * `swim_lane_id` locally so the dropdown flips instantly, roll
+   * both caches back on error, and invalidate on settle so lane-
+   * scoped surfaces (Kanban columns, Gantt rows, Status Report
+   * groupings) rerender against the server truth.
+   */
+  const moveLane = useMutation({
+    mutationFn: (v: { next: string | null }) =>
+      api<Project>(`/projects/${id}/move`, {
+        method: "POST",
+        body: JSON.stringify({ swim_lane_id: v.next }),
+      }),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: ["projects"] });
+      await qc.cancelQueries({ queryKey: ["project", id] });
+      const prevList = qc.getQueryData<Project[]>(["projects"]);
+      const prevOne = qc.getQueryData<Project>(["project", id]);
+      if (prevList) {
+        qc.setQueryData<Project[]>(
+          ["projects"],
+          prevList.map((p) => (p.id === id ? { ...p, swim_lane_id: v.next } : p)),
+        );
+      }
+      if (prevOne) {
+        qc.setQueryData<Project>(["project", id], { ...prevOne, swim_lane_id: v.next });
+      }
+      return { prevList, prevOne };
+    },
+    onError: (_err, _v, ctx) => {
+      if (ctx?.prevList) qc.setQueryData(["projects"], ctx.prevList);
+      if (ctx?.prevOne) qc.setQueryData(["project", id], ctx.prevOne);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["project", id] });
+      qc.invalidateQueries({ queryKey: ["pendingStatus"] });
+    },
+  });
+
+  /**
    * Mirror of the Roadmap Quarters view's confirm interstitial.
    * When the user is viewing a filtered surface (Roadmap tab with
    * "Key strategic only" chip on) and clicks the header star to
@@ -446,6 +496,33 @@ export function ProjectDetailBody({
     const all = computeOverloads(projectList, users.data ?? [], teams.data ?? [], maybeMerged);
     return overloadsForProject(all, maybeMerged);
   }, [maybeMerged, projectList, users.data, teams.data]);
+
+  /**
+   * Lanes visible in the "Swim lane" dropdown below. Sorted by
+   * `order` ascending (same order shown on the Board) and filtered
+   * to hide `is_archive` and "parking lot" lanes UNLESS the project
+   * is already sitting in one — otherwise moving IN to those lanes
+   * belongs to dedicated affordances (the "Move to archive" button
+   * / the Board quick-actions "Move to Parking Lot" row). Archive
+   * lanes never surface for non-admins anyway (the backend filters
+   * them out of `GET /swim-lanes`), so the guard is defence-in-depth
+   * for admin users viewing a non-archived item. Computed above the
+   * loading / not-found early returns so the hook order stays
+   * stable across the loading → loaded transition (see the "IMPORTANT"
+   * comment below).
+   */
+  const laneOptions = useMemo(() => {
+    const all = lanes.data ?? [];
+    const currentId = maybeMerged?.swim_lane_id ?? null;
+    return all
+      .filter((l) => {
+        if (l.id === currentId) return true;
+        if (l.is_archive) return false;
+        if (l.name.trim().toLowerCase() === "parking lot") return false;
+        return true;
+      })
+      .sort((a, b) => a.order - b.order);
+  }, [lanes.data, maybeMerged?.swim_lane_id]);
 
   // Prev/next neighbours from the surrounding view's sibling list.
   // We look at the *current* id (not the merged draft) because the
@@ -841,6 +918,41 @@ export function ProjectDetailBody({
               suggestions={knownTags}
               disabled={!canWrite}
             />
+          </Field>
+          {/* Swim lane picker.
+              Fires the move mutation immediately on change (not on
+              Save) so the item hops columns / rows on every lane-
+              scoped surface (Kanban, Gantt, Status Report) in the
+              same tick. The optimistic cache write in `moveLane`
+              flips this select synchronously; the invalidation on
+              settle refetches every downstream view. Archived /
+              parking-lot lanes are filtered out of `laneOptions`
+              unless the item is already in one (see the memo
+              above) so the picker matches the Board's convention
+              — dedicated affordances exist for those transitions
+              ("Move to archive" button below, Board quick-actions
+              "Move to Parking Lot" row). */}
+          <Field label="Swim lane">
+            <select
+              className="input"
+              disabled={!canWrite || moveLane.isPending}
+              value={merged.swim_lane_id ?? ""}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const next = raw === "" ? null : raw;
+                if (next === (merged.swim_lane_id ?? null)) return;
+                moveLane.mutate({ next });
+              }}
+            >
+              <option value="">— Unassigned —</option>
+              {laneOptions.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                  {l.is_admin_only ? " (admin-only)" : ""}
+                  {l.is_archive ? " (archive)" : ""}
+                </option>
+              ))}
+            </select>
           </Field>
           <Field
             label="KPIs"
@@ -1239,6 +1351,7 @@ export function ProjectDetailBody({
           <MutationErrorBanner mutation={archive} className="mb-2" />
           <MutationErrorBanner mutation={lockToggle} className="mb-2" />
           <MutationErrorBanner mutation={strategicToggle} className="mb-2" />
+          <MutationErrorBanner mutation={moveLane} className="mb-2" />
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <button className="btn-ghost text-xs" onClick={handleCloseOrCancel}>Cancel</button>
