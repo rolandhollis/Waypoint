@@ -13,6 +13,7 @@ import { KpiReportView } from "./views/KpiReportView";
 import { EZEstimatesView } from "./views/EZEstimatesView";
 import { AdminSettingsView } from "./views/AdminSettingsView";
 import { PhasesView } from "./views/PhasesView";
+import { ProjectDetailPage } from "./views/ProjectDetailPage";
 import { LoginView } from "./views/LoginView";
 import { ForgotPasswordView } from "./views/ForgotPasswordView";
 import { ResetPasswordView } from "./views/ResetPasswordView";
@@ -155,6 +156,18 @@ export function App() {
           <Route path="/kpis" element={<KpiReportView />} />
           <Route path="/phases" element={<PhasesView />} />
           <Route path="/admin" element={<AdminSettingsView />} />
+          {/* Standalone `/projects/:id` — bookmarkable / shareable
+              item detail page. Renders the same shared body the
+              right-side modal uses (`ProjectDetailBody`), so any
+              affordance available in one is available in the
+              other. Unauthenticated visits get caught by the
+              `<Route path="*" ... />` unauthenticated catch-all
+              above, which stashes the target URL through
+              `stashPostLoginRedirect` and bounces to `/login`;
+              LoginView / MockLoginScreen call
+              `consumePostLoginRedirect` after auth and drop the
+              user back here. */}
+          <Route path="/projects/:id" element={<ProjectDetailPage />} />
           {/* /login and /forgot-password only make sense while
               unauthenticated — bounce signed-in users home so they
               don't see the picker copy for a state they aren't in.
