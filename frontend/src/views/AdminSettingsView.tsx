@@ -1632,24 +1632,87 @@ function SortableKpiRow(props: {
 }
 
 /**
- * T-Shirt sizes admin — relabels + re-sizes the five presets (S, M,
- * L, XL, XXL by default) that back the EZEstimates view's size
- * picker. The catalog cardinality is fixed by design (no add /
- * delete), which is why this tab is a simple two-column editor
- * instead of the drag-reorder pattern used by lanes / teams / kpis.
+ * T-Shirt sizes admin — the tenant's picker presets (S, M, L, XL,
+ * XXL by default) that back the EZEstimates view. Admins can add,
+ * rename, re-size, drag-reorder, and delete rows. Shape matches the
+ * KpisAdmin surface (create form at the bottom, drag handles on
+ * each row, inline delete) so admins get the same muscle memory
+ * across every workspace catalog.
  *
- * Validation is client-side + server-side:
- *   - days must be a non-negative integer (0..3650). Zero is allowed
- *     and means "phase_end == phase_start" — a same-day window, not a
- *     "clear the phase" signal. Useful for e.g. a Post-Dev size on a
- *     trivial task where no post-dev work is expected.
- *   - label must be non-empty and unique within the tenant
- *   - the backend's PATCH schema mirrors both rules and returns 400
- *     on violation; the mutation error banner surfaces the message.
+ * Validation:
+ *   - label must be non-empty (trimmed client-side) and unique
+ *     within the tenant. The backend does a case-insensitive dupe
+ *     check and returns 409; the mutation error banner surfaces the
+ *     message.
+ *   - days must be a non-negative integer 0..3650. Zero is allowed
+ *     and means "phase_end == phase_start" — a same-day window, not
+ *     a "clear the phase" signal.
+ *
+ * Delete is safe by construction: no schema FK references
+ * tshirt_sizes.id (presets are consumed by label lookup via
+ * nearestSizeLabel on the backend), so a stray delete can't break a
+ * project — just orphans a preset from the picker.
  */
 function TshirtSizesAdmin() {
   const sizes = useTshirtSizes();
   const qc = useQueryClient();
+  const [label, setLabel] = useState("");
+  const [days, setDays] = useState<string>("7");
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+
+  // Client-side dupe guard so the Add button disables before the
+  // user has to eat a round-trip. The backend still enforces the
+  // same rule (case-insensitive) as the source of truth.
+  const existingLabels = (sizes.data ?? []).map((s) => s.label.toLowerCase());
+  const trimmedLabel = label.trim();
+  const isDupe = trimmedLabel !== "" && existingLabels.includes(trimmedLabel.toLowerCase());
+  const parsedDays = (() => {
+    const raw = days.trim();
+    if (raw === "") return 7;
+    const n = Math.floor(Number(raw));
+    if (Number.isNaN(n)) return NaN;
+    return Math.max(0, Math.min(3650, n));
+  })();
+  const daysValid = !Number.isNaN(parsedDays);
+
+  const create = useMutation({
+    mutationFn: () =>
+      api<TshirtSize>("/tshirt-sizes", {
+        method: "POST",
+        body: JSON.stringify({ label: trimmedLabel, days: parsedDays }),
+      }),
+    onMutate: async () => {
+      // Optimistic append: the server will overwrite with the real
+      // row (canonical id + timestamps) on success. On error the
+      // rollback restores the pre-add snapshot.
+      await qc.cancelQueries({ queryKey: ["tshirtSizes"] });
+      const prev = qc.getQueryData<TshirtSize[]>(["tshirtSizes"]);
+      if (prev) {
+        const nextPosition = prev.length
+          ? Math.max(...prev.map((s) => s.position)) + 1
+          : 0;
+        const now = new Date().toISOString();
+        const optimistic: TshirtSize = {
+          id: `optimistic-${now}`,
+          label: trimmedLabel,
+          days: parsedDays,
+          position: nextPosition,
+          created_at: now,
+          updated_at: now,
+        };
+        qc.setQueryData<TshirtSize[]>(["tshirtSizes"], [...prev, optimistic]);
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["tshirtSizes"], ctx.prev);
+    },
+    onSuccess: () => {
+      setLabel("");
+      setDays("7");
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["tshirtSizes"] }),
+  });
 
   const patch = useMutation({
     mutationFn: (v: { id: string; body: Partial<Pick<TshirtSize, "label" | "days">> }) =>
@@ -1660,6 +1723,68 @@ function TshirtSizesAdmin() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["tshirtSizes"] }),
   });
 
+  const reorder = useMutation({
+    mutationFn: (ids: string[]) =>
+      api<TshirtSize[]>("/tshirt-sizes/reorder", {
+        method: "POST",
+        body: JSON.stringify({ order: ids }),
+      }),
+    onMutate: async (ids) => {
+      await qc.cancelQueries({ queryKey: ["tshirtSizes"] });
+      const prev = qc.getQueryData<TshirtSize[]>(["tshirtSizes"]);
+      if (prev) {
+        const byId = new Map(prev.map((s) => [s.id, s]));
+        const next = ids
+          .map((id, i) => {
+            const row = byId.get(id);
+            return row ? { ...row, position: i } : null;
+          })
+          .filter((r): r is TshirtSize => r !== null);
+        qc.setQueryData<TshirtSize[]>(["tshirtSizes"], next);
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["tshirtSizes"], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["tshirtSizes"] }),
+  });
+
+  const del = useMutation({
+    mutationFn: (id: string) => api(`/tshirt-sizes/${id}`, { method: "DELETE" }),
+    onMutate: async (id) => {
+      await qc.cancelQueries({ queryKey: ["tshirtSizes"] });
+      const prev = qc.getQueryData<TshirtSize[]>(["tshirtSizes"]);
+      if (prev) {
+        qc.setQueryData<TshirtSize[]>(["tshirtSizes"], prev.filter((s) => s.id !== id));
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["tshirtSizes"], ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["tshirtSizes"] }),
+  });
+
+  function handleDragEnd(e: DragEndEvent) {
+    if (!sizes.data) return;
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const oldIdx = sizes.data.findIndex((s) => s.id === active.id);
+    const newIdx = sizes.data.findIndex((s) => s.id === over.id);
+    if (oldIdx < 0 || newIdx < 0) return;
+    const nextIds = arrayMove(sizes.data, oldIdx, newIdx).map((s) => s.id);
+    reorder.mutate(nextIds);
+  }
+
+  function handleDelete(s: TshirtSize) {
+    // Same confirm-based prompt style used by lanes / teams / kpis
+    // delete. Sizes have no FK dependents (see docblock) so the copy
+    // is a plain confirm rather than a reassignment prompt.
+    if (!confirm(`Delete size "${s.label}"? It will disappear from the EZEstimates picker.`)) return;
+    del.mutate(s.id);
+  }
+
   const rows = sizes.data ?? [];
 
   return (
@@ -1668,60 +1793,133 @@ function TshirtSizesAdmin() {
         <div>
           <h2 className="text-base font-semibold">T-Shirt Sizes</h2>
           <p className="mt-1 text-xs text-wp-slate">
-            Presets available in the EZEstimates size picker. Fixed at five
-            rows per tenant; you can relabel and re-size but not add or
-            remove. Days must be a non-negative integer (0 is allowed — it
-            sets the phase end to match the phase start).
+            Presets available in the EZEstimates size picker. Drag to reorder
+            — this order controls how sizes appear in the picker. Days must
+            be a non-negative integer (0 is allowed — it sets the phase end
+            to match the phase start).
           </p>
         </div>
       </div>
 
+      <MutationErrorBanner mutation={create} className="mt-3" />
       <MutationErrorBanner mutation={patch} className="mt-3" />
+      <MutationErrorBanner mutation={reorder} className="mt-3" />
+      <MutationErrorBanner mutation={del} className="mt-3" />
 
       {sizes.isLoading ? (
         <p className="mt-3 text-xs text-wp-slate">Loading sizes…</p>
       ) : rows.length === 0 ? (
         <p className="mt-3 text-xs text-wp-slate">
-          No sizes configured yet. This shouldn't happen — the migration seeds
-          five rows per group. Reach out to a super-admin.
+          No sizes configured yet. Add one below to get started.
         </p>
       ) : (
-        <ul className="mt-3 divide-y divide-wp-stone">
-          {rows.map((s) => (
-            <TshirtSizeRow
-              key={s.id}
-              size={s}
-              onRename={(label) => patch.mutate({ id: s.id, body: { label } })}
-              onResize={(days) => patch.mutate({ id: s.id, body: { days } })}
-            />
-          ))}
-        </ul>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={rows.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+            <ul className="mt-3 divide-y divide-wp-stone">
+              {rows.map((s) => (
+                <SortableTshirtSizeRow
+                  key={s.id}
+                  size={s}
+                  onRename={(v) => patch.mutate({ id: s.id, body: { label: v } })}
+                  onResize={(v) => patch.mutate({ id: s.id, body: { days: v } })}
+                  onDelete={() => handleDelete(s)}
+                />
+              ))}
+            </ul>
+          </SortableContext>
+        </DndContext>
       )}
+
+      <div className="mt-4 flex items-end gap-2">
+        <label className="flex-1 text-xs font-medium text-wp-slate">
+          New size label
+          <input
+            className="input mt-1"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="e.g. XXXL"
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                trimmedLabel !== "" &&
+                !isDupe &&
+                daysValid &&
+                !create.isPending
+              ) {
+                create.mutate();
+              }
+            }}
+          />
+        </label>
+        <label className="text-xs font-medium text-wp-slate">
+          Days
+          <input
+            type="number"
+            min={0}
+            max={3650}
+            className="input mt-1 w-20"
+            value={days}
+            onChange={(e) => setDays(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                trimmedLabel !== "" &&
+                !isDupe &&
+                daysValid &&
+                !create.isPending
+              ) {
+                create.mutate();
+              }
+            }}
+          />
+        </label>
+        <button
+          className="btn-primary"
+          disabled={!trimmedLabel || isDupe || !daysValid || create.isPending}
+          title={
+            !trimmedLabel
+              ? "Enter a label"
+              : isDupe
+              ? `A size labeled "${trimmedLabel}" already exists`
+              : !daysValid
+              ? "Days must be a number between 0 and 3650"
+              : "Add this size to the picker"
+          }
+          onClick={() => create.mutate()}
+        >
+          Add size
+        </button>
+      </div>
     </section>
   );
 }
 
 /**
- * One editable row for a T-shirt size preset. Both fields commit on
- * blur (or Enter) to match the drag-reorder tabs' idiom of "type,
- * click away, saved" — no explicit save button so PMs can rip
- * through the ladder quickly.
+ * One row in the T-shirt size admin list. Grip on the left, label +
+ * days inputs in the middle, delete on the right — mirrors the KPI
+ * / team / lane row layout so the whole admin surface stays visually
+ * consistent. Both text fields commit on blur (or Enter) to match
+ * the "type, click away, saved" idiom used by the rest of the tab.
  */
-function TshirtSizeRow({
+function SortableTshirtSizeRow({
   size,
   onRename,
   onResize,
+  onDelete,
 }: {
   size: TshirtSize;
   onRename: (label: string) => void;
   onResize: (days: number) => void;
+  onDelete: () => void;
 }) {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: size.id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
   return (
-    <li className="grid grid-cols-[auto_1fr_auto] items-center gap-3 py-2">
-      <span className="w-8 text-center text-xs font-semibold uppercase tracking-wide text-wp-slate/70">
-        {size.position + 1}
-      </span>
-      <label className="flex items-center gap-2 text-xs text-wp-slate">
+    <li ref={setNodeRef} style={style} className="flex items-center gap-3 py-2">
+      <button {...attributes} {...listeners} className="btn-ghost !p-1" aria-label="Drag to reorder">
+        <GripVertical size={14} />
+      </button>
+      <label className="flex flex-1 items-center gap-2 text-xs text-wp-slate">
         Label
         <input
           key={`label-${size.id}-${size.updated_at}`}
@@ -1760,6 +1958,13 @@ function TshirtSizeRow({
           }}
         />
       </label>
+      <button
+        className="btn-ghost !p-1 text-red-600"
+        aria-label="Delete size"
+        onClick={onDelete}
+      >
+        <Trash2 size={14} />
+      </button>
     </li>
   );
 }
