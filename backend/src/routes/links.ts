@@ -223,9 +223,10 @@ linksRouter.delete("/:linkId", requireWrite, async (req, res) => {
  * Label discovery: DISTINCT `label` across every project_links row
  * whose parent project belongs to the caller's group, sorted
  * case-insensitively. The frontend unions this with the built-in
- * defaults (`Jira`, `Confluence`) so both surface even before any
- * link has been created in the tenant. Cross-tenant labels can't
- * leak because the join filters by projects.group_id.
+ * defaults (see LinkLabelPicker.BUILT_IN_LABELS — Jira, PRD,
+ * Confluence, Figma) so those surface even before any link has been
+ * created in the tenant. Cross-tenant labels can't leak because the
+ * join filters by projects.group_id.
  *
  * Path MUST come before `/:linkId` on this router would be a
  * concern, but Express matches static segments before dynamic ones

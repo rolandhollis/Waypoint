@@ -11,8 +11,14 @@ import { useLinkLabelSuggestions } from "../lib/queries";
  * Case is preserved when users pick these — a link created with
  * "Jira" stores the string "Jira" (not "jira"), so display casing
  * follows whatever the picker saw at commit time.
+ *
+ * Order is deliberate — tickets first (most common quick-jump),
+ * then doc-like artifacts (PRD, Confluence) grouped together, then
+ * design (Figma) at the end. New link-shaped artifacts should slot
+ * in with their kind rather than at the tail so users see related
+ * options adjacent in the dropdown.
  */
-export const BUILT_IN_LABELS = ["Jira", "Confluence"] as const;
+export const BUILT_IN_LABELS = ["Jira", "PRD", "Confluence", "Figma"] as const;
 
 /** Default label the parent form should preseed on a fresh link. */
 export const DEFAULT_NEW_LABEL = "Jira";
@@ -21,7 +27,8 @@ export const DEFAULT_NEW_LABEL = "Jira";
  * Single-value combobox for picking a link label. Union of:
  *   * the server-side DISTINCT list (per-group, via
  *     useLinkLabelSuggestions),
- *   * the built-in defaults `Jira` / `Confluence`,
+ *   * the built-in defaults (see BUILT_IN_LABELS above — currently
+ *     Jira, PRD, Confluence, Figma),
  *   * anything already typed into the input that doesn't match
  *     — surfaced as a "Create '<typed>'" row so a brand-new label
  *     can be coined inline without leaving the form.
@@ -74,14 +81,16 @@ export function LinkLabelPicker({
   const suggestions = useLinkLabelSuggestions();
 
   // Build the combined option list. Order:
-  //   1. Built-in defaults (Jira, Confluence) — first, so they
-  //      surface even when the server list is empty.
+  //   1. Built-in defaults (BUILT_IN_LABELS) — first, so they
+  //      surface even when the server list is empty. Order within
+  //      the built-in list is preserved (tickets, then docs, then
+  //      design), NOT alphabetized, so related types stay adjacent.
   //   2. Server-side DISTINCT labels, alphabetical (server already
   //      sorts by lower(label) but we resort defensively so a
   //      case-quirk in the DB doesn't leak here).
   // Dedupe is case-insensitive; the first casing seen wins so the
-  // built-ins keep their canonical "Jira" / "Confluence" spelling
-  // even if a user once typed a lowercase variant.
+  // built-ins keep their canonical spelling even if a user once
+  // typed a lowercase variant.
   const options = useMemo(() => {
     const seen = new Set<string>();
     const out: string[] = [];
