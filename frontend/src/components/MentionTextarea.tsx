@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import { cn } from "../lib/cn";
-import { parseMentions } from "../lib/mentions";
+import { getMentionRanges, parseMentions } from "../lib/mentions";
 import type { MentionableUser } from "../lib/queries";
 import { MentionPicker } from "./MentionPicker";
 
@@ -167,6 +167,144 @@ export const MentionTextarea = forwardRef<
 
   const segments = useMemo(() => parseMentions(value), [value]);
 
+  /**
+   * Intercept edit-shape keys so mention tokens behave atomically
+   * regardless of the raw `@[Name](user:UUID)` characters that live
+   * in the underlying textarea value:
+   *
+   *   Backspace at end of a mention → deletes the whole token.
+   *   Delete    at start of a mention → deletes the whole token.
+   *   Backspace/Delete with a range selection that partially
+   *     overlaps any mention → the range is extended to whole
+   *     tokens BEFORE the deletion runs, so the user can never end
+   *     up with half a token in the value.
+   *   ArrowLeft / ArrowRight at a token boundary → jump to the
+   *     other boundary in one keystroke (nice-to-have).
+   *   Cmd/Ctrl+X / Cmd/Ctrl+C with a range partially inside a
+   *     mention → extend the range to whole tokens BEFORE the
+   *     default cut/copy runs, so the clipboard payload is a
+   *     complete token (the "storage format on the wire" non-goal
+   *     means the clipboard gets the raw token — a future polish
+   *     could rewrite it to `@Name` via a custom onCopy handler).
+   *
+   * Skips entirely when there are no mentions in the value or the
+   * user is mid-IME-composition (`isComposing`) so we don't
+   * interfere with dead-key sequences.
+   */
+  const handleAtomicKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const ta = localRef.current;
+    if (!ta) return;
+    // Ignore IME composition — some browsers deliver Backspace
+    // during composition and clobbering the value would break dead-
+    // key sequences.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    const ranges = getMentionRanges(value);
+    if (ranges.length === 0) return;
+
+    const selStart = ta.selectionStart ?? 0;
+    const selEnd = ta.selectionEnd ?? 0;
+    const collapsed = selStart === selEnd;
+    const noMods = !e.altKey && !e.metaKey && !e.ctrlKey;
+
+    const applyReplace = (from: number, to: number, caret: number) => {
+      const next = value.slice(0, from) + value.slice(to);
+      onChange(next);
+      // Restore caret after React commits the new value — same
+      // pattern the picker uses on selection insert.
+      requestAnimationFrame(() => {
+        const el = localRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      });
+    };
+
+    const extendedRange = (
+      a: number,
+      b: number,
+    ): [number, number] | null => {
+      let s = Math.min(a, b);
+      let ep = Math.max(a, b);
+      let changed = false;
+      for (const r of ranges) {
+        // Strict inequality: `s === r.start` already sits on the
+        // boundary and shouldn't drag the selection wider.
+        if (s > r.start && s < r.end) {
+          s = r.start;
+          changed = true;
+        }
+        if (ep > r.start && ep < r.end) {
+          ep = r.end;
+          changed = true;
+        }
+      }
+      return changed ? [s, ep] : null;
+    };
+
+    if (e.key === "Backspace" && collapsed && noMods) {
+      const m = ranges.find((r) => selStart === r.end);
+      if (m) {
+        e.preventDefault();
+        applyReplace(m.start, m.end, m.start);
+        return;
+      }
+    }
+
+    if (e.key === "Delete" && collapsed && noMods) {
+      const m = ranges.find((r) => selStart === r.start);
+      if (m) {
+        e.preventDefault();
+        applyReplace(m.start, m.end, m.start);
+        return;
+      }
+    }
+
+    // Range deletion where the selection partially overlaps a
+    // token — extend to whole tokens and delete in one shot.
+    if ((e.key === "Backspace" || e.key === "Delete") && !collapsed) {
+      const ext = extendedRange(selStart, selEnd);
+      if (ext) {
+        e.preventDefault();
+        applyReplace(ext[0], ext[1], ext[0]);
+        return;
+      }
+    }
+
+    // Arrow-key traversal. Only bare ArrowLeft/Right — we leave
+    // Shift+Arrow (selection extension), Alt+Arrow (word jump), and
+    // Cmd/Ctrl+Arrow (line jump) to their platform defaults.
+    if (e.key === "ArrowLeft" && collapsed && !e.shiftKey && noMods) {
+      const m = ranges.find((r) => selStart === r.end);
+      if (m) {
+        e.preventDefault();
+        ta.setSelectionRange(m.start, m.start);
+        return;
+      }
+    }
+    if (e.key === "ArrowRight" && collapsed && !e.shiftKey && noMods) {
+      const m = ranges.find((r) => selStart === r.start);
+      if (m) {
+        e.preventDefault();
+        ta.setSelectionRange(m.end, m.end);
+        return;
+      }
+    }
+
+    // Cut / copy — extend an in-progress selection to whole tokens
+    // BEFORE the browser's default cut/copy fires. We do NOT
+    // preventDefault: after `setSelectionRange` the browser reads
+    // the new range and clipboard behavior falls out naturally.
+    const isCutOrCopy =
+      (e.metaKey || e.ctrlKey) &&
+      !e.shiftKey &&
+      !e.altKey &&
+      (e.key === "x" || e.key === "X" || e.key === "c" || e.key === "C");
+    if (isCutOrCopy && !collapsed) {
+      const ext = extendedRange(selStart, selEnd);
+      if (ext) ta.setSelectionRange(ext[0], ext[1]);
+    }
+  };
+
   return (
     <MentionPicker
       value={value}
@@ -278,6 +416,24 @@ export const MentionTextarea = forwardRef<
             value={value}
             placeholder={placeholder}
             disabled={disabled}
+            // Turn off every "helpful" browser + extension text
+            // annotator on this textarea. Otherwise the inserted
+            // `@Name` chip is flagged as a misspelling and the
+            // browser draws a dotted red underline right through
+            // the styled overlay — the user reads that as random
+            // "periods" trailing every mention. The overlay itself
+            // is inert (aria-hidden, pointer-events: none), so no
+            // attribute is needed there.
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            autoComplete="off"
+            // Grammarly injects an overlay onto elements it wants
+            // to check; these opt-out data-attrs are the vendor's
+            // documented escape hatch.
+            data-gramm="false"
+            data-gramm_editor="false"
+            data-enable-grammarly="false"
             onChange={pickerChange}
             onSelect={onSelect}
             onBlur={onBlur}
@@ -286,7 +442,15 @@ export const MentionTextarea = forwardRef<
               setScroll({ top: el.scrollTop, left: el.scrollLeft });
             }}
             onKeyDown={(e) => {
+              // Order: the picker gets first crack (it consumes
+              // arrows/enter/tab/escape while its popover is open),
+              // then the atomic-mention handler runs (Backspace /
+              // Delete / arrow-jump / cut+copy selection extension),
+              // then the consumer's own onKeyDown (e.g. Cmd+Enter
+              // to submit a comment).
               pickerKeyDown(e);
+              if (e.defaultPrevented) return;
+              handleAtomicKey(e);
               if (e.defaultPrevented) return;
               onKeyDown?.(e);
             }}

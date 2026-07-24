@@ -192,8 +192,33 @@ export function LinkLabelPicker({
       // AND the dialog content (z-50 in the panel). We rely on
       // ordering: LinkLabelPicker's portal appends after the panel's
       // portal, so equal z-index leaves us on top.
+      //
+      // `pointerEvents: "auto"` is REQUIRED, not decorative: when the
+      // picker is used inside the project detail modal (a Radix
+      // Dialog with `modal={true}`), Radix's DismissableLayer sets
+      // `document.body.style.pointerEvents = "none"` while the
+      // dialog is open so clicks land only inside Dialog.Content.
+      // This popover is portaled to <body> — a direct child of the
+      // element with `pointer-events: none` — and `pointer-events`
+      // inherits, so without this override every option button was
+      // silently un-clickable inside the modal. See DismissableLayer
+      // `disableOutsidePointerEvents` handling.
+      //
+      // We also stop mousedown / pointerdown propagation on the
+      // popover surface so the same DismissableLayer doesn't treat a
+      // click on an option as an "outside" interaction and dismiss
+      // the parent Dialog before our onClick can fire — mirrors the
+      // defence-in-depth added to MentionPicker's inline menu.
+      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
       className="fixed z-[60] overflow-hidden rounded-md border border-wp-stone bg-white shadow-lg"
-      style={{ top: pos.top, left: pos.left, width: Math.max(pos.width, 200), maxHeight: pos.maxHeight }}
+      style={{
+        top: pos.top,
+        left: pos.left,
+        width: Math.max(pos.width, 200),
+        maxHeight: pos.maxHeight,
+        pointerEvents: "auto",
+      }}
     >
       <div className="max-h-full overflow-y-auto py-1">
         {filtered.length === 0 && !canCreate ? (

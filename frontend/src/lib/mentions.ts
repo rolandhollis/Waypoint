@@ -70,6 +70,46 @@ export function formatToken(user: { id: string; name: string }): string {
 }
 
 /**
+ * A mention token located inside `text`, with the exact character
+ * offsets it occupies. Used by editor-side helpers that want to
+ * treat mentions as atomic units — backspace-erases-whole-token,
+ * arrow-jumps-over-token, cut-extends-to-whole-token, etc.
+ *
+ * `start` is inclusive, `end` is exclusive: `text.slice(start, end)`
+ * yields the token exactly.
+ */
+export type MentionRange = {
+  start: number;
+  end: number;
+  userId: string;
+  displayName: string;
+  text: string;
+};
+
+/**
+ * Scan `text` for every well-formed mention token and return the
+ * character range each one occupies. Cheap enough to recompute on
+ * every keystroke: bailing out immediately when the string has no
+ * `@` keeps the common case free.
+ */
+export function getMentionRanges(text: string): MentionRange[] {
+  if (!text || text.indexOf("@") === -1) return [];
+  const out: MentionRange[] = [];
+  const re = new RegExp(MENTION_REGEX.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    out.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      userId: (match[2] ?? "").toLowerCase(),
+      displayName: (match[1] ?? "").trim(),
+      text: match[0],
+    });
+  }
+  return out;
+}
+
+/**
  * State machine for "is the caret currently sitting inside a
  * potential @mention query?"
  *
