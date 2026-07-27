@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
-import { addMonths, differenceInCalendarDays, format, startOfMonth } from "date-fns";
+import { addDays, addMonths, differenceInCalendarDays, format, startOfMonth } from "date-fns";
 
 import { computePhases } from "../lib/phaseCompute";
 import { readableOn } from "../lib/colors";
@@ -42,17 +42,27 @@ import type { ColorBy, GroupBy } from "../lib/viewState";
  * affordances.
  *
  * Grouping: honors the FilterBar's `Group by` dropdown identically
- * to the Rows view. `groupBy === "none"` renders one packed pool;
- * every other dimension partitions items via `resolveProjectGroup`
- * (shared helper), packs each partition independently so no bar
- * from group A ever shares a row with a bar from group B, and
- * stacks the resulting sections vertically with a small vertical
- * gap between them. Section ordering mirrors the Rows view (same
- * `compareGroupBySortKey` comparator). Deliberately does NOT
- * render a visible header strip per section — Compact optimises
- * for vertical density and the color / spatial cues from the
- * grouped packing are usually enough to read which items belong
- * together; users who need labeled groupings switch to Rows.
+ * to the Rows view. `groupBy === "none"` renders one packed pool
+ * with no headers; every other dimension partitions items via
+ * `resolveProjectGroup` (shared helper), packs each partition
+ * independently so no bar from group A ever shares a row with a
+ * bar from group B, and stacks the resulting sections vertically
+ * with a small labeled group header + gap between them. Section
+ * ordering mirrors the Rows view (same `compareGroupBySortKey`
+ * comparator).
+ *
+ * Timeframe filter: Compact strictly excludes any item whose
+ * earliest plotted phase start is later than the SELECTED
+ * timeframe's forward edge (today + N months for 3mo / 6mo / 1yr;
+ * always inside the visible span for "all"). This is stricter
+ * than the shared `isProjectInRoadmapViewport` predicate the
+ * upstream `scheduledInViewport` filter uses — that one only
+ * requires the item's SPAN to overlap the chart range, which
+ * expands past the timeframe end to include any late items. The
+ * Rows view intentionally shows those late items as scroll-right
+ * discoverable bars; Compact hides them because the packed
+ * layout has no "you can scroll right to see more" affordance
+ * and users routinely thought they were dropped from the plan.
  */
 
 /** Row height in the packed layout.
@@ -115,16 +125,20 @@ const MIN_LABEL_WIDTH_PX = 140;
  *  value (e.g. no swim lane assignment when grouped by lane). Same
  *  neutral slate `GanttTimeline`'s `pickBase` falls back to. */
 const FALLBACK_BAR_COLOR = "#94a3b8";
-/** Vertical gap between adjacent group sections. Small on
- *  purpose — since we no longer render a visible header strip for
- *  each group (Compact is optimised for density; the color /
- *  spatial cues from the grouped packing are usually enough to
- *  read group boundaries), this gap is the only visual separator
- *  between consecutive groups. Sized at ~2× the inter-row gap
- *  (BAR_PADDING * 2 = 4px) so an inter-group gap reads as clearly
- *  bigger than an inter-row gap without stealing meaningful
- *  vertical space in many-group layouts. */
-const SECTION_GAP = 8;
+/** Height of the group section header strip when `groupBy !==
+ *  "none"`. Matches `GanttTimeline`'s `GROUP_HEADER_HEIGHT` (28px)
+ *  so a style flip doesn't jolt section heights up or down.
+ *  Header renders label-left (sticky to the visible left edge),
+ *  optional KPI color dot, item count on the right of the label
+ *  chip. */
+const SECTION_HEADER_HEIGHT = 28;
+/** Vertical gap between adjacent group sections. Matches
+ *  `GanttTimeline`'s `GROUP_GAP` (12px) so both styles read at the
+ *  same rhythm. Combined with the 28px header above each labeled
+ *  section, this gives a clear visual break between packed
+ *  groups without wasting so much space that a many-group layout
+ *  scrolls further than the equivalent Rows view. */
+const SECTION_GAP = 12;
 
 /**
  * One placed bar in the compact layout. `rowIndex` is the greedy
@@ -149,12 +163,10 @@ type PlacedBar = {
 
 /**
  * One packed section = one group's worth of packed bars plus the
- * metadata the section-ordering comparator needs. `label === null`
- * means the section is the single pool that renders when
- * `groupBy === "none"` (no partition needed). Section headers are
- * intentionally not rendered in Compact — the label / sortKey
- * fields exist only to order sections consistently with the Rows
- * view via `compareGroupBySortKey`.
+ * metadata needed to draw its header. `label === null` means the
+ * section is the single header-less pool that renders when
+ * `groupBy === "none"`; every other section has a non-null label
+ * and draws the group header strip above its bars.
  */
 type PackedSection = {
   key: string;
@@ -164,6 +176,10 @@ type PackedSection = {
    *  alphabetically by label). Kept on the section so the section
    *  ordering pass can consult it without re-resolving. */
   sortKey?: number;
+  /** Accent color for the header dot. Only populated by KPI
+   *  grouping (kpi.color). Other groupings leave undefined and
+   *  the header renders label-only. */
+  color?: string;
   bars: PlacedBar[];
   /** Number of rows the greedy packer needed for this section. */
   rowCount: number;
@@ -248,6 +264,24 @@ export function RoadmapCompactView({
   }, [projects, zoom, pdfMode]);
   const totalDays = Math.max(1, differenceInCalendarDays(end, start));
 
+  // Strict timeframe forward edge. `chartEnd` above expands to
+  // include any late scheduled item (so the Rows view can render
+  // them as scroll-right-discoverable bars); Compact needs a
+  // tighter cutoff because its packed layout has no analogous
+  // "scroll right to see more" affordance — an item whose start
+  // sits well past the selected timeframe reads as invisible /
+  // dropped from the plan. `viewEnd` is exactly `today +
+  // forwardDays` for the fixed zooms; for `"all"` and `"quarters"`
+  // it falls at the latest computed forward day, which is at or
+  // beyond every scheduled item's start, so this filter is a
+  // no-op there. pdfMode also passes through: its capture already
+  // shows every scheduled item and the forward edge still ends at
+  // the same forwardDays anchor.
+  const viewEnd = useMemo(
+    () => addDays(new Date(), forwardDays),
+    [forwardDays],
+  );
+
   // Compact has no label column, so the auto-fit sizer targets the
   // full container width. The three fixed zooms still fit their
   // FORWARD portion into the visible area (matching the Rows
@@ -303,7 +337,15 @@ export function RoadmapCompactView({
   // Step 1 — build the candidate bar list. Every project with a
   // plottable date range enters exactly once; projects without
   // a resolvable start/end are silently skipped (same policy as
-  // the Rows view).
+  // the Rows view). ALSO drops any project whose earliest phase
+  // start is strictly AFTER the selected timeframe's forward
+  // edge (`viewEnd`) — see the `viewEnd` derivation above for
+  // why Compact needs a stricter cutoff than the shared
+  // `isProjectInRoadmapViewport` predicate the upstream
+  // `scheduledInViewport` filter uses. Items whose start is
+  // before viewEnd but whose end extends past it still render
+  // (their bars just get truncated visually at the chart's
+  // natural right edge).
   //
   // Step 2 — bucket candidates by group. `groupBy === "none"`
   // pours everything into a single "all" bucket so the resulting
@@ -340,6 +382,7 @@ export function RoadmapCompactView({
     for (const p of projects) {
       const phases = computePhases(p);
       if (!phases.scheduled || !phases.firstStart || !phases.overallEnd) continue;
+      if (phases.firstStart.getTime() > viewEnd.getTime()) continue;
       candidates.push({
         project: p,
         startDate: phases.firstStart,
@@ -353,6 +396,7 @@ export function RoadmapCompactView({
       key: string;
       label: string | null;
       sortKey?: number;
+      color?: string;
       bars: PlacedBar[];
     };
     const buckets = new Map<string, Bucket>();
@@ -374,6 +418,7 @@ export function RoadmapCompactView({
           key: info.key,
           label: info.label,
           sortKey: info.sortKey,
+          color: info.color,
           bars: [],
         };
         buckets.set(info.key, bucket);
@@ -411,6 +456,7 @@ export function RoadmapCompactView({
         key: bucket.key,
         label: bucket.label,
         sortKey: bucket.sortKey,
+        color: bucket.color,
         bars: sortedBars,
         rowCount: rowEnds.length,
       });
@@ -426,32 +472,41 @@ export function RoadmapCompactView({
     }
 
     return sections;
-  }, [projects, colorBy, groupBy, users, lanes, teams, kpis, laneById, teamById, userById]);
+  }, [projects, viewEnd, colorBy, groupBy, users, lanes, teams, kpis, laneById, teamById, userById]);
 
   // Per-section vertical geometry. Computed alongside `bodyHeight`
-  // so the render pass can look up each section's `barsTop`
-  // without re-walking the section list. The map is keyed by
-  // section key; the accompanying `bodyHeight` is the total
-  // content height including the inter-section gaps.
-  //
-  // No header height is reserved — group section headers were
-  // removed in favor of maximum vertical density. `SECTION_GAP`
-  // between consecutive sections is the only visual separator
-  // between groups now (subtle but bigger than the inter-row gap
-  // so the boundary still reads). `groupBy === "none"` only ever
-  // has one section, so the gap never triggers.
+  // so the render pass can look up each section's `headerTop`,
+  // `barsTop`, and total height without re-walking the section
+  // list. The map is keyed by section key; the accompanying
+  // `bodyHeight` is the total content height including headers
+  // and gaps.
   const { sectionLayouts, bodyHeight, totalBarCount } = useMemo(() => {
-    const layouts = new Map<string, { barsTop: number; height: number }>();
+    const layouts = new Map<
+      string,
+      { headerTop: number; barsTop: number; height: number }
+    >();
     let cursorY = 0;
     let bars = 0;
-    for (let i = 0; i < packedSections.length; i++) {
-      const section = packedSections[i]!;
-      if (i > 0) cursorY += SECTION_GAP;
-      const barsTop = cursorY;
+    let renderedSections = 0;
+    for (const section of packedSections) {
+      // A gap only makes sense between two visible headers — the
+      // group-by === "none" path has label=null and no header, so
+      // there's nothing to visually separate.
+      if (renderedSections > 0 && section.label != null) {
+        cursorY += SECTION_GAP;
+      }
+      const headerTop = cursorY;
+      const headerHeight = section.label != null ? SECTION_HEADER_HEIGHT : 0;
+      const barsTop = headerTop + headerHeight;
       const barsHeight = section.rowCount * ROW_HEIGHT;
-      layouts.set(section.key, { barsTop, height: barsHeight });
+      layouts.set(section.key, {
+        headerTop,
+        barsTop,
+        height: headerHeight + barsHeight,
+      });
       cursorY = barsTop + barsHeight;
       bars += section.bars.length;
+      renderedSections += 1;
     }
     // Guarantee at least one row of body height so the empty-state
     // paint doesn't collapse the scroll container. The parent
@@ -599,12 +654,56 @@ export function RoadmapCompactView({
             />
           ) : null}
 
-          {/* Bars only — group section headers were removed to keep
-              the layout as vertically dense as possible. Groups
-              still partition and pack independently; the only
-              visual group separator is `SECTION_GAP` px of
-              empty space between one section's last row and the
-              next section's first row. */}
+          {/* GROUP HEADERS — one strip per section when groupBy !==
+              "none". Rendered before the bars so a bar whose left
+              edge coincides with the header strip's right edge
+              paints on top (matches the Rows view's z-order:
+              headers below, bars above). Absolute-positioned at
+              `layout.headerTop` inside the same relative body so
+              they share the H-scroll offset with the bars.
+              Styling mirrors `GanttTimeline`'s group header:
+              light `bg-wp-stone/30` fill so the strip reads as a
+              distinct band without competing with the bar colors,
+              `border-b border-wp-stone` underline to visually
+              separate header-from-bars, `text-xs uppercase
+              tracking-wide` typography for the section label. The
+              label chip is `sticky left-0` inside the absolute
+              parent so it stays anchored to the visible left edge
+              during long horizontal scrolls — same trick that
+              keeps section titles legible on wide roadmaps in the
+              Rows view. Bar count sits inside that same sticky
+              chip so it moves with the label rather than
+              disappearing off-screen on a wide chart. */}
+          {packedSections.map((section) => {
+            if (section.label == null) return null;
+            const layout = sectionLayouts.get(section.key);
+            if (!layout) return null;
+            return (
+              <div
+                key={`section-header-${section.key}`}
+                className="absolute border-b border-wp-stone bg-wp-stone/30"
+                style={{
+                  left: 0,
+                  top: layout.headerTop,
+                  width: chartWidth,
+                  height: SECTION_HEADER_HEIGHT,
+                }}
+              >
+                <div className="sticky left-0 flex h-full w-fit items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wide text-wp-slate">
+                  {section.color ? (
+                    <span
+                      aria-hidden
+                      className="inline-block h-2 w-2 shrink-0 rounded-full"
+                      style={{ background: section.color }}
+                    />
+                  ) : null}
+                  <span className="truncate">{section.label}</span>
+                  <span className="text-wp-slate/60">{section.bars.length}</span>
+                </div>
+              </div>
+            );
+          })}
+
           {packedSections.flatMap((section) => {
             const layout = sectionLayouts.get(section.key);
             if (!layout) return [];
@@ -626,43 +725,61 @@ export function RoadmapCompactView({
               // coordinates.
               //
               // The bar rectangle keeps its full geometric span
-              // (start_date → end_date) so the colored strip lines up
-              // with the timeline exactly. The label, however, centers
-              // within the ON-SCREEN portion of the bar so a project
-              // whose start date is far in the past (bar left edge
-              // scrolled off-screen to the left) still shows its
-              // title in the visible right-hand slice. Without this,
-              // long-running items rendered as invisible titles
-              // anchored to the off-screen left edge (see bug repro
-              // screenshot with "Ledger Service Re-Platform").
+              // (start_date → end_date) so the colored strip lines
+              // up with the timeline exactly. The label container,
+              // however, is inset to the ON-SCREEN portion of the
+              // bar so a project whose start date is far in the
+              // past (bar left edge scrolled off-screen to the
+              // left) still shows its title in the visible right-
+              // hand slice. Without this, long-running items
+              // rendered as invisible titles anchored to the
+              // off-screen left edge (see bug repro screenshot
+              // with "Ledger Service Re-Platform").
               //
-              // `rawClampLeft` moves the label away from the bar's
-              // own left edge only when today falls inside the bar's
-              // span AND is itself on the chart — the same predicate
-              // that gates the today marker line above, so the label
-              // centering degrades gracefully when there's no today
-              // line to anchor to (today off the right edge of the
-              // chart, or bar entirely in the past). `clampRight` is
-              // a symmetric defensive clamp against the chart's right
-              // edge; in practice the chart range is derived from
-              // bar spans so no bar overflows chartWidth, but the
-              // check keeps the label anchored to the visible slice
-              // if a future caller ever clips the chart tighter than
-              // the placed bars.
+              // Label is now LEFT-aligned (justify-start / text-
+              // left / px-2) so the beginning of the title sits at
+              // the visible slice's left edge with ~8px of padding.
+              // Symmetric to the way the Rows view renders titles
+              // in its label column — users scan title starts down
+              // the left edge, not centered on today.
               //
-              // Second-pass adjustment: if the today-clamped slice
-              // ends up narrower than `MIN_LABEL_WIDTH_PX`, expand
-              // the label leftward (back into the past portion of
-              // the bar) until we hit either the target width OR the
-              // bar's own left edge — whichever comes first. Keeps
-              // titles like "Coupon detail page redesign" legible on
-              // bars that end just past today; without this, the
-              // ~50-80px today→end slice truncated them to "Cou d..."
-              // Bars wider than MIN_LABEL_WIDTH_PX overall retain the
-              // visible-slice-centered behavior; bars narrower than
-              // MIN_LABEL_WIDTH_PX overall keep the pre-floor
-              // "whole bar is label" behavior because there's simply
-              // no wider slice to reach for.
+              // `rawClampLeft` moves the label container away from
+              // the bar's own left edge only when today falls inside
+              // the bar's span AND is itself on the chart (same
+              // predicate that gates the today marker line above,
+              // so behavior degrades gracefully when there's no
+              // today line to anchor to). `clampRight` is a
+              // defensive clamp against the chart's right edge;
+              // in practice the chart range is derived from bar
+              // spans so no bar overflows chartWidth, but the check
+              // keeps the label anchored to the visible slice if a
+              // future caller ever clips the chart tighter than the
+              // placed bars.
+              //
+              // Symmetric rightward extension is intentionally NOT
+              // implemented: the chart never extends past
+              // chartWidth (there's no scroll-right area past that),
+              // so a left-aligned label extended rightward past
+              // chartWidth would render off-screen and thus provide
+              // zero visible benefit. If a future refactor makes
+              // bars ever bleed past chartWidth into scrollable
+              // territory, mirror the leftward extension below on
+              // the right side.
+              //
+              // Second-pass adjustment on `clampLeft`: if the today-
+              // clamped slice ends up narrower than
+              // `MIN_LABEL_WIDTH_PX`, expand the label container
+              // leftward (back into the past portion of the bar)
+              // until we hit either the target width OR the bar's
+              // own left edge — whichever comes first. With
+              // left-alignment this moves the title's beginning
+              // into the past portion of the bar (potentially
+              // behind the today marker), but the trade-off is
+              // acceptable vs. the alternative of truncating the
+              // title to "Cou d..." nonsense on the ~50-80px
+              // today→end slices. Bars wider than
+              // MIN_LABEL_WIDTH_PX overall skip the extension
+              // (their visible slice already fits the target).
               const barLeft = x;
               const barRight = x + width;
               const barWidth = width;
@@ -713,9 +830,12 @@ export function RoadmapCompactView({
                       stretches the container to the full bar height
                       so `items-center` gives us vertical centering
                       at both the single-line and two-line-clamp
-                      extremes; `justify-center` + `text-center`
-                      center the title horizontally within the
-                      visible slice.
+                      extremes; `justify-start` + `text-left`
+                      anchor the title to the container's left edge
+                      (with `px-2` giving ~8px of inset) so the
+                      title's beginning is what the user reads
+                      first — same left-anchored scan pattern the
+                      Rows view uses in its label column.
                       Two-line title clamp:
                       `min-w-0 flex-1` is what lets the child shrink
                       inside the container's flex row — without it
@@ -732,10 +852,10 @@ export function RoadmapCompactView({
                       in the 38px inner bar height with roughly
                       equal vertical padding above and below. */}
                   <div
-                    className="pointer-events-none absolute inset-y-0 flex items-center justify-center overflow-hidden px-2"
+                    className="pointer-events-none absolute inset-y-0 flex items-center justify-start overflow-hidden px-2"
                     style={{ left: clampLeft, right: clampRight }}
                   >
-                    <span className="min-w-0 flex-1 text-center leading-tight line-clamp-2">
+                    <span className="min-w-0 flex-1 text-left leading-tight line-clamp-2">
                       {p.title}
                     </span>
                   </div>
