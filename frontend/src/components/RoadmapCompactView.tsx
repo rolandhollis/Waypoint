@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { addDays, addMonths, differenceInCalendarDays, format, startOfMonth } from "date-fns";
 
 import { computePhases } from "../lib/phaseCompute";
@@ -818,44 +818,24 @@ export function RoadmapCompactView({
                     outlineOffset: p.is_key_strategic ? "-2px" : undefined,
                   }}
                 >
-                  {/* Label container. Absolutely positioned inside
-                      the button so the visible-slice clamp math can
-                      move the label independently of the bar's
-                      colored strip. `pointer-events-none` lets
-                      clicks / hovers fall through to the button
-                      (which owns onClick + title). `inset-y-0`
-                      stretches the container to the full bar height
-                      so `items-center` gives us vertical centering
-                      at both the single-line and two-line-clamp
-                      extremes; `justify-start` + `text-left`
-                      anchor the title to the container's left edge
-                      (with `px-2` giving ~8px of inset) so the
-                      title's beginning is what the user reads
-                      first — same left-anchored scan pattern the
-                      Rows view uses in its label column.
-                      Two-line title clamp:
-                      `min-w-0 flex-1` is what lets the child shrink
-                      inside the container's flex row — without it
-                      the flex item's implicit minimum content width
-                      would keep the title at its intrinsic length
-                      and clip via the container's overflow rule
-                      instead of ellipsizing at the end of line 2.
-                      `line-clamp-2` is the Tailwind utility (built-
-                      in in v3.3+, no plugin needed) that expands to
-                      the canonical `-webkit-line-clamp: 2; display:
-                      -webkit-box; -webkit-box-orient: vertical;
-                      overflow: hidden;` combo. `leading-tight`
-                      (1.25) tunes per-line height so two lines fit
-                      in the 38px inner bar height with roughly
-                      equal vertical padding above and below. */}
-                  <div
-                    className="pointer-events-none absolute inset-y-0 flex items-center justify-start overflow-hidden px-2"
-                    style={{ left: clampLeft, right: clampRight }}
-                  >
-                    <span className="min-w-0 flex-1 text-left leading-tight line-clamp-2">
-                      {p.title}
-                    </span>
-                  </div>
+                  {/* Adaptive-size label subcomponent. Owns its own
+                      measurement effect so the preferred `text-sm
+                      font-bold` (14px / weight 700) style downshifts
+                      to a `text-xs font-semibold` (12px / weight 600)
+                      2-line-clamp fallback only for the bars whose
+                      titles would overflow the visible slice at the
+                      bigger size. See `CompactBarLabel` below for
+                      the measurement details; extracting the label
+                      into a `memo`'d subcomponent means unchanged
+                      bars skip re-measuring on every parent commit
+                      (color / zoom / group flips) instead of running
+                      `useLayoutEffect` for the full list. */}
+                  <CompactBarLabel
+                    title={p.title}
+                    clampLeft={clampLeft}
+                    clampRight={clampRight}
+                    visibleWidth={Math.max(0, barWidth - clampLeft - clampRight)}
+                  />
                 </button>
               );
             });
@@ -899,3 +879,110 @@ function resolveBarColor(
   const lane = project.swim_lane_id ? laneById.get(project.swim_lane_id) : null;
   return lane?.color ?? FALLBACK_BAR_COLOR;
 }
+
+/**
+ * Adaptive-size chart-bar label.
+ *
+ * Renders the item title inside the visible-slice-clamped container
+ * that its parent bar computes. Prefers `text-sm font-bold` (14px,
+ * weight 700) rendered on a single line via Tailwind's `truncate`
+ * (`whitespace: nowrap; overflow: hidden; text-overflow: ellipsis`)
+ * for legibility. When the intrinsic text width would overflow the
+ * container at that size — i.e. the title cannot fit on one line —
+ * downshifts to `text-xs font-semibold` (12px, weight 600) with the
+ * existing `line-clamp-2` behavior so up to two lines of the title
+ * are visible before ellipsizing.
+ *
+ * Measurement is real per-bar DOM work rather than the width
+ * heuristic the spec offered as a simpler alternative, because
+ * intrinsic text width varies with the specific characters in the
+ * title (glyph widths, kerning, per-word breaks). A width threshold
+ * would either be too strict (short titles wastefully downshifted)
+ * or too loose (long titles ellipsized at the bigger size when
+ * they could have wrapped at the smaller size). A `useLayoutEffect`
+ * that reads `scrollWidth vs clientWidth` after the browser has
+ * already sized the flex row is cheap — no forced synchronous
+ * layout beyond what the ambient render already needed.
+ *
+ * Two-pass render on state change:
+ *   1) First commit renders at the PREFERRED style (single-line
+ *      truncate). Layout effect measures overflow via
+ *      `scrollWidth > clientWidth`; if it overflows, sets
+ *      `wrapped=true`.
+ *   2) Second commit renders at the FALLBACK style (line-clamp-2 at
+ *      the smaller / lighter weight). Layout effect early-returns
+ *      because `wrapped` is now true.
+ *
+ * The initial `wrapped` reset in the first effect (deps: title +
+ * visibleWidth) ensures re-measurement whenever the input tuple
+ * changes — e.g. the viewport resize handler re-computes
+ * `visibleWidth` upstream, so a bar that grew wide enough to fit
+ * the big font upgrades back to preferred without a full
+ * re-mount.
+ *
+ * `useLayoutEffect` (not `useEffect`) is deliberate: it runs
+ * synchronously before the browser's next paint, so the state flip
+ * from preferred → fallback happens before the user ever sees the
+ * intermediate truncated-preferred frame. No visible flash.
+ *
+ * `memo`'d with shallow prop equality — all props are primitives
+ * (`title: string`, `clampLeft / clampRight / visibleWidth:
+ * number`) so shallow-eq works out of the box. A parent re-render
+ * that doesn't change any of these skips the label subtree entirely.
+ * Color intentionally lives on the outer bar button and inherits
+ * into the span, so this component doesn't need to accept a color
+ * prop (avoids one more shallow-eq input).
+ */
+const CompactBarLabel = memo(function CompactBarLabel({
+  title,
+  clampLeft,
+  clampRight,
+  visibleWidth,
+}: {
+  title: string;
+  clampLeft: number;
+  clampRight: number;
+  /** Container-inner width driven by the parent's clamp math.
+   *  Only used as a change-detection input for the measurement
+   *  effect — the actual pixel geometry comes from `clampLeft` /
+   *  `clampRight` applied to the absolutely-positioned container.
+   *  Passing it explicitly (rather than deriving from the DOM in
+   *  the effect) means the measurement re-runs whenever the parent
+   *  recomputes the visible slice (zoom change, container resize,
+   *  today marker crosses the bar). */
+  visibleWidth: number;
+}) {
+  const [wrapped, setWrapped] = useState(false);
+  const spanRef = useRef<HTMLSpanElement | null>(null);
+
+  useLayoutEffect(() => {
+    setWrapped(false);
+  }, [title, visibleWidth]);
+
+  useLayoutEffect(() => {
+    if (wrapped) return;
+    const el = spanRef.current;
+    if (!el) return;
+    if (el.scrollWidth > el.clientWidth + 0.5) {
+      setWrapped(true);
+    }
+  });
+
+  return (
+    <div
+      className="pointer-events-none absolute inset-y-0 flex items-center justify-start overflow-hidden px-2"
+      style={{ left: clampLeft, right: clampRight }}
+    >
+      <span
+        ref={spanRef}
+        className={
+          wrapped
+            ? "min-w-0 flex-1 text-left text-xs font-semibold leading-tight line-clamp-2"
+            : "min-w-0 flex-1 truncate text-left text-sm font-bold leading-tight"
+        }
+      >
+        {title}
+      </span>
+    </div>
+  );
+});
