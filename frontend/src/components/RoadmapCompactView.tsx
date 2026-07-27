@@ -227,14 +227,17 @@ export function RoadmapCompactView({
    */
   pdfMode?: boolean;
 }) {
-  // Ref-bound to the horizontal scroll container so the today-snap
-  // effect can position `scrollLeft`. Compact intentionally has no
-  // internal VERTICAL scroll — the card grows to fit its packed
-  // content and lets the parent RoadmapView pane (which already
-  // owns an `overflow-auto` wrapper around the whole roadmap
-  // subtree) handle page-level vertical scrolling. The card
-  // itself only owns horizontal scroll (`overflow-x-auto`) since
-  // the chart width can exceed the viewport at short zooms.
+  // Ref-bound to the horizontal + vertical scroll container so the
+  // today-snap effect can position `scrollLeft`. Same pattern
+  // GanttTimeline uses for its outer scroll card; both views should
+  // land users with today ~half an inch from the visible left edge
+  // on mount / zoom change. The card owns its own bounded vertical
+  // scroll (`max-h` + `overflow-auto`) so PMs taking screenshots
+  // can scroll THROUGH the packed content in-place instead of
+  // scrolling the whole page — the page-level scroll would move
+  // the timeframe / filter chrome out of the frame with the
+  // roadmap, which is not what the "capture successive slices"
+  // workflow wants.
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
   useLayoutEffect(() => {
@@ -563,31 +566,25 @@ export function RoadmapCompactView({
       className={
         pdfMode
           ? "card-surface"
-          : "card-surface overflow-x-auto overflow-y-clip"
+          : "card-surface max-h-[calc(100vh-240px)] overflow-auto"
       }
     >
       {/* Inner sizer defines the horizontal chart extent. The
-          month header + the absolutely-positioned bar body both
-          live inside so the single H-scroll on the parent moves
-          them in lockstep — no JS listeners needed. Vertical
-          content flows freely; the card grows to fit all packed
-          sections and the parent RoadmapView pane handles page-
-          level V scroll. */}
+          sticky month header + the absolutely-positioned bar body
+          both live inside so a single H+V scroll on the parent
+          moves them in lockstep — no JS listeners needed. */}
       <div style={{ width: chartWidth, position: "relative" }}>
         {/* MONTH HEADER — dark cells with month labels, matching
-            the reference image. `sticky top-0` is kept in the
-            markup as a graceful-degradation hint (harmless when
-            the card no longer establishes its own vertical scroll
-            container). Because `overflow-x: auto` on the card
-            still makes it a scroll container per CSS, the header
-            effectively pins to the card's own top rather than the
-            outer page viewport — but since the card itself
-            scrolls with the page there's no jarring detached
-            behavior; the header simply scrolls off with the rest
-            of the compact card once the user scrolls the page
-            far enough. That's the accepted trade-off vs. a bigger
-            refactor to detach the header from the H-scroll
-            container and sync its `scrollLeft` via JS. */}
+            the reference image. `sticky top-0` pins it to the
+            scroll container's top; because the header lives inside
+            the same H-scroll parent as the body they naturally
+            share the horizontal offset. Interactive mode: the
+            card itself is the vertical scroll container, so
+            `sticky top-0` pins the month row to the card's own
+            top edge as the user scrolls through packed rows.
+            pdfMode: no overflow on the card, so `sticky` is a
+            no-op — the header just sits at the top of the natural
+            flow which is exactly where the exporter wants it. */}
         <div
           className="sticky top-0 z-20 border-b border-wp-stone bg-wp-ink"
           style={{ height: HEADER_HEIGHT, width: chartWidth }}
