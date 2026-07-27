@@ -42,41 +42,44 @@ import type { ColorBy, GroupBy } from "../lib/viewState";
  * affordances.
  *
  * Grouping: honors the FilterBar's `Group by` dropdown identically
- * to the Rows view. `groupBy === "none"` renders one packed pool
- * with no headers; every other dimension partitions items via
- * `resolveProjectGroup` (shared helper), packs each partition
- * independently so no bar from group A ever shares a row with a
- * bar from group B, and stacks the resulting sections vertically
- * with a small group header + gap between them. Section ordering
- * mirrors the Rows view (same `compareGroupBySortKey` comparator).
+ * to the Rows view. `groupBy === "none"` renders one packed pool;
+ * every other dimension partitions items via `resolveProjectGroup`
+ * (shared helper), packs each partition independently so no bar
+ * from group A ever shares a row with a bar from group B, and
+ * stacks the resulting sections vertically with a small vertical
+ * gap between them. Section ordering mirrors the Rows view (same
+ * `compareGroupBySortKey` comparator). Deliberately does NOT
+ * render a visible header strip per section — Compact optimises
+ * for vertical density and the color / spatial cues from the
+ * grouped packing are usually enough to read which items belong
+ * together; users who need labeled groupings switch to Rows.
  */
 
 /** Row height in the packed layout.
  *
- *  Sized to comfortably fit two lines of `text-xs` (12px font) title
- *  text at `leading-tight` (line-height 1.25 → 15px per line = 30px
- *  for two lines), plus ~10px of vertical padding INSIDE the bar so
- *  the text doesn't kiss the top / bottom edges, plus `BAR_PADDING`
- *  above and below the bar so consecutive rows read as distinct
- *  units. Intentionally taller than `GanttTimeline`'s `ROW_HEIGHT`
- *  (34px) because the Compact style renders the title inside the
- *  bar — the Rows style renders titles in the label column beside
- *  bars, which needs less bar height.
+ *  Tight enough that consecutive bars sit close together while
+ *  still fitting two lines of `text-xs` (12px font) title text at
+ *  `leading-tight` (line-height 1.25 → 15px per line = 30px for
+ *  two lines) inside the bar body without the text kissing the
+ *  top / bottom edges.
+ *
+ *  Bar body height = ROW_HEIGHT - BAR_PADDING * 2 = 38px, which
+ *  fits the 30px two-line clamp with ~4px of vertical padding
+ *  above and below via `items-center`. Inter-row gap = BAR_PADDING
+ *  * 2 = 4px (2px below one bar + 2px above the next).
  *
  *  Changing this constant cascades through every rendered surface:
  *  the packer measures placed-bar y-positions in ROW_HEIGHT units,
- *  the body SVG sizes itself as `rowCount * ROW_HEIGHT`, and each
- *  bar's `top` / `height` derive from the same value. */
-const ROW_HEIGHT = 52;
+ *  the body sizes itself as `rowCount * ROW_HEIGHT` per section,
+ *  and each bar's `top` / `height` derive from the same value. */
+const ROW_HEIGHT = 42;
 /** Vertical breathing room above / below each bar within a row.
- *  Slightly larger than `GanttTimeline`'s `BAR_PADDING` (6px) to
- *  match the taller row height — keeps the ratio of bar-height /
- *  row-height similar, so packed Compact rows read at roughly the
- *  same visual density as Rows-view bars despite fitting twice as
- *  much title text. Bar body height = ROW_HEIGHT - BAR_PADDING * 2
- *  = 40px, which fits the 30px two-line clamp with ~5px of
- *  vertical padding above and below via `items-center`. */
-const BAR_PADDING = 6;
+ *  Kept minimal (2px above + 2px below = 4px inter-row gap) so a
+ *  dense packed layout doesn't waste vertical real estate between
+ *  bars; the 38px bar body still comfortably fits the 30px
+ *  two-line title clamp with a 4px top + 4px bottom text padding
+ *  via `items-center`. */
+const BAR_PADDING = 2;
 /** Height of the sticky month-label header. Matches
  *  `GanttTimeline`'s `HEADER_HEIGHT` so pdfMode / capture geometry
  *  read consistently across styles. */
@@ -112,19 +115,16 @@ const MIN_LABEL_WIDTH_PX = 140;
  *  value (e.g. no swim lane assignment when grouped by lane). Same
  *  neutral slate `GanttTimeline`'s `pickBase` falls back to. */
 const FALLBACK_BAR_COLOR = "#94a3b8";
-/** Height of the group section header strip when `groupBy !==
- *  "none"`. Sized to comfortably fit `text-xs` (12px) uppercase
- *  labels with the same visual density as `GanttTimeline`'s
- *  `GROUP_HEADER_HEIGHT` (28px) so a style flip doesn't jolt
- *  section heights up or down. */
-const SECTION_HEADER_HEIGHT = 28;
-/** Vertical gap between adjacent group sections. Matches
- *  `GanttTimeline`'s `GROUP_GAP` (12px) so both styles read at the
- *  same rhythm — enough breathing room to make "this is a new
- *  group" obvious without stealing so much vertical space that a
- *  many-group layout scrolls a screen further than the equivalent
- *  Rows view. */
-const SECTION_GAP = 12;
+/** Vertical gap between adjacent group sections. Small on
+ *  purpose — since we no longer render a visible header strip for
+ *  each group (Compact is optimised for density; the color /
+ *  spatial cues from the grouped packing are usually enough to
+ *  read group boundaries), this gap is the only visual separator
+ *  between consecutive groups. Sized at ~2× the inter-row gap
+ *  (BAR_PADDING * 2 = 4px) so an inter-group gap reads as clearly
+ *  bigger than an inter-row gap without stealing meaningful
+ *  vertical space in many-group layouts. */
+const SECTION_GAP = 8;
 
 /**
  * One placed bar in the compact layout. `rowIndex` is the greedy
@@ -149,10 +149,12 @@ type PlacedBar = {
 
 /**
  * One packed section = one group's worth of packed bars plus the
- * metadata needed to draw its header. `label === null` means the
- * section is the single header-less pool that renders when
- * `groupBy === "none"`; every other section has a non-null label
- * and draws the group header strip above its bars.
+ * metadata the section-ordering comparator needs. `label === null`
+ * means the section is the single pool that renders when
+ * `groupBy === "none"` (no partition needed). Section headers are
+ * intentionally not rendered in Compact — the label / sortKey
+ * fields exist only to order sections consistently with the Rows
+ * view via `compareGroupBySortKey`.
  */
 type PackedSection = {
   key: string;
@@ -162,10 +164,6 @@ type PackedSection = {
    *  alphabetically by label). Kept on the section so the section
    *  ordering pass can consult it without re-resolving. */
   sortKey?: number;
-  /** Accent color for the header dot. Only populated by KPI
-   *  grouping (kpi.color). Other groupings leave undefined and
-   *  the header renders label-only. */
-  color?: string;
   bars: PlacedBar[];
   /** Number of rows the greedy packer needed for this section. */
   rowCount: number;
@@ -355,7 +353,6 @@ export function RoadmapCompactView({
       key: string;
       label: string | null;
       sortKey?: number;
-      color?: string;
       bars: PlacedBar[];
     };
     const buckets = new Map<string, Bucket>();
@@ -377,7 +374,6 @@ export function RoadmapCompactView({
           key: info.key,
           label: info.label,
           sortKey: info.sortKey,
-          color: info.color,
           bars: [],
         };
         buckets.set(info.key, bucket);
@@ -415,7 +411,6 @@ export function RoadmapCompactView({
         key: bucket.key,
         label: bucket.label,
         sortKey: bucket.sortKey,
-        color: bucket.color,
         bars: sortedBars,
         rowCount: rowEnds.length,
       });
@@ -434,38 +429,29 @@ export function RoadmapCompactView({
   }, [projects, colorBy, groupBy, users, lanes, teams, kpis, laneById, teamById, userById]);
 
   // Per-section vertical geometry. Computed alongside `bodyHeight`
-  // so the render pass can look up each section's `headerTop`,
-  // `barsTop`, and total height without re-walking the section
-  // list. The map is keyed by section key; the accompanying
-  // `bodyHeight` is the total content height including headers
-  // and gaps.
+  // so the render pass can look up each section's `barsTop`
+  // without re-walking the section list. The map is keyed by
+  // section key; the accompanying `bodyHeight` is the total
+  // content height including the inter-section gaps.
+  //
+  // No header height is reserved — group section headers were
+  // removed in favor of maximum vertical density. `SECTION_GAP`
+  // between consecutive sections is the only visual separator
+  // between groups now (subtle but bigger than the inter-row gap
+  // so the boundary still reads). `groupBy === "none"` only ever
+  // has one section, so the gap never triggers.
   const { sectionLayouts, bodyHeight, totalBarCount } = useMemo(() => {
-    const layouts = new Map<
-      string,
-      { headerTop: number; barsTop: number; height: number }
-    >();
+    const layouts = new Map<string, { barsTop: number; height: number }>();
     let cursorY = 0;
     let bars = 0;
-    let renderedSections = 0;
-    for (const section of packedSections) {
-      // A gap only makes sense between two visible headers — the
-      // group-by === "none" path has label=null and no header, so
-      // there's nothing to visually separate.
-      if (renderedSections > 0 && section.label != null) {
-        cursorY += SECTION_GAP;
-      }
-      const headerTop = cursorY;
-      const headerHeight = section.label != null ? SECTION_HEADER_HEIGHT : 0;
-      const barsTop = headerTop + headerHeight;
+    for (let i = 0; i < packedSections.length; i++) {
+      const section = packedSections[i]!;
+      if (i > 0) cursorY += SECTION_GAP;
+      const barsTop = cursorY;
       const barsHeight = section.rowCount * ROW_HEIGHT;
-      layouts.set(section.key, {
-        headerTop,
-        barsTop,
-        height: headerHeight + barsHeight,
-      });
+      layouts.set(section.key, { barsTop, height: barsHeight });
       cursorY = barsTop + barsHeight;
       bars += section.bars.length;
-      renderedSections += 1;
     }
     // Guarantee at least one row of body height so the empty-state
     // paint doesn't collapse the scroll container. The parent
@@ -613,56 +599,12 @@ export function RoadmapCompactView({
             />
           ) : null}
 
-          {/* GROUP HEADERS — one strip per section when groupBy !==
-              "none". Rendered before the bars so a bar whose left
-              edge coincides with the header strip's right edge
-              paints on top (matches the Rows view's z-order:
-              headers below, bars above). Absolute-positioned at
-              `layout.headerTop` inside the same relative body so
-              they share the H-scroll offset with the bars.
-              Styling mirrors `GanttTimeline`'s group header:
-              light `bg-wp-stone/30` fill so the strip reads as a
-              distinct band without competing with the bar colors,
-              `border-b border-wp-stone` underline to visually
-              separate header-from-bars, `text-xs uppercase
-              tracking-wide` typography for the section label. The
-              label chip is `sticky left-0` inside the absolute
-              parent so it stays anchored to the visible left edge
-              during long horizontal scrolls — same trick that
-              keeps section titles legible on wide roadmaps in the
-              Rows view. Bar count sits inside that same sticky
-              chip so it moves with the label rather than
-              disappearing off-screen on a wide chart. */}
-          {packedSections.map((section) => {
-            if (section.label == null) return null;
-            const layout = sectionLayouts.get(section.key);
-            if (!layout) return null;
-            return (
-              <div
-                key={`section-header-${section.key}`}
-                className="absolute border-b border-wp-stone bg-wp-stone/30"
-                style={{
-                  left: 0,
-                  top: layout.headerTop,
-                  width: chartWidth,
-                  height: SECTION_HEADER_HEIGHT,
-                }}
-              >
-                <div className="sticky left-0 flex h-full w-fit items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wide text-wp-slate">
-                  {section.color ? (
-                    <span
-                      aria-hidden
-                      className="inline-block h-2 w-2 shrink-0 rounded-full"
-                      style={{ background: section.color }}
-                    />
-                  ) : null}
-                  <span className="truncate">{section.label}</span>
-                  <span className="text-wp-slate/60">{section.bars.length}</span>
-                </div>
-              </div>
-            );
-          })}
-
+          {/* Bars only — group section headers were removed to keep
+              the layout as vertically dense as possible. Groups
+              still partition and pack independently; the only
+              visual group separator is `SECTION_GAP` px of
+              empty space between one section's last row and the
+              next section's first row. */}
           {packedSections.flatMap((section) => {
             const layout = sectionLayouts.get(section.key);
             if (!layout) return [];
@@ -787,7 +729,7 @@ export function RoadmapCompactView({
                       -webkit-box; -webkit-box-orient: vertical;
                       overflow: hidden;` combo. `leading-tight`
                       (1.25) tunes per-line height so two lines fit
-                      in the 40px inner bar height with roughly
+                      in the 38px inner bar height with roughly
                       equal vertical padding above and below. */}
                   <div
                     className="pointer-events-none absolute inset-y-0 flex items-center justify-center overflow-hidden px-2"
