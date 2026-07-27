@@ -26,6 +26,7 @@ import {
   type PhaseKey,
 } from "../lib/dependencies";
 import { computePhases } from "../lib/phaseCompute";
+import { compareGroupBySortKey, resolveProjectGroup } from "../lib/roadmapGrouping";
 import { computeEpicSubtaskSegments, type EpicSubtaskSegment } from "../lib/epicSegments";
 import { useCanWrite, useKpis, useProjects } from "../lib/queries";
 import { childrenByParent, descendants, indexById, rootEpic } from "../lib/hierarchy";
@@ -2481,72 +2482,27 @@ function groupTreeRows(
   const labels = new Map<string, string>();
   const sortKeys = new Map<string, number>();
   const colors = new Map<string, string>();
-  const UNASSIGNED_KEY = "__unassigned";
-  const UNASSIGNED_SORT = Number.MAX_SAFE_INTEGER;
-
-  const put = (
-    key: string,
-    label: string,
-    sortKey: number | undefined,
-    root: Project,
-    color?: string,
-  ) => {
-    labels.set(key, label);
-    if (sortKey !== undefined) sortKeys.set(key, sortKey);
-    if (color) colors.set(key, color);
-    const arr = bucket.get(key) ?? [];
-    arr.push(root);
-    bucket.set(key, arr);
-  };
 
   // Group by ROOT's attributes so a whole tree lives under a single
   // heading. Suppress the void where root.rootIdsInSet check is
   // implicit because roots are already the top-of-tree elements.
   void rootIdsInSet;
+  //
+  // Bucketing rules (primary-value routing for team / kpi, "Unassigned"
+  // fallback keys, tag "#<name>" labels, KPI header color) live in
+  // `resolveProjectGroup` so both roadmap styles — Rows here and
+  // Compact in RoadmapCompactView — partition items identically.
+  // The rest of this function is Rows-view-only (epic tree walking,
+  // per-group override / priority ordering, TreeRow shape) and stays
+  // put.
   for (const p of roots) {
-    if (groupBy === "owner") {
-      const u = users.find((x) => x.id === p.owner_id);
-      put(u?.id ?? UNASSIGNED_KEY, u?.name ?? "Unassigned", undefined, p);
-    } else if (groupBy === "swim_lane") {
-      const l = lanes.find((x) => x.id === p.swim_lane_id);
-      put(l?.id ?? UNASSIGNED_KEY, l?.name ?? "Unassigned", l?.order, p);
-    } else if (groupBy === "team") {
-      // Multi-value dimension routed to a SINGLE bucket keyed on the
-      // primary (index 0) team. The `teams` array is ranked by the
-      // PM in the detail panel (drag-reorder in TeamMultiSelect;
-      // stored order-preservingly in `project_teams.position`), so
-      // index 0 is the authoritative "this team owns the slot on
-      // the roadmap" pick. Secondary teams still surface as extra
-      // chips on the row label, and team filtering still matches
-      // any team anywhere in the array (see filtering.ts) — the
-      // primary-only rule only governs group placement.
-      const primaryId = p.teams[0] ?? null;
-      const primaryTeam = primaryId ? teams.find((x) => x.id === primaryId) : undefined;
-      if (primaryTeam) {
-        put(primaryTeam.id, primaryTeam.name, primaryTeam.order, p);
-      } else {
-        put(UNASSIGNED_KEY, "Unassigned", undefined, p);
-      }
-    } else if (groupBy === "tag") {
-      const primary = p.tags[0] ?? null;
-      put(primary ?? UNASSIGNED_KEY, primary ? `#${primary}` : "No tag", undefined, p);
-    } else if (groupBy === "kpi") {
-      // Multi-value dimension routed to a SINGLE bucket keyed on the
-      // primary (index 0) KPI. Same rationale as team grouping above:
-      // each project appears exactly once on the roadmap, in the
-      // group corresponding to its highest-ranked KPI. Unknown KPI
-      // ids (deleted since the project was last saved) are skipped
-      // and we fall through to the "(no KPI)" bucket rather than
-      // silently promoting a secondary KPI — that promotion would
-      // be invisible to the PM and hard to debug.
-      const primaryKpiId = (p.kpis ?? [])[0] ?? null;
-      const primaryKpi = primaryKpiId ? kpis.find((x) => x.id === primaryKpiId) : undefined;
-      if (primaryKpi) {
-        put(primaryKpi.id, primaryKpi.name, primaryKpi.order, p, primaryKpi.color);
-      } else {
-        put(UNASSIGNED_KEY, "(no KPI)", undefined, p);
-      }
-    }
+    const info = resolveProjectGroup(p, groupBy, { users, lanes, teams, kpis });
+    labels.set(info.key, info.label);
+    if (info.sortKey !== undefined) sortKeys.set(info.key, info.sortKey);
+    if (info.color) colors.set(info.key, info.color);
+    const arr = bucket.get(info.key) ?? [];
+    arr.push(p);
+    bucket.set(info.key, arr);
   }
 
   return Array.from(bucket.entries())
@@ -2556,14 +2512,12 @@ function groupTreeRows(
       rows: orderRoots(rs, k).flatMap((r) => rowsFor(r.id)),
       color: colors.get(k),
     }))
-    .sort((a, b) => {
-      const aw = a.key === UNASSIGNED_KEY ? UNASSIGNED_SORT : sortKeys.get(a.key);
-      const bw = b.key === UNASSIGNED_KEY ? UNASSIGNED_SORT : sortKeys.get(b.key);
-      if (aw !== undefined && bw !== undefined) return aw - bw;
-      if (aw !== undefined) return -1;
-      if (bw !== undefined) return 1;
-      return (a.label ?? "").localeCompare(b.label ?? "");
-    });
+    .sort((a, b) =>
+      compareGroupBySortKey(
+        { key: a.key, label: a.label ?? "", sortKey: sortKeys.get(a.key) },
+        { key: b.key, label: b.label ?? "", sortKey: sortKeys.get(b.key) },
+      ),
+    );
 }
 
 function byStart(a: Project, b: Project) {

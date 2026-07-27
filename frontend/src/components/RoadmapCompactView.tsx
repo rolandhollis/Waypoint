@@ -4,6 +4,10 @@ import { addMonths, differenceInCalendarDays, format, startOfMonth } from "date-
 import { computePhases } from "../lib/phaseCompute";
 import { readableOn } from "../lib/colors";
 import {
+  compareGroupBySortKey,
+  resolveProjectGroup,
+} from "../lib/roadmapGrouping";
+import {
   ALL_ZOOM_FALLBACK_DAY_PX,
   DAY_PX,
   HALF_INCH_PX,
@@ -12,8 +16,8 @@ import {
   computeRoadmapPdfDayPx,
   type Zoom,
 } from "../lib/roadmapViewport";
-import type { Project, SwimLane, Team, User } from "../lib/types";
-import type { ColorBy } from "../lib/viewState";
+import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
+import type { ColorBy, GroupBy } from "../lib/viewState";
 
 /**
  * Compact roadmap render — the second Roadmap style option.
@@ -33,9 +37,18 @@ import type { ColorBy } from "../lib/viewState";
  * the timeframe segmented control keeps working identically in
  * either style. This component intentionally omits the
  * capacity / deadline / dependency indicators, drag-to-reschedule,
- * epic-subtask roll-ups, and group headers — Compact is a
- * "clean-presentation" layout by design; the Rows view keeps every
- * one of those affordances.
+ * and epic-subtask roll-ups — Compact is a "clean-presentation"
+ * layout by design; the Rows view keeps every one of those
+ * affordances.
+ *
+ * Grouping: honors the FilterBar's `Group by` dropdown identically
+ * to the Rows view. `groupBy === "none"` renders one packed pool
+ * with no headers; every other dimension partitions items via
+ * `resolveProjectGroup` (shared helper), packs each partition
+ * independently so no bar from group A ever shares a row with a
+ * bar from group B, and stacks the resulting sections vertically
+ * with a small group header + gap between them. Section ordering
+ * mirrors the Rows view (same `compareGroupBySortKey` comparator).
  */
 
 /** Row height in the packed layout.
@@ -72,14 +85,53 @@ const HEADER_HEIGHT = 48;
  *  at long timeframes. Same 2px floor `GanttTimeline` uses when
  *  computing per-phase geometry. */
 const MIN_BAR_WIDTH_PX = 2;
+/** Minimum horizontal room the label container tries to hold onto
+ *  when the visible-slice clamp would otherwise crush the label
+ *  into a strip too narrow to read.
+ *
+ *  Sized to fit roughly two lines of a medium-length title at the
+ *  `text-xs leading-tight` scale (~11-13 chars per line = enough
+ *  for "Coupon detail page redesign" style titles without
+ *  degenerating to "Cou..."). When today falls inside a bar's span
+ *  but the today→barRight slice is narrower than this value, the
+ *  label is allowed to extend LEFTWARD past the today marker into
+ *  the past portion of the same bar (never past the bar's own left
+ *  edge) so the title stays legible. Bars narrower than this value
+ *  overall get the whole bar as label real estate — same as before
+ *  this floor landed — because there's simply no wider slice to
+ *  reach for.
+ *
+ *  Trade-off: text may partially cover the today marker for the
+ *  bars this rule affects. That's an intentional compromise —
+ *  the today line still paints at its correct x-coordinate; only
+ *  the label crosses it. Better than a title truncated to nonsense
+ *  (see bug repro: red "Coupon detail —.." bars adjacent to today
+ *  on 6-month zoom). */
+const MIN_LABEL_WIDTH_PX = 140;
 /** Solid fallback fill for items missing a resolvable colorBy
  *  value (e.g. no swim lane assignment when grouped by lane). Same
  *  neutral slate `GanttTimeline`'s `pickBase` falls back to. */
 const FALLBACK_BAR_COLOR = "#94a3b8";
+/** Height of the group section header strip when `groupBy !==
+ *  "none"`. Sized to comfortably fit `text-xs` (12px) uppercase
+ *  labels with the same visual density as `GanttTimeline`'s
+ *  `GROUP_HEADER_HEIGHT` (28px) so a style flip doesn't jolt
+ *  section heights up or down. */
+const SECTION_HEADER_HEIGHT = 28;
+/** Vertical gap between adjacent group sections. Matches
+ *  `GanttTimeline`'s `GROUP_GAP` (12px) so both styles read at the
+ *  same rhythm — enough breathing room to make "this is a new
+ *  group" obvious without stealing so much vertical space that a
+ *  many-group layout scrolls a screen further than the equivalent
+ *  Rows view. */
+const SECTION_GAP = 12;
 
 /**
  * One placed bar in the compact layout. `rowIndex` is the greedy
- * packer's assigned row (0-indexed from the top).
+ * packer's assigned row (0-indexed from the top of the enclosing
+ * section — when grouping is active every section restarts row
+ * numbering at 0 so bars in section B never collide with bars in
+ * section A).
  */
 type PlacedBar = {
   project: Project;
@@ -95,12 +147,38 @@ type PlacedBar = {
   rowIndex: number;
 };
 
+/**
+ * One packed section = one group's worth of packed bars plus the
+ * metadata needed to draw its header. `label === null` means the
+ * section is the single header-less pool that renders when
+ * `groupBy === "none"`; every other section has a non-null label
+ * and draws the group header strip above its bars.
+ */
+type PackedSection = {
+  key: string;
+  label: string | null;
+  /** Sort key from `resolveProjectGroup` (swim_lane.order,
+   *  team.order, kpi.order — undefined for owner / tag which sort
+   *  alphabetically by label). Kept on the section so the section
+   *  ordering pass can consult it without re-resolving. */
+  sortKey?: number;
+  /** Accent color for the header dot. Only populated by KPI
+   *  grouping (kpi.color). Other groupings leave undefined and
+   *  the header renders label-only. */
+  color?: string;
+  bars: PlacedBar[];
+  /** Number of rows the greedy packer needed for this section. */
+  rowCount: number;
+};
+
 export function RoadmapCompactView({
   projects,
   lanes,
   teams,
   users,
+  kpis,
   colorBy,
+  groupBy,
   zoom,
   onOpen,
   pdfMode,
@@ -109,7 +187,21 @@ export function RoadmapCompactView({
   lanes: SwimLane[];
   teams: Team[];
   users: User[];
+  /**
+   * Full KPI catalog. Only consulted when `groupBy === "kpi"` (to
+   * look up label + color for the primary KPI of each item);
+   * passed unconditionally so a group-by flip doesn't require a
+   * parent re-render to plumb the array through.
+   */
+  kpis: Kpi[];
   colorBy: ColorBy;
+  /**
+   * Selected group-by dimension. `"none"` renders a single
+   * header-less packed pool (legacy behavior); every other value
+   * partitions items by `resolveProjectGroup` and packs each
+   * partition independently with a group header above.
+   */
+  groupBy: GroupBy;
   zoom: Zoom;
   onOpen: (id: string) => void;
   /**
@@ -122,10 +214,13 @@ export function RoadmapCompactView({
   pdfMode?: boolean;
 }) {
   // Ref-bound to the horizontal scroll container so the today-snap
-  // effect can position `scrollLeft`. Same pattern GanttTimeline
-  // uses for its outer scroll card; both views should land users
-  // with today ~half an inch from the visible left edge on
-  // mount / zoom change.
+  // effect can position `scrollLeft`. Compact intentionally has no
+  // internal VERTICAL scroll — the card grows to fit its packed
+  // content and lets the parent RoadmapView pane (which already
+  // owns an `overflow-auto` wrapper around the whole roadmap
+  // subtree) handle page-level vertical scrolling. The card
+  // itself only owns horizontal scroll (`overflow-x-auto`) since
+  // the chart width can exceed the viewport at short zooms.
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
   useLayoutEffect(() => {
@@ -205,24 +300,44 @@ export function RoadmapCompactView({
     [users],
   );
 
-  // Greedy interval packer.
+  // Greedy interval packer, partitioned per group.
   //
-  // Sort items ascending by earliest plotted start date; ties are
-  // broken by `global_priority` ascending (lower number = higher
-  // priority, matches the composite the Board / Rows priority sort
-  // consumes) so a higher-priority item lands in a top row when
-  // two items start on the same day. Missing priority values are
-  // sunk to the end of any tie group.
+  // Step 1 — build the candidate bar list. Every project with a
+  // plottable date range enters exactly once; projects without
+  // a resolvable start/end are silently skipped (same policy as
+  // the Rows view).
   //
-  // For each item, walk the current row set and place it in the
-  // first row whose most-recently-placed bar ends STRICTLY BEFORE
-  // the new item's start (day-level comparison; a same-day
-  // adjacency counts as an overlap for readability). If no row
-  // qualifies, open a new row at the bottom. Result is the
-  // minimum number of rows for this input under the strict-
-  // adjacency rule, which is exactly what the reference image
-  // shows — no wasted vertical space, but no touching bars either.
-  const placedBars = useMemo<PlacedBar[]>(() => {
+  // Step 2 — bucket candidates by group. `groupBy === "none"`
+  // pours everything into a single "all" bucket so the resulting
+  // section renders header-less (label = null). Every other
+  // `groupBy` value calls `resolveProjectGroup` — the shared
+  // helper that both roadmap styles now consume — so bucketing
+  // rules stay bit-identical with Rows: multi-value teams / kpis
+  // route to their primary; missing values sink to an
+  // "Unassigned" (or "(no KPI)" / "No tag") bucket.
+  //
+  // Step 3 — pack each bucket. Sort ascending by earliest plotted
+  // start date; ties broken by `global_priority` ascending (lower
+  // number = higher priority, matches the composite the Board /
+  // Rows priority sort consumes) so a higher-priority item lands
+  // in a top row when two items start on the same day. For each
+  // item, walk the current row set and place it in the first row
+  // whose most-recently-placed bar ends STRICTLY BEFORE the new
+  // item's start (day-level comparison; same-day adjacency counts
+  // as an overlap for readability). If no row qualifies, open a
+  // new row at the bottom. Row numbering restarts at 0 per
+  // bucket — a bar in section B can never share a row with a bar
+  // in section A because the two sections stack vertically in
+  // the render pass rather than sharing the packer's row space.
+  //
+  // Step 4 — order the sections. `groupBy === "none"` returns the
+  // single "all" section unchanged (nothing to sort). Every other
+  // value delegates to `compareGroupBySortKey` — same comparator
+  // Rows uses — so both styles' group headers appear in the same
+  // order for any (groupBy, workspace) pair. Buckets with zero
+  // packable items never enter the map in the first place so
+  // "empty groups render as nothing" falls out for free.
+  const packedSections = useMemo<PackedSection[]>(() => {
     const candidates: PlacedBar[] = [];
     for (const p of projects) {
       const phases = computePhases(p);
@@ -235,39 +350,134 @@ export function RoadmapCompactView({
         rowIndex: -1,
       });
     }
-    candidates.sort((a, b) => {
-      const dt = a.startDate.getTime() - b.startDate.getTime();
-      if (dt !== 0) return dt;
-      const pa = a.project.global_priority ?? Number.MAX_SAFE_INTEGER;
-      const pb = b.project.global_priority ?? Number.MAX_SAFE_INTEGER;
-      return pa - pb;
-    });
-    const rowEnds: Date[] = [];
-    for (const bar of candidates) {
-      let placed = -1;
-      for (let i = 0; i < rowEnds.length; i++) {
-        if (rowEnds[i]!.getTime() < bar.startDate.getTime()) {
-          placed = i;
-          break;
-        }
-      }
-      if (placed === -1) {
-        placed = rowEnds.length;
-        rowEnds.push(bar.endDate);
-      } else {
-        rowEnds[placed] = bar.endDate;
-      }
-      bar.rowIndex = placed;
-    }
-    return candidates;
-  }, [projects, colorBy, laneById, teamById, userById]);
 
-  const rowCount = placedBars.reduce((n, b) => Math.max(n, b.rowIndex + 1), 0);
-  // Guarantee at least one row of body height so the empty-state
-  // paint doesn't collapse the scroll container. The parent
-  // renders a distinct empty-state block when placedBars.length is
-  // zero, but the ResizeObserver still needs something to measure.
-  const bodyHeight = Math.max(1, rowCount) * ROW_HEIGHT;
+    type Bucket = {
+      key: string;
+      label: string | null;
+      sortKey?: number;
+      color?: string;
+      bars: PlacedBar[];
+    };
+    const buckets = new Map<string, Bucket>();
+    const ctx = { users, lanes, teams, kpis };
+    for (const bar of candidates) {
+      if (groupBy === "none") {
+        let bucket = buckets.get("all");
+        if (!bucket) {
+          bucket = { key: "all", label: null, bars: [] };
+          buckets.set("all", bucket);
+        }
+        bucket.bars.push(bar);
+        continue;
+      }
+      const info = resolveProjectGroup(bar.project, groupBy, ctx);
+      let bucket = buckets.get(info.key);
+      if (!bucket) {
+        bucket = {
+          key: info.key,
+          label: info.label,
+          sortKey: info.sortKey,
+          color: info.color,
+          bars: [],
+        };
+        buckets.set(info.key, bucket);
+      }
+      bucket.bars.push(bar);
+    }
+
+    const sections: PackedSection[] = [];
+    for (const bucket of buckets.values()) {
+      const sortedBars = bucket.bars.slice().sort((a, b) => {
+        const dt = a.startDate.getTime() - b.startDate.getTime();
+        if (dt !== 0) return dt;
+        const pa = a.project.global_priority ?? Number.MAX_SAFE_INTEGER;
+        const pb = b.project.global_priority ?? Number.MAX_SAFE_INTEGER;
+        return pa - pb;
+      });
+      const rowEnds: Date[] = [];
+      for (const bar of sortedBars) {
+        let placed = -1;
+        for (let i = 0; i < rowEnds.length; i++) {
+          if (rowEnds[i]!.getTime() < bar.startDate.getTime()) {
+            placed = i;
+            break;
+          }
+        }
+        if (placed === -1) {
+          placed = rowEnds.length;
+          rowEnds.push(bar.endDate);
+        } else {
+          rowEnds[placed] = bar.endDate;
+        }
+        bar.rowIndex = placed;
+      }
+      sections.push({
+        key: bucket.key,
+        label: bucket.label,
+        sortKey: bucket.sortKey,
+        color: bucket.color,
+        bars: sortedBars,
+        rowCount: rowEnds.length,
+      });
+    }
+
+    if (groupBy !== "none") {
+      sections.sort((a, b) =>
+        compareGroupBySortKey(
+          { key: a.key, label: a.label ?? "", sortKey: a.sortKey },
+          { key: b.key, label: b.label ?? "", sortKey: b.sortKey },
+        ),
+      );
+    }
+
+    return sections;
+  }, [projects, colorBy, groupBy, users, lanes, teams, kpis, laneById, teamById, userById]);
+
+  // Per-section vertical geometry. Computed alongside `bodyHeight`
+  // so the render pass can look up each section's `headerTop`,
+  // `barsTop`, and total height without re-walking the section
+  // list. The map is keyed by section key; the accompanying
+  // `bodyHeight` is the total content height including headers
+  // and gaps.
+  const { sectionLayouts, bodyHeight, totalBarCount } = useMemo(() => {
+    const layouts = new Map<
+      string,
+      { headerTop: number; barsTop: number; height: number }
+    >();
+    let cursorY = 0;
+    let bars = 0;
+    let renderedSections = 0;
+    for (const section of packedSections) {
+      // A gap only makes sense between two visible headers — the
+      // group-by === "none" path has label=null and no header, so
+      // there's nothing to visually separate.
+      if (renderedSections > 0 && section.label != null) {
+        cursorY += SECTION_GAP;
+      }
+      const headerTop = cursorY;
+      const headerHeight = section.label != null ? SECTION_HEADER_HEIGHT : 0;
+      const barsTop = headerTop + headerHeight;
+      const barsHeight = section.rowCount * ROW_HEIGHT;
+      layouts.set(section.key, {
+        headerTop,
+        barsTop,
+        height: headerHeight + barsHeight,
+      });
+      cursorY = barsTop + barsHeight;
+      bars += section.bars.length;
+      renderedSections += 1;
+    }
+    // Guarantee at least one row of body height so the empty-state
+    // paint doesn't collapse the scroll container. The parent
+    // renders a distinct empty-state block when there are no
+    // bars, but the ResizeObserver still needs something to
+    // measure.
+    return {
+      sectionLayouts: layouts,
+      bodyHeight: Math.max(ROW_HEIGHT, cursorY),
+      totalBarCount: bars,
+    };
+  }, [packedSections]);
 
   const today = new Date();
   const todayX = differenceInCalendarDays(today, start) * dayPx;
@@ -293,7 +503,7 @@ export function RoadmapCompactView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoom, containerWidth, pdfMode]);
 
-  if (placedBars.length === 0) {
+  if (totalBarCount === 0) {
     return (
       <div
         className="card-surface p-6 text-sm text-wp-slate"
@@ -312,19 +522,31 @@ export function RoadmapCompactView({
       className={
         pdfMode
           ? "card-surface"
-          : "card-surface max-h-[calc(100vh-240px)] overflow-auto"
+          : "card-surface overflow-x-auto overflow-y-clip"
       }
     >
       {/* Inner sizer defines the horizontal chart extent. The
-          sticky month header + the absolutely-positioned bar body
-          both live inside so a single H+V scroll on the parent
-          moves them in lockstep — no JS listeners needed. */}
+          month header + the absolutely-positioned bar body both
+          live inside so the single H-scroll on the parent moves
+          them in lockstep — no JS listeners needed. Vertical
+          content flows freely; the card grows to fit all packed
+          sections and the parent RoadmapView pane handles page-
+          level V scroll. */}
       <div style={{ width: chartWidth, position: "relative" }}>
         {/* MONTH HEADER — dark cells with month labels, matching
-            the reference image. `sticky top-0` pins it to the
-            scroll container's top; because the header lives inside
-            the same H-scroll parent as the body they naturally
-            share the horizontal offset. */}
+            the reference image. `sticky top-0` is kept in the
+            markup as a graceful-degradation hint (harmless when
+            the card no longer establishes its own vertical scroll
+            container). Because `overflow-x: auto` on the card
+            still makes it a scroll container per CSS, the header
+            effectively pins to the card's own top rather than the
+            outer page viewport — but since the card itself
+            scrolls with the page there's no jarring detached
+            behavior; the header simply scrolls off with the rest
+            of the compact card once the user scrolls the page
+            far enough. That's the accepted trade-off vs. a bigger
+            refactor to detach the header from the H-scroll
+            container and sync its `scrollLeft` via JS. */}
         <div
           className="sticky top-0 z-20 border-b border-wp-stone bg-wp-ink"
           style={{ height: HEADER_HEIGHT, width: chartWidth }}
@@ -391,68 +613,193 @@ export function RoadmapCompactView({
             />
           ) : null}
 
-          {placedBars.map((bar) => {
-            const p = bar.project;
-            const x = differenceInCalendarDays(bar.startDate, start) * dayPx;
-            const rawWidth = differenceInCalendarDays(bar.endDate, bar.startDate) * dayPx;
-            const width = Math.max(MIN_BAR_WIDTH_PX, rawWidth);
-            const top = bar.rowIndex * ROW_HEIGHT + BAR_PADDING;
-            const height = ROW_HEIGHT - BAR_PADDING * 2;
-            const textColor = readableOn(bar.color);
+          {/* GROUP HEADERS — one strip per section when groupBy !==
+              "none". Rendered before the bars so a bar whose left
+              edge coincides with the header strip's right edge
+              paints on top (matches the Rows view's z-order:
+              headers below, bars above). Absolute-positioned at
+              `layout.headerTop` inside the same relative body so
+              they share the H-scroll offset with the bars.
+              Styling mirrors `GanttTimeline`'s group header:
+              light `bg-wp-stone/30` fill so the strip reads as a
+              distinct band without competing with the bar colors,
+              `border-b border-wp-stone` underline to visually
+              separate header-from-bars, `text-xs uppercase
+              tracking-wide` typography for the section label. The
+              label chip is `sticky left-0` inside the absolute
+              parent so it stays anchored to the visible left edge
+              during long horizontal scrolls — same trick that
+              keeps section titles legible on wide roadmaps in the
+              Rows view. Bar count sits inside that same sticky
+              chip so it moves with the label rather than
+              disappearing off-screen on a wide chart. */}
+          {packedSections.map((section) => {
+            if (section.label == null) return null;
+            const layout = sectionLayouts.get(section.key);
+            if (!layout) return null;
             return (
-              <button
-                type="button"
-                key={p.id}
-                onClick={() => onOpen(p.id)}
-                title={`${p.title}\n${format(bar.startDate, "MMM d, yyyy")} → ${format(bar.endDate, "MMM d, yyyy")}`}
-                className="absolute flex items-center overflow-hidden rounded-md px-2 py-1 text-left text-xs font-medium shadow-sm transition hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-red focus-visible:ring-offset-1"
+              <div
+                key={`section-header-${section.key}`}
+                className="absolute border-b border-wp-stone bg-wp-stone/30"
                 style={{
-                  left: x,
-                  top,
-                  width,
-                  height,
-                  backgroundColor: bar.color,
-                  color: textColor,
-                  // Key-strategic items get a 2px red outline per
-                  // the reference image — same "star" indicator
-                  // the Rows view surfaces in the label column.
-                  // Rendered as `outline` (not `border`) so it
-                  // doesn't consume the bar's inner width and
-                  // shift the title away from the geometric
-                  // pixel span; the -2px offset keeps the outline
-                  // aligned with the bar's visual edge.
-                  outline: p.is_key_strategic ? "2px solid #E01F2D" : undefined,
-                  outlineOffset: p.is_key_strategic ? "-2px" : undefined,
+                  left: 0,
+                  top: layout.headerTop,
+                  width: chartWidth,
+                  height: SECTION_HEADER_HEIGHT,
                 }}
               >
-                {/* Two-line title clamp.
-                    `min-w-0 flex-1` is what lets the child shrink
-                    inside the button's flex row — without it the
-                    flex item's implicit minimum content width would
-                    keep the title at its intrinsic length and clip
-                    via the button's overflow rule instead of
-                    ellipsizing at the end of line 2.
-                    `line-clamp-2` is the Tailwind utility (built-in
-                    in v3.3+, no plugin needed) that expands to the
-                    canonical `-webkit-line-clamp: 2; display:
-                    -webkit-box; -webkit-box-orient: vertical;
-                    overflow: hidden;` combo — chosen over the raw
-                    CSS spelling because it composes cleanly with
-                    the other Tailwind utilities already on this
-                    element and matches the rest of the codebase's
-                    utility-first styling convention. `leading-tight`
-                    (1.25) tunes per-line height so two lines fit in
-                    the 40px inner bar height with roughly equal
-                    vertical padding above and below via the parent
-                    button's `items-center` flex alignment; the
-                    single-line case stays vertically centered too
-                    because the clamp gives the span its natural
-                    single-line height in that case. */}
-                <span className="min-w-0 flex-1 line-clamp-2 leading-tight">
-                  {p.title}
-                </span>
-              </button>
+                <div className="sticky left-0 flex h-full w-fit items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wide text-wp-slate">
+                  {section.color ? (
+                    <span
+                      aria-hidden
+                      className="inline-block h-2 w-2 shrink-0 rounded-full"
+                      style={{ background: section.color }}
+                    />
+                  ) : null}
+                  <span className="truncate">{section.label}</span>
+                  <span className="text-wp-slate/60">{section.bars.length}</span>
+                </div>
+              </div>
             );
+          })}
+
+          {packedSections.flatMap((section) => {
+            const layout = sectionLayouts.get(section.key);
+            if (!layout) return [];
+            return section.bars.map((bar) => {
+              const p = bar.project;
+              const x = differenceInCalendarDays(bar.startDate, start) * dayPx;
+              const rawWidth = differenceInCalendarDays(bar.endDate, bar.startDate) * dayPx;
+              const width = Math.max(MIN_BAR_WIDTH_PX, rawWidth);
+              // Bar Y offsets are relative to the section's
+              // `barsTop` — the packer numbers rows starting at 0
+              // per section, and each section stacks below the
+              // previous one plus its own header + inter-section
+              // gap. See `sectionLayouts` for the accumulator.
+              const top = layout.barsTop + bar.rowIndex * ROW_HEIGHT + BAR_PADDING;
+              const height = ROW_HEIGHT - BAR_PADDING * 2;
+              const textColor = readableOn(bar.color);
+
+              // Visible-slice label offsets, in bar-relative pixel
+              // coordinates.
+              //
+              // The bar rectangle keeps its full geometric span
+              // (start_date → end_date) so the colored strip lines up
+              // with the timeline exactly. The label, however, centers
+              // within the ON-SCREEN portion of the bar so a project
+              // whose start date is far in the past (bar left edge
+              // scrolled off-screen to the left) still shows its
+              // title in the visible right-hand slice. Without this,
+              // long-running items rendered as invisible titles
+              // anchored to the off-screen left edge (see bug repro
+              // screenshot with "Ledger Service Re-Platform").
+              //
+              // `rawClampLeft` moves the label away from the bar's
+              // own left edge only when today falls inside the bar's
+              // span AND is itself on the chart — the same predicate
+              // that gates the today marker line above, so the label
+              // centering degrades gracefully when there's no today
+              // line to anchor to (today off the right edge of the
+              // chart, or bar entirely in the past). `clampRight` is
+              // a symmetric defensive clamp against the chart's right
+              // edge; in practice the chart range is derived from
+              // bar spans so no bar overflows chartWidth, but the
+              // check keeps the label anchored to the visible slice
+              // if a future caller ever clips the chart tighter than
+              // the placed bars.
+              //
+              // Second-pass adjustment: if the today-clamped slice
+              // ends up narrower than `MIN_LABEL_WIDTH_PX`, expand
+              // the label leftward (back into the past portion of
+              // the bar) until we hit either the target width OR the
+              // bar's own left edge — whichever comes first. Keeps
+              // titles like "Coupon detail page redesign" legible on
+              // bars that end just past today; without this, the
+              // ~50-80px today→end slice truncated them to "Cou d..."
+              // Bars wider than MIN_LABEL_WIDTH_PX overall retain the
+              // visible-slice-centered behavior; bars narrower than
+              // MIN_LABEL_WIDTH_PX overall keep the pre-floor
+              // "whole bar is label" behavior because there's simply
+              // no wider slice to reach for.
+              const barLeft = x;
+              const barRight = x + width;
+              const barWidth = width;
+              const rawClampLeft =
+                showToday && todayX > barLeft && todayX < barRight
+                  ? todayX - barLeft
+                  : 0;
+              const clampRight = barRight > chartWidth ? barRight - chartWidth : 0;
+              const rawInnerWidth = barWidth - rawClampLeft - clampRight;
+              let clampLeft = rawClampLeft;
+              if (rawInnerWidth < MIN_LABEL_WIDTH_PX) {
+                const deficit = MIN_LABEL_WIDTH_PX - rawInnerWidth;
+                clampLeft = Math.max(0, rawClampLeft - deficit);
+              }
+
+              return (
+                <button
+                  type="button"
+                  key={`${section.key}-${p.id}`}
+                  onClick={() => onOpen(p.id)}
+                  title={`${p.title}\n${format(bar.startDate, "MMM d, yyyy")} → ${format(bar.endDate, "MMM d, yyyy")}`}
+                  className="absolute overflow-hidden rounded-md text-xs font-medium shadow-sm transition hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-red focus-visible:ring-offset-1"
+                  style={{
+                    left: x,
+                    top,
+                    width,
+                    height,
+                    backgroundColor: bar.color,
+                    color: textColor,
+                    // Key-strategic items get a 2px red outline per
+                    // the reference image — same "star" indicator
+                    // the Rows view surfaces in the label column.
+                    // Rendered as `outline` (not `border`) so it
+                    // doesn't consume the bar's inner width and
+                    // shift the title away from the geometric
+                    // pixel span; the -2px offset keeps the outline
+                    // aligned with the bar's visual edge.
+                    outline: p.is_key_strategic ? "2px solid #E01F2D" : undefined,
+                    outlineOffset: p.is_key_strategic ? "-2px" : undefined,
+                  }}
+                >
+                  {/* Label container. Absolutely positioned inside
+                      the button so the visible-slice clamp math can
+                      move the label independently of the bar's
+                      colored strip. `pointer-events-none` lets
+                      clicks / hovers fall through to the button
+                      (which owns onClick + title). `inset-y-0`
+                      stretches the container to the full bar height
+                      so `items-center` gives us vertical centering
+                      at both the single-line and two-line-clamp
+                      extremes; `justify-center` + `text-center`
+                      center the title horizontally within the
+                      visible slice.
+                      Two-line title clamp:
+                      `min-w-0 flex-1` is what lets the child shrink
+                      inside the container's flex row — without it
+                      the flex item's implicit minimum content width
+                      would keep the title at its intrinsic length
+                      and clip via the container's overflow rule
+                      instead of ellipsizing at the end of line 2.
+                      `line-clamp-2` is the Tailwind utility (built-
+                      in in v3.3+, no plugin needed) that expands to
+                      the canonical `-webkit-line-clamp: 2; display:
+                      -webkit-box; -webkit-box-orient: vertical;
+                      overflow: hidden;` combo. `leading-tight`
+                      (1.25) tunes per-line height so two lines fit
+                      in the 40px inner bar height with roughly
+                      equal vertical padding above and below. */}
+                  <div
+                    className="pointer-events-none absolute inset-y-0 flex items-center justify-center overflow-hidden px-2"
+                    style={{ left: clampLeft, right: clampRight }}
+                  >
+                    <span className="min-w-0 flex-1 text-center leading-tight line-clamp-2">
+                      {p.title}
+                    </span>
+                  </div>
+                </button>
+              );
+            });
           })}
         </div>
       </div>

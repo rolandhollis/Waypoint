@@ -135,11 +135,13 @@ export function RoadmapView() {
   const roadmapStyle = useViewStore((s) => s.roadmapStyle);
   const setRoadmapStyle = useViewStore((s) => s.setRoadmapStyle);
   const hydrateRoadmapFromUrl = useViewStore((s) => s.hydrateRoadmapFromUrl);
-  // Compact style has no notion of groups — the reference layout
-  // shows a single global pool of packed bars. When Compact is
-  // active, the FilterBar's Group-by dropdown is disabled (not
-  // removed) so a returning user's group pick is preserved for the
-  // moment they flip back to Rows.
+  // Both roadmap styles honor the Group-by dropdown. The Rows
+  // renderer partitions rows into stacked group panels via
+  // `groupTreeRows`; the Compact renderer partitions bars into
+  // stacked packed sections via the same `resolveProjectGroup`
+  // helper. The FilterBar's Group-by picker is always live in
+  // both styles — the previous "disable in Compact" gate was a
+  // stop-gap when Compact only supported a single global pool.
   const compactActive = roadmapStyle === "compact" && zoom !== "quarters";
 
   // One-way URL → store ingest on mount. Any roadmap-owned param in
@@ -451,8 +453,6 @@ export function RoadmapView() {
       <FilterBar
         view="roadmap"
         showGrouping
-        groupingDisabled={compactActive}
-        groupingDisabledReason="Compact layout renders every item in one global pool. Switch to Rows to group by owner, team, or lane."
         showColorBy
         showKeyStrategicToggle
       />
@@ -783,19 +783,25 @@ export function RoadmapView() {
               // Compact style: no label column, packed solid-color
               // bars with titles inside. Reuses the same date-range
               // machinery so today marker + timeframe fitting + the
-              // sticky month header keep working. Deliberately drops
-              // groupBy / sortMode / label-column resize / conflict
-              // overlays / drag-to-reschedule — see the Compact
-              // component's file-level doc-comment for the "out of
-              // scope for v1" list. The Rows branch below stays 100%
-              // unchanged so the historical Gantt experience is
-              // preserved for users who don't opt in.
+              // sticky month header keep working. Honors `colorBy`
+              // and `groupBy` (partitioning items via the shared
+              // `resolveProjectGroup` helper so section ordering
+              // and bucket routing stay bit-identical with the
+              // Rows view). Deliberately drops sortMode /
+              // label-column resize / conflict overlays /
+              // drag-to-reschedule — see the Compact component's
+              // file-level doc-comment for the "out of scope"
+              // list. The Rows branch below stays 100% unchanged
+              // so the historical Gantt experience is preserved
+              // for users who don't opt in.
               <RoadmapCompactView
                 projects={scheduledInViewport}
                 lanes={lanes.data ?? []}
                 teams={teams.data ?? []}
                 users={users.data ?? []}
+                kpis={kpis.data ?? []}
                 colorBy={colorBy}
+                groupBy={groupBy}
                 zoom={zoom}
                 onOpen={setSelectedId}
                 pdfMode={pdfMode}
