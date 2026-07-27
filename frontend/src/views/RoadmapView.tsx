@@ -24,6 +24,7 @@ import { PhaseLegend } from "../components/PhaseLegend";
 import { ColorLegend } from "../components/ColorLegend";
 import { RoadmapHelper } from "../components/RoadmapHelper";
 import { RoadmapQuartersView } from "../components/RoadmapQuartersView";
+import { RoadmapCompactView } from "../components/RoadmapCompactView";
 
 export function RoadmapView() {
   const projects = useProjects();
@@ -125,7 +126,21 @@ export function RoadmapView() {
   // control makes the pick both live and persistent in one write.
   const zoom = useViewStore((s) => s.roadmapTimeframe);
   const setZoom = useViewStore((s) => s.setRoadmapTimeframe);
+  // Roadmap render style — one of "rows" (default, historical Gantt)
+  // or "compact" (label-less, packed solid-color bars). Lives on the
+  // same persisted store as timeframe / sort so a reload lands the
+  // PM back on the same view they left. The Quarters swap-in still
+  // takes precedence via the `zoom === "quarters"` branch below;
+  // this pick is only consulted in the Gantt-family branch.
+  const roadmapStyle = useViewStore((s) => s.roadmapStyle);
+  const setRoadmapStyle = useViewStore((s) => s.setRoadmapStyle);
   const hydrateRoadmapFromUrl = useViewStore((s) => s.hydrateRoadmapFromUrl);
+  // Compact style has no notion of groups — the reference layout
+  // shows a single global pool of packed bars. When Compact is
+  // active, the FilterBar's Group-by dropdown is disabled (not
+  // removed) so a returning user's group pick is preserved for the
+  // moment they flip back to Rows.
+  const compactActive = roadmapStyle === "compact" && zoom !== "quarters";
 
   // One-way URL → store ingest on mount. Any roadmap-owned param in
   // `location.search` (see `roadmapUrlState.ts`) means Alice
@@ -433,7 +448,14 @@ export function RoadmapView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <FilterBar view="roadmap" showGrouping showColorBy showKeyStrategicToggle />
+      <FilterBar
+        view="roadmap"
+        showGrouping
+        groupingDisabled={compactActive}
+        groupingDisabledReason="Compact layout renders every item in one global pool. Switch to Rows to group by owner, team, or lane."
+        showColorBy
+        showKeyStrategicToggle
+      />
       {/* Everything from here down is captured by the PDF exporter.
           Wrapped in a single ref-bound div so the exporter has one
           well-defined subtree to snapshot; the wrapper itself adds
@@ -503,6 +525,37 @@ export function RoadmapView() {
                   </button>
                 </div>
               </div>
+              {/* Style segmented control. "Rows" is the historical
+                  Gantt with a left label column + phase-hatched bars
+                  (one row per top-level item). "Compact" drops the
+                  label column entirely and packs items into rows
+                  via a greedy no-overlap algorithm, painting each
+                  as a single solid-color bar with its title inside.
+                  Hidden when Quarters is active because that
+                  timeframe swaps in a wholly different layout
+                  (RoadmapQuartersView) for which the Rows/Compact
+                  distinction has no meaning. */}
+              {zoom !== "quarters" ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-wp-slate">Style</span>
+                  <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
+                    <button
+                      className={`px-2 py-1 ${roadmapStyle === "rows" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                      onClick={() => setRoadmapStyle("rows")}
+                      title="Left label column + phase-hatched bars, one row per item"
+                    >
+                      Rows
+                    </button>
+                    <button
+                      className={`border-l border-wp-stone px-2 py-1 ${roadmapStyle === "compact" ? "bg-wp-red text-white" : "bg-white text-wp-slate"}`}
+                      onClick={() => setRoadmapStyle("compact")}
+                      title="Packed solid-color bars with titles inside — no label column, no grouping"
+                    >
+                      Compact
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {/* Sort-by segmented control. "Start date" is the
                   historical chronological order (byStart on the
                   earliest phase). "Priority" reuses the same
@@ -726,31 +779,54 @@ export function RoadmapView() {
               keyStrategicFilterActive={filters.keyStrategicOnly}
             />
           ) : scheduledInViewport.length ? (
-            <GanttTimeline
-              projects={scheduledInViewport}
-              lanes={lanes.data ?? []}
-              teams={teams.data ?? []}
-              users={users.data ?? []}
-              colorBy={colorBy}
-              groupBy={groupBy}
-              zoom={zoom}
-              onOpen={setSelectedId}
-              pdfMode={pdfMode}
-              labelColumnPx={labelColumnPx}
-              onLabelColumnPxChange={setLabelColumnPx}
-              onLabelColumnPxCommit={persistLabelColumnPx}
-              sortMode={roadmapSort}
-              overrideByGroup={roadmapOverrideByGroup}
-              onReorderOverride={setRoadmapOverride}
-              onReorderCrossLaneRejected={() =>
-                setToast({
-                  message:
-                    "Priority order is per swim lane. Move this item to a different lane on the Board view to change lanes.",
-                  variant: "info",
-                })
-              }
-              showConflicts={showConflicts}
-            />
+            compactActive ? (
+              // Compact style: no label column, packed solid-color
+              // bars with titles inside. Reuses the same date-range
+              // machinery so today marker + timeframe fitting + the
+              // sticky month header keep working. Deliberately drops
+              // groupBy / sortMode / label-column resize / conflict
+              // overlays / drag-to-reschedule — see the Compact
+              // component's file-level doc-comment for the "out of
+              // scope for v1" list. The Rows branch below stays 100%
+              // unchanged so the historical Gantt experience is
+              // preserved for users who don't opt in.
+              <RoadmapCompactView
+                projects={scheduledInViewport}
+                lanes={lanes.data ?? []}
+                teams={teams.data ?? []}
+                users={users.data ?? []}
+                colorBy={colorBy}
+                zoom={zoom}
+                onOpen={setSelectedId}
+                pdfMode={pdfMode}
+              />
+            ) : (
+              <GanttTimeline
+                projects={scheduledInViewport}
+                lanes={lanes.data ?? []}
+                teams={teams.data ?? []}
+                users={users.data ?? []}
+                colorBy={colorBy}
+                groupBy={groupBy}
+                zoom={zoom}
+                onOpen={setSelectedId}
+                pdfMode={pdfMode}
+                labelColumnPx={labelColumnPx}
+                onLabelColumnPxChange={setLabelColumnPx}
+                onLabelColumnPxCommit={persistLabelColumnPx}
+                sortMode={roadmapSort}
+                overrideByGroup={roadmapOverrideByGroup}
+                onReorderOverride={setRoadmapOverride}
+                onReorderCrossLaneRejected={() =>
+                  setToast({
+                    message:
+                      "Priority order is per swim lane. Move this item to a different lane on the Board view to change lanes.",
+                    variant: "info",
+                  })
+                }
+                showConflicts={showConflicts}
+              />
+            )
           ) : (
             // Two distinct empty states: nothing scheduled at all vs.
             // things scheduled but none in the current viewport. The

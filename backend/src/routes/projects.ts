@@ -1104,8 +1104,15 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
     // this PATCH's body AND its value actually changed. Diff against
     // the pre-mutation `existing` row (fetched under FOR UPDATE above)
     // so concurrent edits can't sneak an extra email past the guard.
-    // Self-mentions and non-group-member ids are silently dropped —
-    // matches the semantics used in routes/comments.ts.
+    // Non-group-member ids are silently dropped — matches the
+    // semantics used in routes/comments.ts.
+    //
+    // TODO(mentions): self-mentions used to be dropped here too. We
+    // now insert them so the author's own notifications feed / navbar
+    // badge reflects the description they've tagged themselves on;
+    // email is still suppressed for self by `sendMentionEmail` (see
+    // notifications/mentionEmail.ts:85). Keep those two guards in
+    // sync with routes/comments.ts if either policy changes.
     // -----------------------------------------------------------------
     const notifyUserIds: string[] = [];
     if (
@@ -1125,9 +1132,7 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
                                 WHERE ug.user_id = u.id AND ug.group_id = $2))`,
           [newlyAdded, groupId],
         );
-        const filtered = memberRows
-          .map((r) => r.id)
-          .filter((uid) => uid !== req.user!.id);
+        const filtered = memberRows.map((r) => r.id);
         for (const uid of filtered) {
           await client.query(
             `INSERT INTO mentions

@@ -1,12 +1,27 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
-import { LogOut } from "lucide-react";
 import { useHealth, useMe, useMockRoster } from "../lib/queries";
 import { useMockUserStore } from "../lib/mockUser";
 import { api } from "../lib/api";
+import { NotificationsMenu } from "./NotificationsMenu";
 import { ProfileDialog } from "./ProfileDialog";
 
+/**
+ * Right-hand navbar chunk.
+ *
+ * The circular avatar (via `NotificationsMenu`) is the single
+ * entry point for identity + mentions:
+ *   - hover / click surfaces the latest 10 mentions plus the
+ *     unread badge;
+ *   - the popover footer carries the Profile link (opens the
+ *     self-serve editor dialog) and, in password mode, the
+ *     Sign-out button.
+ *
+ * In mock mode a mock-user select still renders alongside the
+ * avatar so devs can hop identities in one click; that's the
+ * only affordance that doesn't collapse into the popover.
+ */
 export function UserSwitcher() {
   const health = useHealth();
   const me = useMe();
@@ -29,87 +44,46 @@ export function UserSwitcher() {
     },
   });
 
-  // Password mode: identity display + sign-out.
-  if (isPasswordMode) {
-    if (!me.data) return null;
-    return (
-      <>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setProfileOpen(true)}
-            className="hidden rounded px-2 py-1 text-right text-xs text-wp-slate transition hover:bg-wp-stone/40 focus:bg-wp-stone/40 focus:outline-none sm:block"
-            title="Edit your profile"
-          >
-            Signed in as
-            <div className="font-medium text-wp-ink">{me.data.name}</div>
-          </button>
-          <span className="chip">{me.data.role}</span>
-          <button
-            type="button"
-            onClick={() => logout.mutate()}
-            className="btn-secondary inline-flex items-center gap-1.5"
-            disabled={logout.isPending}
-            title="Sign out"
-          >
-            <LogOut size={13} />
-            {logout.isPending ? "Signing out…" : "Sign out"}
-          </button>
-        </div>
-        {profileOpen ? <ProfileDialog onClose={() => setProfileOpen(false)} /> : null}
-      </>
-    );
-  }
-
-  // Okta / Cloudflare Access: no impersonation, no client-side logout
-  // (IdP owns the session), just show who's here.
-  if (!isMockMode) {
-    if (!me.data) return null;
-    return (
-      <>
-        <button
-          type="button"
-          onClick={() => setProfileOpen(true)}
-          className="flex items-center gap-2 rounded px-2 py-1 text-xs text-wp-slate transition hover:bg-wp-stone/40 focus:bg-wp-stone/40 focus:outline-none"
-          title="Edit your profile"
-        >
-          <span>Signed in as</span>
-          <span className="font-medium text-wp-ink">{me.data.name}</span>
-          <span className="chip">{me.data.role}</span>
-        </button>
-        {profileOpen ? <ProfileDialog onClose={() => setProfileOpen(false)} /> : null}
-      </>
-    );
-  }
+  // Nothing to render until /users/me resolves — the parent shell
+  // already gates behind health.data, so this is defense-in-depth
+  // for the transient loading window.
+  if (!me.data) return null;
 
   return (
     <>
       <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => setProfileOpen(true)}
-          disabled={!me.data}
-          className="hidden rounded px-2 py-1 text-right text-xs text-wp-slate transition hover:bg-wp-stone/40 focus:bg-wp-stone/40 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 sm:block"
-          title="Edit your profile"
-        >
-          Signed in as
-          <div className="font-medium text-wp-ink">{me.data?.name}</div>
-        </button>
-        <select
-          className="input w-48"
-          aria-label="Switch mock user"
-          value={me.data?.id ?? ""}
-          onChange={(e) => {
-            setMockUserId(e.target.value || null);
-            qc.invalidateQueries();
-          }}
-        >
-          {roster.data?.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.name} ({u.role})
-            </option>
-          ))}
-        </select>
+        {/* Role chip preserves the existing "at-a-glance
+            per-tenant role" affordance. Kept as a separate chip
+            beside the avatar so the popover doesn't have to
+            duplicate it, and so the mock-mode row stays
+            visually parallel to the password/okta rows. */}
+        <span className="chip">{me.data.role}</span>
+        {/* Mock-mode identity switcher — the only user-facing
+            affordance that doesn't collapse into the popover.
+            Devs need to hop between mock users regularly and a
+            single-click select is the fastest surface for that. */}
+        {isMockMode ? (
+          <select
+            className="input w-48"
+            aria-label="Switch mock user"
+            value={me.data.id}
+            onChange={(e) => {
+              setMockUserId(e.target.value || null);
+              qc.invalidateQueries();
+            }}
+          >
+            {roster.data?.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name} ({u.role})
+              </option>
+            ))}
+          </select>
+        ) : null}
+        <NotificationsMenu
+          onOpenProfile={() => setProfileOpen(true)}
+          onSignOut={isPasswordMode ? () => logout.mutate() : null}
+          signOutBusy={logout.isPending}
+        />
       </div>
       {profileOpen ? <ProfileDialog onClose={() => setProfileOpen(false)} /> : null}
     </>

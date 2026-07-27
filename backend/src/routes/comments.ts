@@ -146,11 +146,21 @@ projectCommentsRouter.post("/", async (req, res) => {
     );
     const comment = rows[0]!;
     const parsedIds = newlyAddedMentionIds(null, body);
-    // Drop self-mentions and any id that isn't actually a group
-    // member (see `filterMembersOfGroup` above for why we silently
-    // filter rather than reject the comment).
-    const memberIds = (await filterMembersOfGroup(client, parsedIds, groupId))
-      .filter((uid) => uid !== userId);
+    // Drop any id that isn't actually a group member — see
+    // `filterMembersOfGroup` above for why we silently filter
+    // rather than reject the comment.
+    //
+    // TODO(mentions): self-mentions used to be dropped here too. We
+    // now insert them so the author's own notifications feed / navbar
+    // badge reflects a thread they've tagged themselves on (users do
+    // sometimes want to track their own mention count on threads;
+    // it's also the sanest test path). Email is still suppressed for
+    // self-mentions by `sendMentionEmail` itself (see
+    // notifications/mentionEmail.ts:85), so nobody gets a message
+    // from themselves. If we later want to suppress the notification
+    // row too (but keep email-off), re-add a filter here — don't
+    // reintroduce it in the email layer, that guard should stay put.
+    const memberIds = await filterMembersOfGroup(client, parsedIds, groupId);
     if (memberIds.length > 0) {
       await insertMentionsRows(client, {
         groupId,
@@ -215,8 +225,10 @@ projectCommentsRouter.patch("/:commentId", async (req, res) => {
     );
 
     const newlyAdded = newlyAddedMentionIds(comment.body, body);
-    const memberIds = (await filterMembersOfGroup(client, newlyAdded, groupId))
-      .filter((uid) => uid !== userId);
+    // Self-mentions get a row here too — see the matching TODO in
+    // POST above. Email self-suppression still lives inside
+    // sendMentionEmail (notifications/mentionEmail.ts:85).
+    const memberIds = await filterMembersOfGroup(client, newlyAdded, groupId);
     if (memberIds.length > 0) {
       await insertMentionsRows(client, {
         groupId,

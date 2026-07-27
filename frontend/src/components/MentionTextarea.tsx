@@ -1,52 +1,54 @@
 import {
   forwardRef,
   useCallback,
+  useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { cn } from "../lib/cn";
-import { getMentionRanges, parseMentions } from "../lib/mentions";
+import {
+  createMentionChip,
+  deserializeIntoRoot,
+  filterMentionCandidates,
+  findActiveMentionQuery,
+  findDomPositionFromOffset,
+  getSerializedCaretOffset,
+  serializeContentEditable,
+} from "../lib/mentions";
 import type { MentionableUser } from "../lib/queries";
-import { MentionPicker } from "./MentionPicker";
 
 /**
- * Textarea + @mention picker + styled-token overlay, all in one.
+ * WYSIWYG @mention editor built on a plain `contenteditable` div.
  *
- * The `<textarea>` still owns the raw string, including the full
- * `@[Name](user:UUID)` tokens — the parser + save path never see
- * anything different. On top of the textarea we render a
- * `pointer-events: none` overlay div in the same font / padding /
- * line-height / border-box, but with the raw text of each token
- * swapped for a styled `@Name` chip.
+ * The previous incarnation used a native `<textarea>` plus a mirror
+ * overlay: the textarea owned the raw `@[Name](user:UUID)` characters,
+ * the overlay painted a styled `@Name` chip on top. That fundamentally
+ * can't be caret-correct — the textarea's caret advances off the full
+ * raw token width (~45+ chars) while only the visible `@Name` glyphs
+ * were painted, so any text typed after a mention appeared to sit in a
+ * wide empty strip beyond the chip.
  *
- * Layering:
- *   1. Wrapper       — `position: relative`, sizes to the textarea.
- *   2. Overlay div   — `absolute inset-0`, `pointer-events: none`,
- *                       `overflow: hidden`, `aria-hidden`. Content
- *                       is translated by `-scrollTop / -scrollLeft`
- *                       on textarea scroll so wrapping / offset
- *                       matches the textarea line-for-line.
- *   3. Textarea      — the actual editable element, with
- *                       `color: transparent` so its raw text isn't
- *                       drawn; `caret-color: [visible]` so the
- *                       caret keeps being drawn by the browser.
- *                       `background: transparent` so the overlay
- *                       shows through; `.input` still owns the
- *                       border + focus ring.
+ * The contenteditable version renders each mention as a real atomic
+ * inline element (`<span data-mention-user-id contenteditable="false">`).
+ * Because chips are `contenteditable=false`, browsers treat them like
+ * one glyph: caret can sit before/after but never enter, Backspace at
+ * the trailing edge deletes the whole chip in one keystroke, and the
+ * caret always sits exactly where the visible text ends.
  *
- * The overlay's font / padding / border-widths are copied from
- * `getComputedStyle(textarea)` at mount + on window resize, matching
- * the caret-mirror technique in `MentionPicker.tsx` — this avoids
- * duplicating Tailwind class strings and stays correct regardless
- * of which parent tacked on `text-sm` / `min-h-[…]` / etc.
- *
- * The overlay renders even when the textarea is `disabled` (viewer
- * read-only) — viewers still deserve to see mentions as styled
- * chips rather than the raw `@[Name](user:UUID)` tokens. Only the
- * caret / focus ring machinery is skipped when disabled.
+ * On the wire the format is unchanged: `serialize(root)` walks the DOM
+ * back into the canonical `@[Name](user:UUID)` string the backend
+ * parser + notification pipeline already speak. On mount + on any
+ * external `value` change, `deserialize` rebuilds the DOM from that
+ * same string. React never owns the editable children (mixing React
+ * reconciliation with contenteditable is a known caret-jitter trap);
+ * we sync via a useLayoutEffect that only touches the DOM when the
+ * incoming `value` diverges from what `serialize(root)` currently
+ * produces.
  */
+
 export type MentionTextareaProps = {
   value: string;
   onChange: (next: string) => void;
@@ -55,409 +57,675 @@ export type MentionTextareaProps = {
   placeholder?: string;
   disabled?: boolean;
   /**
-   * Chained after the picker's own key handler. The picker may call
-   * `preventDefault` to consume arrow / Enter / Tab / Escape while
-   * open — the wrapper only invokes this callback when the picker
-   * left the event alone, matching the "let the popover eat its
-   * shortcuts first" pattern the composer already used inline.
+   * Chained after the picker's own key handler. The picker consumes
+   * arrow / Enter / Tab / Escape while its popover is open — this
+   * callback is only invoked when the picker (and the editor's own
+   * defaults) left the event alone, matching how `MentionPicker` used
+   * to compose with `Cmd+Enter to submit` in the parent comment
+   * composer.
    */
-  onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void;
 };
 
-// Style properties copied from the textarea onto the overlay so
-// wrapping + line metrics match pixel-for-pixel. Same list the
-// caret-mirror technique in MentionPicker uses, extended with a few
-// more props that affect visible layout (background, color) so we
-// don't accidentally repaint them.
-const OVERLAY_COPY_PROPS = [
-  "boxSizing",
-  "paddingTop",
-  "paddingRight",
-  "paddingBottom",
-  "paddingLeft",
-  "borderTopWidth",
-  "borderRightWidth",
-  "borderBottomWidth",
-  "borderLeftWidth",
-  "fontFamily",
-  "fontWeight",
-  "fontStyle",
-  "fontVariant",
-  "fontSize",
-  "lineHeight",
-  "letterSpacing",
-  "wordSpacing",
-  "textTransform",
-  "textIndent",
-  "whiteSpace",
-  "wordBreak",
-  "overflowWrap",
-  "tabSize",
-] as const;
+/**
+ * Imperative handle exposed via `ref`. Kept small: focus / blur / select
+ * are the only mutators any caller might reasonably want, and they map
+ * cleanly onto DOM primitives the editor already has.
+ */
+export type MentionTextareaHandle = {
+  focus: () => void;
+  blur: () => void;
+  select: () => void;
+};
 
-function readMirrorStyle(
-  textarea: HTMLTextAreaElement,
-): React.CSSProperties {
-  const cs = window.getComputedStyle(textarea);
-  const out: Record<string, string> = {};
-  for (const prop of OVERLAY_COPY_PROPS) {
-    const val = (cs as unknown as Record<string, string>)[prop as string];
-    if (val != null) out[prop as string] = val;
-  }
-  // Ensure text wraps identically to the textarea. `whitespace-pre-wrap`
-  // preserves newlines + collapses runs of spaces, matching a plain
-  // textarea's rendering.
-  out.whiteSpace = out.whiteSpace || "pre-wrap";
-  out.wordWrap = "break-word";
-  // Overlay must not draw its own border color or background — the
-  // textarea below still owns those visuals. Border-WIDTHs stay
-  // (copied above) so the content box aligns with the textarea's.
-  out.borderStyle = "solid";
-  out.borderColor = "transparent";
-  out.background = "transparent";
-  return out as React.CSSProperties;
-}
+type PickerState = {
+  triggerStart: number;
+  caret: number;
+  query: string;
+  rect: DOMRect | null;
+};
 
 export const MentionTextarea = forwardRef<
-  HTMLTextAreaElement,
+  MentionTextareaHandle,
   MentionTextareaProps
 >(function MentionTextarea(
   { value, onChange, users, className, placeholder, disabled, onKeyDown },
   forwardedRef,
 ) {
-  const localRef = useRef<HTMLTextAreaElement | null>(null);
-  const [mirrorStyle, setMirrorStyle] = useState<React.CSSProperties>({});
-  const [scroll, setScroll] = useState({ top: 0, left: 0 });
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const composingRef = useRef(false);
+  // `valueRef` mirrors the latest `value` prop so useCallback-created
+  // handlers can compare against it without having to be recreated on
+  // every keystroke — same trick the picker uses to avoid stale
+  // closures on rapid typing.
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
-  // Sync the overlay's font + padding + border widths with the
-  // textarea. Runs on mount, on window resize, and whenever the
-  // consumer's className changes (which typically drives the box).
-  useLayoutEffect(() => {
-    const ta = localRef.current;
-    if (!ta) return;
-    const measure = () => setMirrorStyle(readMirrorStyle(ta));
-    measure();
-    // ResizeObserver picks up on `resize-y` drags AND on wrapper
-    // width changes (which alter line-wrap). Falls back to the
-    // window resize listener for older environments.
-    let observer: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(() => measure());
-      observer.observe(ta);
-    }
-    window.addEventListener("resize", measure);
-    return () => {
-      window.removeEventListener("resize", measure);
-      observer?.disconnect();
-    };
-  }, [className]);
+  const [picker, setPicker] = useState<PickerState | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
 
-  // Bind the local ref to the picker's ref AND any external forwarded
-  // ref so callers can still `focus()` the textarea if they want.
-  const composedRef = useCallback(
-    (pickerRef: React.MutableRefObject<HTMLTextAreaElement | null>) =>
-      (el: HTMLTextAreaElement | null) => {
-        localRef.current = el;
-        pickerRef.current = el;
-        if (typeof forwardedRef === "function") forwardedRef(el);
-        else if (forwardedRef) forwardedRef.current = el;
+  useImperativeHandle(
+    forwardedRef,
+    () => ({
+      focus: () => rootRef.current?.focus(),
+      blur: () => rootRef.current?.blur(),
+      select: () => {
+        const el = rootRef.current;
+        if (!el) return;
+        const doc = el.ownerDocument ?? document;
+        const range = doc.createRange();
+        range.selectNodeContents(el);
+        const sel = doc.defaultView?.getSelection() ?? window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
       },
-    [forwardedRef],
+    }),
+    [],
   );
 
-  const segments = useMemo(() => parseMentions(value), [value]);
+  // Reconcile DOM ↔ value only when the incoming `value` differs from
+  // the current serialized DOM. Skipping the no-op case is what keeps
+  // the caret from jittering after every keystroke — the input handler
+  // has already applied the local edit; running deserialize would blow
+  // away the caret + selection.
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const current = serializeContentEditable(el);
+    if (current === value) return;
+    const doc = el.ownerDocument ?? document;
+    const wasFocused = doc.activeElement === el;
+    deserializeIntoRoot(el, value, doc);
+    if (wasFocused) placeCaretAtEnd(el);
+  }, [value]);
 
-  /**
-   * Intercept edit-shape keys so mention tokens behave atomically
-   * regardless of the raw `@[Name](user:UUID)` characters that live
-   * in the underlying textarea value:
-   *
-   *   Backspace at end of a mention → deletes the whole token.
-   *   Delete    at start of a mention → deletes the whole token.
-   *   Backspace/Delete with a range selection that partially
-   *     overlaps any mention → the range is extended to whole
-   *     tokens BEFORE the deletion runs, so the user can never end
-   *     up with half a token in the value.
-   *   ArrowLeft / ArrowRight at a token boundary → jump to the
-   *     other boundary in one keystroke (nice-to-have).
-   *   Cmd/Ctrl+X / Cmd/Ctrl+C with a range partially inside a
-   *     mention → extend the range to whole tokens BEFORE the
-   *     default cut/copy runs, so the clipboard payload is a
-   *     complete token (the "storage format on the wire" non-goal
-   *     means the clipboard gets the raw token — a future polish
-   *     could rewrite it to `@Name` via a custom onCopy handler).
-   *
-   * Skips entirely when there are no mentions in the value or the
-   * user is mid-IME-composition (`isComposing`) so we don't
-   * interfere with dead-key sequences.
-   */
-  const handleAtomicKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const ta = localRef.current;
-    if (!ta) return;
-    // Ignore IME composition — some browsers deliver Backspace
-    // during composition and clobbering the value would break dead-
-    // key sequences.
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-    const ranges = getMentionRanges(value);
-    if (ranges.length === 0) return;
+  const filtered = useMemo(() => {
+    if (!picker) return [] as MentionableUser[];
+    return filterMentionCandidates(users, picker.query);
+  }, [picker, users]);
 
-    const selStart = ta.selectionStart ?? 0;
-    const selEnd = ta.selectionEnd ?? 0;
-    const collapsed = selStart === selEnd;
-    const noMods = !e.altKey && !e.metaKey && !e.ctrlKey;
+  useEffect(() => {
+    if (activeIndex >= filtered.length) setActiveIndex(0);
+  }, [filtered.length, activeIndex]);
 
-    const applyReplace = (from: number, to: number, caret: number) => {
-      const next = value.slice(0, from) + value.slice(to);
-      onChange(next);
-      // Restore caret after React commits the new value — same
-      // pattern the picker uses on selection insert.
+  // Close the picker if the value gets cleared out from outside (e.g.
+  // parent resets after a submit). Matches the old MentionPicker
+  // behavior so a stale menu never lingers.
+  useEffect(() => {
+    if (!value) setPicker(null);
+  }, [value]);
+
+  const closePicker = useCallback(() => setPicker(null), []);
+
+  const emitChange = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const next = serializeContentEditable(el);
+    // After deleting all content some browsers leave a stray empty
+    // text node or `<br>` behind. Clear the DOM so `.mention-editable:
+    // empty::before` matches and the placeholder reappears.
+    if (next === "" && el.childNodes.length > 0) el.innerHTML = "";
+    if (next !== valueRef.current) onChange(next);
+  }, [onChange]);
+
+  const recomputePicker = useCallback(() => {
+    if (disabled) {
+      closePicker();
+      return;
+    }
+    const el = rootRef.current;
+    if (!el) return;
+    const doc = el.ownerDocument ?? document;
+    const sel = doc.defaultView?.getSelection() ?? window.getSelection();
+    if (!sel || sel.rangeCount === 0) {
+      closePicker();
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (!range.collapsed) {
+      closePicker();
+      return;
+    }
+    if (!el.contains(range.endContainer) && range.endContainer !== el) {
+      closePicker();
+      return;
+    }
+    const caret = getSerializedCaretOffset(
+      el,
+      range.endContainer,
+      range.endOffset,
+    );
+    if (caret == null) {
+      closePicker();
+      return;
+    }
+    const text = serializeContentEditable(el);
+    const ctx = findActiveMentionQuery(text, caret);
+    if (!ctx) {
+      closePicker();
+      return;
+    }
+    const rect = getCaretRect(range);
+    setPicker((prev) => {
+      if (
+        prev &&
+        prev.triggerStart === ctx.start &&
+        prev.query === ctx.query
+      ) {
+        return { ...prev, caret, rect };
+      }
+      return { triggerStart: ctx.start, caret, query: ctx.query, rect };
+    });
+  }, [closePicker, disabled]);
+
+  const commitSelection = useCallback(
+    (user: MentionableUser) => {
+      const el = rootRef.current;
+      if (!el) return;
+      const state = picker;
+      if (!state) return;
+      const doc = el.ownerDocument ?? document;
+      // Locate `@…` trigger and current caret in DOM coordinates.
+      const startPos = findDomPositionFromOffset(el, state.triggerStart);
+      const endPos = findDomPositionFromOffset(el, state.caret);
+      const range = doc.createRange();
+      try {
+        range.setStart(startPos.node, startPos.offset);
+        range.setEnd(endPos.node, endPos.offset);
+      } catch {
+        closePicker();
+        return;
+      }
+      range.deleteContents();
+
+      const chip = createMentionChip({ id: user.id, name: user.name }, doc);
+      // Follow the picked chip with a trailing space so the user's
+      // next keystroke isn't glued to the chip's visible text — same
+      // behavior as `insertMentionAt` in the plain-text helper.
+      const spaceNode = doc.createTextNode(" ");
+      // Insert as a fragment so both nodes land in a single call —
+      // avoids the "range.insertNode splits a text node and the caret
+      // migrates unpredictably" trap that shows up when the range
+      // sits inside a text node (which is exactly the case for the
+      // `@…` query the user is typing when they trigger the picker).
+      const fragment = doc.createDocumentFragment();
+      fragment.appendChild(chip);
+      fragment.appendChild(spaceNode);
+      range.insertNode(fragment);
+
+      const sel = doc.defaultView?.getSelection() ?? window.getSelection();
+      if (sel) {
+        const nextRange = doc.createRange();
+        nextRange.setStartAfter(spaceNode);
+        nextRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(nextRange);
+      }
+
+      closePicker();
+      emitChange();
+      // Selection state above changed — ensure any subsequent picker
+      // recompute sees the settled DOM (RAF gives the browser a paint
+      // tick to update `Selection.getRangeAt(0)`).
       requestAnimationFrame(() => {
-        const el = localRef.current;
-        if (!el) return;
-        el.focus();
-        el.setSelectionRange(caret, caret);
+        rootRef.current?.focus();
       });
-    };
+    },
+    [closePicker, emitChange, picker],
+  );
 
-    const extendedRange = (
-      a: number,
-      b: number,
-    ): [number, number] | null => {
-      let s = Math.min(a, b);
-      let ep = Math.max(a, b);
-      let changed = false;
-      for (const r of ranges) {
-        // Strict inequality: `s === r.start` already sits on the
-        // boundary and shouldn't drag the selection wider.
-        if (s > r.start && s < r.end) {
-          s = r.start;
-          changed = true;
+  const handleInput = useCallback(() => {
+    if (composingRef.current) return;
+    emitChange();
+    // Defer picker recompute to next frame so the browser has settled
+    // Selection state after this input event.
+    requestAnimationFrame(recomputePicker);
+  }, [emitChange, recomputePicker]);
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const text = e.clipboardData.getData("text/plain");
+      if (!text) return;
+      const el = rootRef.current;
+      if (!el) return;
+      const doc = el.ownerDocument ?? document;
+      // Build up the fragment as if we were mounting fresh from `text`
+      // so any `@[Name](user:UUID)` tokens in the paste come back as
+      // real chips. Plain-text paste (no tokens) still works — the
+      // deserializer yields a single text node.
+      const holder = doc.createElement("div");
+      deserializeIntoRoot(holder, text, doc);
+      insertNodesAtCaret(el, Array.from(holder.childNodes));
+      emitChange();
+      requestAnimationFrame(recomputePicker);
+    },
+    [emitChange, recomputePicker],
+  );
+
+  // Copy / cut: serialize the current selection back to the on-wire
+  // format so a chip pasted into another MentionTextarea (or back into
+  // the same one after a full clipboard round-trip) resurrects as a
+  // chip rather than as the visible `@Name` text alone.
+  const handleCopy = useCallback(
+    (e: React.ClipboardEvent<HTMLDivElement>) => {
+      const el = rootRef.current;
+      if (!el) return;
+      const doc = el.ownerDocument ?? document;
+      const sel = doc.defaultView?.getSelection() ?? window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      if (range.collapsed) return;
+      const holder = doc.createElement("div");
+      holder.appendChild(range.cloneContents());
+      const text = serializeContentEditable(holder);
+      e.clipboardData.setData("text/plain", text);
+      e.preventDefault();
+    },
+    [],
+  );
+
+  const handleCut = useCallback(
+    (e: React.ClipboardEvent<HTMLDivElement>) => {
+      const el = rootRef.current;
+      if (!el) return;
+      const doc = el.ownerDocument ?? document;
+      const sel = doc.defaultView?.getSelection() ?? window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      if (range.collapsed) return;
+      const holder = doc.createElement("div");
+      holder.appendChild(range.cloneContents());
+      const text = serializeContentEditable(holder);
+      e.clipboardData.setData("text/plain", text);
+      e.preventDefault();
+      range.deleteContents();
+      emitChange();
+      requestAnimationFrame(recomputePicker);
+    },
+    [emitChange, recomputePicker],
+  );
+
+  const insertLineBreakAtCaret = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const doc = el.ownerDocument ?? document;
+    const sel = doc.defaultView?.getSelection() ?? window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    if (!el.contains(range.startContainer) && range.startContainer !== el) return;
+    range.deleteContents();
+    // Insert a literal `\n` text node rather than a `<br>` element.
+    // The editor's `white-space: pre-wrap` styling renders `\n` as a
+    // line break, and it round-trips cleanly through serialize (which
+    // just reads text-node textContent) without the trailing-`<br>`-
+    // isn't-visible headaches Chrome/WebKit inflict on contenteditable.
+    const textNode = doc.createTextNode("\n");
+    range.insertNode(textNode);
+    const nextRange = doc.createRange();
+    nextRange.setStartAfter(textNode);
+    nextRange.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(nextRange);
+    emitChange();
+    requestAnimationFrame(recomputePicker);
+  }, [emitChange, recomputePicker]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      // Picker gets first crack — arrow / Enter / Tab / Escape while
+      // the popover is open shouldn't fall through to editor
+      // defaults or the consumer's onKeyDown.
+      if (picker) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setActiveIndex((i) =>
+            filtered.length === 0 ? 0 : (i + 1) % filtered.length,
+          );
+          return;
         }
-        if (ep > r.start && ep < r.end) {
-          ep = r.end;
-          changed = true;
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setActiveIndex((i) =>
+            filtered.length === 0
+              ? 0
+              : (i - 1 + filtered.length) % filtered.length,
+          );
+          return;
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+          const user = filtered[activeIndex];
+          e.preventDefault();
+          if (user) commitSelection(user);
+          else closePicker();
+          return;
+        }
+        if (e.key === "Escape") {
+          // Stop propagation so an ancestor dismissable layer (Radix
+          // Dialog) doesn't ALSO close on the same key press — first
+          // Escape closes the picker; a second closes the surface.
+          e.preventDefault();
+          e.stopPropagation();
+          closePicker();
+          return;
         }
       }
-      return changed ? [s, ep] : null;
+
+      // Cmd/Ctrl+Enter must reach the consumer (used for submit in
+      // the comment composer). Only intercept bare / Shift+Enter for
+      // the line-break behavior contenteditable would otherwise wrap
+      // in an unwanted `<div>` / `<p>`.
+      if (
+        e.key === "Enter" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        insertLineBreakAtCaret();
+        return;
+      }
+
+      onKeyDown?.(e);
+    },
+    [
+      activeIndex,
+      closePicker,
+      commitSelection,
+      filtered,
+      insertLineBreakAtCaret,
+      onKeyDown,
+      picker,
+    ],
+  );
+
+  const handleCompositionStart = useCallback(() => {
+    composingRef.current = true;
+  }, []);
+
+  const handleCompositionEnd = useCallback(() => {
+    composingRef.current = false;
+    // Compose sequences finalize on `compositionend`, not on the
+    // synthetic `input` fired during composition. Emit here so the
+    // parent picks up the final IME glyph.
+    emitChange();
+    requestAnimationFrame(recomputePicker);
+  }, [emitChange, recomputePicker]);
+
+  const handleBlur = useCallback(
+    (e: React.FocusEvent<HTMLDivElement>) => {
+      // Ignore blur when focus moved into the picker (mouse click on
+      // a candidate). The candidate's onMouseDown handles the pick.
+      const next = e.relatedTarget as HTMLElement | null;
+      if (next && menuRef.current?.contains(next)) return;
+      closePicker();
+    },
+    [closePicker],
+  );
+
+  // Fire `recomputePicker` also on caret moves that don't trigger an
+  // input event (Arrow keys, click into a different position). React
+  // doesn't expose a `selectionchange` handler on divs, so we bind
+  // manually and gate on focus so we don't recompute for the wrong
+  // editor when multiple are mounted (comment composer + description).
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const doc = el.ownerDocument ?? document;
+    const onSelectionChange = () => {
+      if (doc.activeElement !== el) return;
+      recomputePicker();
     };
+    doc.addEventListener("selectionchange", onSelectionChange);
+    return () => doc.removeEventListener("selectionchange", onSelectionChange);
+  }, [recomputePicker]);
 
-    if (e.key === "Backspace" && collapsed && noMods) {
-      const m = ranges.find((r) => selStart === r.end);
-      if (m) {
-        e.preventDefault();
-        applyReplace(m.start, m.end, m.start);
-        return;
-      }
-    }
+  // Recompute the caret rect on scroll / resize so the popover tracks
+  // the caret if the surrounding layout shifts.
+  useLayoutEffect(() => {
+    if (!picker) return;
+    const onLayoutChange = () => recomputePicker();
+    window.addEventListener("scroll", onLayoutChange, true);
+    window.addEventListener("resize", onLayoutChange);
+    return () => {
+      window.removeEventListener("scroll", onLayoutChange, true);
+      window.removeEventListener("resize", onLayoutChange);
+    };
+  }, [picker, recomputePicker]);
 
-    if (e.key === "Delete" && collapsed && noMods) {
-      const m = ranges.find((r) => selStart === r.start);
-      if (m) {
-        e.preventDefault();
-        applyReplace(m.start, m.end, m.start);
-        return;
-      }
-    }
-
-    // Range deletion where the selection partially overlaps a
-    // token — extend to whole tokens and delete in one shot.
-    if ((e.key === "Backspace" || e.key === "Delete") && !collapsed) {
-      const ext = extendedRange(selStart, selEnd);
-      if (ext) {
-        e.preventDefault();
-        applyReplace(ext[0], ext[1], ext[0]);
-        return;
-      }
-    }
-
-    // Arrow-key traversal. Only bare ArrowLeft/Right — we leave
-    // Shift+Arrow (selection extension), Alt+Arrow (word jump), and
-    // Cmd/Ctrl+Arrow (line jump) to their platform defaults.
-    if (e.key === "ArrowLeft" && collapsed && !e.shiftKey && noMods) {
-      const m = ranges.find((r) => selStart === r.end);
-      if (m) {
-        e.preventDefault();
-        ta.setSelectionRange(m.start, m.start);
-        return;
-      }
-    }
-    if (e.key === "ArrowRight" && collapsed && !e.shiftKey && noMods) {
-      const m = ranges.find((r) => selStart === r.start);
-      if (m) {
-        e.preventDefault();
-        ta.setSelectionRange(m.end, m.end);
-        return;
-      }
-    }
-
-    // Cut / copy — extend an in-progress selection to whole tokens
-    // BEFORE the browser's default cut/copy fires. We do NOT
-    // preventDefault: after `setSelectionRange` the browser reads
-    // the new range and clipboard behavior falls out naturally.
-    const isCutOrCopy =
-      (e.metaKey || e.ctrlKey) &&
-      !e.shiftKey &&
-      !e.altKey &&
-      (e.key === "x" || e.key === "X" || e.key === "c" || e.key === "C");
-    if (isCutOrCopy && !collapsed) {
-      const ext = extendedRange(selStart, selEnd);
-      if (ext) ta.setSelectionRange(ext[0], ext[1]);
-    }
-  };
+  // Outside-pointerdown closes the picker.
+  useEffect(() => {
+    if (!picker) return;
+    const onPointer = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (rootRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      closePicker();
+    };
+    document.addEventListener("pointerdown", onPointer);
+    return () => document.removeEventListener("pointerdown", onPointer);
+  }, [picker, closePicker]);
 
   return (
-    <MentionPicker
-      value={value}
-      onChange={onChange}
-      users={users}
-      disabled={disabled}
-      renderInput={({
-        ref: pickerRef,
-        onKeyDown: pickerKeyDown,
-        onChange: pickerChange,
-        onSelect,
-        onBlur,
-      }) => (
-        <div className="relative">
-          {/* Overlay sits behind the textarea in DOM order so the
-              browser draws the textarea (and its caret) on top of
-              it. `pointer-events: none` keeps mouse events flowing
-              to the textarea beneath. */}
-          <div
-            aria-hidden
-            className={cn(
-              "pointer-events-none absolute inset-0 overflow-hidden text-wp-ink",
-              className,
-            )}
-            style={{
-              ...mirrorStyle,
-              // The overlay owns *display*; it must not itself
-              // scroll — the inner content wrapper translates
-              // instead so wrapping stays identical to the
-              // textarea below.
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                // Translate up/left by the textarea's scroll so
-                // rendered lines stay aligned with the textarea's
-                // visible lines. When scrollTop=0 the first line
-                // lands right below the (shared) padding-top.
-                transform: `translate(${-scroll.left}px, ${-scroll.top}px)`,
-                width: "100%",
-                // Inherit wrap behavior from the outer overlay by
-                // mirroring the same properties the outer had
-                // copied from the textarea. `overflow-wrap` /
-                // `word-break` aren't inheritable by default so
-                // the inner has to spell them out too.
-                whiteSpace: (mirrorStyle.whiteSpace as string) ?? "pre-wrap",
-                wordBreak:
-                  (mirrorStyle.wordBreak as
-                    | React.CSSProperties["wordBreak"]
-                    | undefined) ?? "normal",
-                overflowWrap:
-                  (mirrorStyle.overflowWrap as
-                    | React.CSSProperties["overflowWrap"]
-                    | undefined) ?? "break-word",
-              }}
-            >
-              {segments.length === 0 ? (
-                // Empty content — nothing to draw. Placeholder is
-                // handled entirely by the textarea below, so the
-                // overlay staying blank is correct.
-                null
-              ) : (
-                <>
-                  {segments.map((seg, i) => {
-                    if (seg.kind === "text") {
-                      // Wrap in <span> so React keeps stable
-                      // children between renders; text nodes as
-                      // direct children fight harder with keys.
-                      return <span key={i}>{seg.text}</span>;
-                    }
-                    return (
-                      <span
-                        key={i}
-                        className="rounded-sm font-medium text-wp-red"
-                        title={seg.displayName}
-                      >
-                        @{seg.displayName}
-                      </span>
-                    );
-                  })}
-                  {/* Trailing zero-width joiner ensures a final
-                      newline in `value` still produces a visible
-                      empty line in the overlay (matches the
-                      textarea's rendering of a trailing \n). */}
-                  {"\u200B"}
-                </>
-              )}
-            </div>
-          </div>
-          <textarea
-            ref={composedRef(pickerRef)}
-            className={cn(
-              // The textarea keeps its own `.input` chrome (border,
-              // focus ring, placeholder color) but its raw text is
-              // hidden — the overlay draws the styled version.
-              className,
-              "relative bg-transparent text-transparent",
-            )}
-            style={{
-              // Keep the browser drawing a visible caret even
-              // though the underlying text is transparent — this is
-              // the standard trick that makes the overlay pattern
-              // feel like a normal textarea. Disabled textareas
-              // don't get a caret from the browser anyway, so it's
-              // safe to set unconditionally.
-              caretColor: "#101828",
-            }}
-            value={value}
-            placeholder={placeholder}
-            disabled={disabled}
-            // Turn off every "helpful" browser + extension text
-            // annotator on this textarea. Otherwise the inserted
-            // `@Name` chip is flagged as a misspelling and the
-            // browser draws a dotted red underline right through
-            // the styled overlay — the user reads that as random
-            // "periods" trailing every mention. The overlay itself
-            // is inert (aria-hidden, pointer-events: none), so no
-            // attribute is needed there.
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-            autoComplete="off"
-            // Grammarly injects an overlay onto elements it wants
-            // to check; these opt-out data-attrs are the vendor's
-            // documented escape hatch.
-            data-gramm="false"
-            data-gramm_editor="false"
-            data-enable-grammarly="false"
-            onChange={pickerChange}
-            onSelect={onSelect}
-            onBlur={onBlur}
-            onScroll={(e) => {
-              const el = e.currentTarget;
-              setScroll({ top: el.scrollTop, left: el.scrollLeft });
-            }}
-            onKeyDown={(e) => {
-              // Order: the picker gets first crack (it consumes
-              // arrows/enter/tab/escape while its popover is open),
-              // then the atomic-mention handler runs (Backspace /
-              // Delete / arrow-jump / cut+copy selection extension),
-              // then the consumer's own onKeyDown (e.g. Cmd+Enter
-              // to submit a comment).
-              pickerKeyDown(e);
-              if (e.defaultPrevented) return;
-              handleAtomicKey(e);
-              if (e.defaultPrevented) return;
-              onKeyDown?.(e);
-            }}
-          />
-        </div>
-      )}
-    />
+    <div className="relative">
+      <div
+        ref={rootRef}
+        role="textbox"
+        aria-multiline="true"
+        aria-disabled={disabled ? true : undefined}
+        contentEditable={!disabled}
+        suppressContentEditableWarning
+        data-placeholder={placeholder ?? ""}
+        // Tailwind can't reach `[contenteditable]` pseudo-empty:before
+        // directly, so the visual styles live in `index.css` under the
+        // `.mention-editable` selector — placeholder color and chip
+        // rendering. Min-height / padding / border still come from the
+        // parent's className (usually `.input min-h-…`).
+        className={cn("mention-editable", className)}
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
+        // Grammarly-style overlay opt-outs — same rationale as the
+        // native-textarea version: extension underlines would draw
+        // through the chip and read as random punctuation.
+        data-gramm="false"
+        data-gramm_editor="false"
+        data-enable-grammarly="false"
+        onInput={handleInput}
+        onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
+        onCopy={handleCopy}
+        onCut={handleCut}
+        onCompositionStart={handleCompositionStart}
+        onCompositionEnd={handleCompositionEnd}
+        onBlur={handleBlur}
+      />
+      {picker && picker.rect ? (
+        <MentionMenu
+          menuRef={menuRef}
+          rect={picker.rect}
+          candidates={filtered}
+          activeIndex={activeIndex}
+          onHover={setActiveIndex}
+          onPick={commitSelection}
+        />
+      ) : null}
+    </div>
   );
 });
 
+/**
+ * Insert one or more nodes at the current selection inside `root`,
+ * replacing any range selection. Uses a DocumentFragment so both
+ * ordering and caret placement stay deterministic even when the range
+ * starts inside a text node (where consecutive `range.insertNode`
+ * calls have historically been unreliable across browsers).
+ */
+function insertNodesAtCaret(root: HTMLElement, nodes: Node[]) {
+  if (nodes.length === 0) return;
+  const doc = root.ownerDocument ?? document;
+  const sel = doc.defaultView?.getSelection() ?? window.getSelection();
+  const fragment = doc.createDocumentFragment();
+  for (const node of nodes) fragment.appendChild(node);
+  const last = nodes[nodes.length - 1];
+  if (!sel || sel.rangeCount === 0) {
+    // No live caret — append at the end so pasted content isn't lost.
+    root.appendChild(fragment);
+    if (last) placeCaretAfter(root, last);
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  if (!root.contains(range.startContainer) && range.startContainer !== root) {
+    root.appendChild(fragment);
+    if (last) placeCaretAfter(root, last);
+    return;
+  }
+  range.deleteContents();
+  range.insertNode(fragment);
+  if (last) placeCaretAfter(root, last);
+}
+
+function placeCaretAfter(root: HTMLElement, node: Node) {
+  const doc = root.ownerDocument ?? document;
+  const sel = doc.defaultView?.getSelection() ?? window.getSelection();
+  if (!sel) return;
+  const range = doc.createRange();
+  range.setStartAfter(node);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function placeCaretAtEnd(root: HTMLElement) {
+  const doc = root.ownerDocument ?? document;
+  const range = doc.createRange();
+  range.selectNodeContents(root);
+  range.collapse(false);
+  const sel = doc.defaultView?.getSelection() ?? window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
+/**
+ * Return a viewport-coordinate rect for the current collapsed range.
+ * For most positions `range.getBoundingClientRect()` returns a zero-
+ * width rect at the caret — that's enough for popover placement. For
+ * positions immediately after a `contenteditable=false` chip some
+ * engines return an all-zeros rect; in that case we fall back to the
+ * chip's own bounding rect so the popover still lands sensibly.
+ */
+function getCaretRect(range: Range): DOMRect | null {
+  const rect = range.getBoundingClientRect();
+  if (rect && (rect.width > 0 || rect.height > 0)) return rect;
+  const node = range.startContainer;
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const el = node as HTMLElement;
+    const child = el.childNodes[range.startOffset - 1] as HTMLElement | undefined;
+    const fallback = child?.getBoundingClientRect?.();
+    if (fallback) return fallback;
+  }
+  return rect;
+}
+
+const MentionMenu = ({
+  menuRef,
+  rect,
+  candidates,
+  activeIndex,
+  onHover,
+  onPick,
+}: {
+  menuRef: React.MutableRefObject<HTMLDivElement | null>;
+  rect: DOMRect;
+  candidates: readonly MentionableUser[];
+  activeIndex: number;
+  onHover: (index: number) => void;
+  onPick: (user: MentionableUser) => void;
+}) => {
+  const style: React.CSSProperties = {
+    position: "fixed",
+    top: rect.bottom + 4,
+    left: rect.left,
+    width: 288,
+    maxHeight: 240,
+    zIndex: 60,
+  };
+
+  const listRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const el = list.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex]);
+
+  return (
+    <div
+      ref={menuRef}
+      style={style}
+      role="listbox"
+      aria-label="Mention a user"
+      // Stop pointerdown/mousedown at the menu boundary so any outside
+      // dismissable layer (Radix Dialog, our own useEffect above)
+      // doesn't fire on a candidate click. Even though the menu is a
+      // DOM descendant of the editor's wrapper, some dismissable-layer
+      // implementations still resolve "inside" via event-target
+      // heuristics — defence-in-depth against that.
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      className="overflow-hidden rounded-md border border-wp-stone bg-white shadow-lg"
+    >
+      <div ref={listRef} className="max-h-60 overflow-y-auto p-1">
+        {candidates.length === 0 ? (
+          <p className="px-2 py-3 text-xs text-wp-slate">No matching users.</p>
+        ) : null}
+        {candidates.map((user, i) => (
+          <button
+            key={user.id}
+            type="button"
+            role="option"
+            data-index={i}
+            aria-selected={i === activeIndex}
+            onMouseEnter={() => onHover(i)}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onPick(user);
+            }}
+            className={cn(
+              "flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-left text-sm outline-none",
+              i === activeIndex
+                ? "bg-wp-red/10 text-wp-ink"
+                : "text-wp-ink hover:bg-wp-stone/40",
+            )}
+          >
+            <span
+              className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+              style={{ background: user.color }}
+              aria-hidden
+            >
+              {initials(user.name)}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{user.name}</span>
+              <span className="block truncate text-[11px] text-wp-slate">
+                {user.email}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]!.toUpperCase())
+    .join("");
+}

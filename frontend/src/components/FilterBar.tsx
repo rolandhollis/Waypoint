@@ -9,12 +9,31 @@ import { MultiSelect } from "./MultiSelect";
 export function FilterBar({
   view,
   showGrouping = false,
+  groupingDisabled = false,
+  groupingDisabledReason,
   showColorBy = false,
   showSwimLaneFilter = true,
   showKeyStrategicToggle = false,
 }: {
   view: ViewKey;
   showGrouping?: boolean;
+  /**
+   * When true, the "Group by" dropdown renders greyed-out and
+   * non-interactive. Kept in the DOM (not removed) so the control
+   * doesn't visually disappear on toggles that only temporarily
+   * suppress grouping — the Roadmap's Compact style is the primary
+   * caller: it forces a single global pool so grouping has no
+   * meaning, but returning to Rows should reveal the last-picked
+   * group with no re-mount. Hover-tooltip explains the constraint
+   * via `groupingDisabledReason`.
+   */
+  groupingDisabled?: boolean;
+  /**
+   * Hover tooltip surfaced on the disabled Group-by dropdown. Only
+   * consulted when `groupingDisabled` is true; falls back to a
+   * generic message if omitted.
+   */
+  groupingDisabledReason?: string;
   /**
    * Color-by only makes sense on views that actually paint bars/legends
    * from it (currently just the Roadmap). Hidden by default so the
@@ -162,11 +181,32 @@ export function FilterBar({
           ) : null}
           {showGrouping ? (
             <>
-              <label className="text-xs text-wp-slate">Group by</label>
+              <label
+                className={cn(
+                  "text-xs",
+                  groupingDisabled ? "text-wp-slate/50" : "text-wp-slate",
+                )}
+                title={
+                  groupingDisabled
+                    ? groupingDisabledReason ?? "Grouping is unavailable in the current layout."
+                    : undefined
+                }
+              >
+                Group by
+              </label>
               <select
-                className="input w-40"
+                className={cn(
+                  "input w-40",
+                  groupingDisabled && "cursor-not-allowed opacity-60",
+                )}
                 value={groupBy}
                 onChange={(e) => setGroupBy(view, e.target.value as GroupBy)}
+                disabled={groupingDisabled}
+                title={
+                  groupingDisabled
+                    ? groupingDisabledReason ?? "Grouping is unavailable in the current layout."
+                    : undefined
+                }
               >
                 <option value="none">None</option>
                 <option value="owner">Owner</option>

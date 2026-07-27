@@ -51,6 +51,12 @@ export function ProjectComments({ projectId }: { projectId: string }) {
     onSuccess: () => {
       setDraft("");
       qc.invalidateQueries({ queryKey: ["projectComments", projectId] });
+      // A new comment may carry an @mention that lands in the
+      // current user's inbox (including self-mentions — see the
+      // TODO in backend/src/routes/comments.ts). Flip the navbar
+      // badge without waiting for the 45s poll.
+      qc.invalidateQueries({ queryKey: ["mentions", "unread-count"] });
+      qc.invalidateQueries({ queryKey: ["mentions", "recent"] });
     },
   });
 
@@ -149,6 +155,11 @@ function CommentRow({
     onSuccess: () => {
       setEditing(false);
       qc.invalidateQueries({ queryKey: ["projectComments", projectId] });
+      // Edits can add a fresh @mention — same reason we invalidate
+      // in the create mutation. Same key set so the two paths
+      // behave identically for the badge / popover.
+      qc.invalidateQueries({ queryKey: ["mentions", "unread-count"] });
+      qc.invalidateQueries({ queryKey: ["mentions", "recent"] });
     },
   });
 
@@ -161,7 +172,15 @@ function CommentRow({
   });
 
   return (
-    <li className="rounded-md border border-wp-stone bg-white px-3 py-2">
+    // `id="comment-<uuid>"` is the anchor the navbar
+    // notifications popover targets when a mention row is a
+    // comment (see ProjectDetailBody's hash-scroll effect). The
+    // id lands on the outer `<li>` so the ring-highlight wraps
+    // the whole comment card cleanly.
+    <li
+      id={`comment-${comment.id}`}
+      className="rounded-md border border-wp-stone bg-white px-3 py-2"
+    >
       <div className="flex items-center gap-2 text-xs text-wp-slate">
         {author ? (
           <span

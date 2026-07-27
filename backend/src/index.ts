@@ -27,6 +27,7 @@ import { projectDependenciesRouter } from "./routes/dependencies.js";
 import { linksRouter, projectLinksRouter } from "./routes/links.js";
 import { projectStatusUpdatesRouter, statusUpdatesRouter } from "./routes/statusUpdates.js";
 import { notificationsRouter } from "./routes/notifications.js";
+import { mentionsRouter } from "./routes/mentions.js";
 import { digestRecipientsRouter } from "./routes/digestRecipients.js";
 import { startCron } from "./jobs/weeklyStatus.js";
 
@@ -95,6 +96,12 @@ app.use("/api/projects/:id/links", authenticate, groupScope, projectLinksRouter)
 app.use("/api/links", authenticate, groupScope, linksRouter);
 app.use("/api/projects/:id/status-updates", authenticate, groupScope, projectStatusUpdatesRouter);
 app.use("/api/status-updates", authenticate, groupScope, statusUpdatesRouter);
+
+// @mention notifications for the current user in the current
+// tenant. Backs the navbar avatar's hover popover + unread badge.
+// Scoped to the caller's active group so a super-user in group A
+// never sees mentions targeted at them from group B.
+app.use("/api/mentions", authenticate, groupScope, mentionsRouter);
 
 // Digest recipient roster — admin-only CRUD, group-scoped. MUST
 // mount before the catch-all /api/notifications router so the more

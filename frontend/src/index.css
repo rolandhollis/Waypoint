@@ -31,4 +31,39 @@
   .card-surface {
     @apply rounded-lg border border-wp-stone bg-white shadow-sm;
   }
+  /* Contenteditable @mention editor. The `.input` class (or whatever
+     the parent passes via `className`) still owns the border, padding,
+     min-height, and focus ring — `.mention-editable` layers the
+     contenteditable-specific bits on top. */
+  .mention-editable {
+    @apply block break-words;
+    /* Preserve the literal `\n` characters we insert on Enter as
+       real line breaks; break long unbroken tokens (like a pasted
+       URL) rather than push the caret past the container width. */
+    white-space: pre-wrap;
+    word-break: break-word;
+    /* `resize: vertical` on a `<div>` needs a non-`visible` overflow
+       to activate. Callers who pass `resize-y` via className get the
+       drag-to-resize behaviour they had on the textarea; content
+       shorter than min-height still doesn't scroll. */
+    overflow: auto;
+  }
+  /* Placeholder: contenteditable divs don't get `::placeholder`, so
+     we simulate one via `::before` on the empty-editor state. The
+     `data-placeholder` attribute carries the prop text so the CSS
+     doesn't have to know about it. */
+  .mention-editable:empty::before {
+    content: attr(data-placeholder);
+    color: rgba(71, 84, 103, 0.6); /* wp-slate/60 */
+    pointer-events: none;
+  }
+  /* Atomic chip inside the editor. Matches the read-only chip's colour
+     (`text-wp-red` at medium weight) so read/write views feel
+     interchangeable. `user-select: all` keeps drag-select respectful
+     of the atomic boundary. */
+  .mention-chip {
+    @apply inline rounded-sm font-medium text-wp-red;
+    user-select: all;
+    white-space: nowrap;
+  }
 }

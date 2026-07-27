@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 import type {
   AiEstimatorHealth,
@@ -552,5 +552,128 @@ export function useGroupConstants(groupId: string | null, enabled = true) {
     queryFn: () => api<AppConstants>(`/groups/${groupId}/constants`),
     enabled: enabled && !!groupId,
     staleTime: 30_000,
+  });
+}
+
+// -----------------------------------------------------------------
+// @mention notifications
+// -----------------------------------------------------------------
+
+/**
+ * One row of the caller's recent mention feed as returned by
+ * GET /api/mentions/recent. The `snippet` is already server-side
+ * rendered — mention tokens rewritten to `@Name` and clipped to
+ * ~120 chars — so the popover can drop it into a `<span>` without
+ * any parsing.
+ *
+ * `source_type: "description"` rows carry a null `source_id`
+ * because descriptions have no separate row-id (they live inline
+ * on `projects.description`). Comment rows carry the comment id
+ * so the click handler can anchor-scroll straight to it.
+ */
+export type MentionRow = {
+  id: string;
+  project_id: string;
+  project_title: string;
+  mentioning_user: {
+    id: string;
+    name: string;
+    color: string;
+  };
+  source_type: "comment" | "description";
+  source_id: string | null;
+  snippet: string;
+  created_at: string;
+  read_at: string | null;
+};
+
+/**
+ * Poll cadence for the unread-count badge. Chosen at the shorter
+ * end of "reasonable for a background poll" (45s) so a teammate
+ * tagging the current user is visible within one refresh window;
+ * short enough to feel live without adding meaningful DB load
+ * (single indexed COUNT query per user per 45s). Deliberately
+ * paused when the tab is backgrounded via react-query's built-in
+ * `refetchIntervalInBackground: false` default.
+ */
+const MENTION_POLL_MS = 45_000;
+
+/**
+ * Cheap "how many unread do I have?" ping — one indexed COUNT on
+ * the partial `mentions_unread_by_user_idx`. Polled on every
+ * authenticated shell mount so the navbar badge flips within one
+ * `MENTION_POLL_MS` window of a new @mention landing. Skipped
+ * before the /users/me probe resolves (no session, no scope).
+ */
+export function useUnreadMentionCount(enabled = true) {
+  return useQuery({
+    queryKey: ["mentions", "unread-count"],
+    queryFn: () => api<{ count: number }>("/mentions/unread-count"),
+    enabled,
+    refetchInterval: MENTION_POLL_MS,
+    // `placeholderData` (not `initialData`) so react-query still
+    // treats the entry as un-fetched on mount and fires the
+    // request immediately; the 0-count placeholder just prevents
+    // an undefined-flash in the badge renderer while the first
+    // response is in flight.
+    placeholderData: { count: 0 },
+    staleTime: 15_000,
+  });
+}
+
+/**
+ * Latest N mentions for the current user. Fired only when the
+ * caller sets `enabled` — the navbar popover leaves this false
+ * until the user hovers so we never pay the join cost on a
+ * background render. The `limit` maps 1:1 onto the server's
+ * `?limit=` clamp (default 10, capped at 50). Sorted newest-first
+ * by the backend so the popover renders in order without a client
+ * sort.
+ */
+export function useRecentMentions(enabled = true, limit = 10) {
+  return useQuery({
+    queryKey: ["mentions", "recent", limit],
+    queryFn: () => api<MentionRow[]>(`/mentions/recent?limit=${limit}`),
+    enabled,
+    // The popover is transient — a stale response shown while a
+    // fresh fetch is in flight is fine, and 30s is well inside
+    // the "user just opened the popover" window.
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * POST /api/mentions/:id/read — idempotent server-side. On success
+ * we invalidate both the recent-list and the unread-count so the
+ * badge flips off (or decrements) immediately and the popover
+ * re-fetches with the new `read_at` values.
+ */
+export function useMarkMentionRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (mentionId: string) =>
+      api<void>(`/mentions/${mentionId}/read`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["mentions", "unread-count"] });
+      qc.invalidateQueries({ queryKey: ["mentions", "recent"] });
+    },
+  });
+}
+
+/**
+ * POST /api/mentions/mark-all-read — bulk-clear every unread
+ * mention for the current user in the active tenant. Mirrors the
+ * single-mention mutation's cache-invalidation set so both the
+ * badge and the popover flush together.
+ */
+export function useMarkAllMentionsRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api<void>("/mentions/mark-all-read", { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["mentions", "unread-count"] });
+      qc.invalidateQueries({ queryKey: ["mentions", "recent"] });
+    },
   });
 }

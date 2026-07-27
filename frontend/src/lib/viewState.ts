@@ -15,6 +15,20 @@ export type GroupBy = "none" | "owner" | "swim_lane" | "team" | "tag" | "kpi";
  * "custom order" override per group (see roadmapOverrideByGroup).
  */
 export type RoadmapSort = "startDate" | "priority";
+/**
+ * Roadmap render style. `"rows"` (default) is the historical Gantt
+ * layout — left label column, one row per top-level item, phase-
+ * hatched bars. `"compact"` drops the label column entirely, packs
+ * items into rows via a greedy no-overlap algorithm, and renders
+ * each item as a single solid rectangle with the title inside the
+ * bar. Both styles reuse the same timeframe / date-range machinery
+ * (today marker, sticky month header, `computeRoadmapChartRange`)
+ * so the timeframe segmented control keeps working in either mode.
+ * Quarters view (`roadmapTimeframe === "quarters"`) still takes
+ * precedence over this pick — the swap-in short-circuits before
+ * the style branch inside RoadmapView.
+ */
+export type RoadmapStyle = "rows" | "compact";
 
 export type FilterState = {
   ownerIds: string[];
@@ -187,6 +201,17 @@ type Store = {
    */
   roadmapTimeframe: Zoom;
   /**
+   * Persisted Roadmap render style. `"rows"` is the historical Gantt
+   * with a label column and phase-hatched bars; `"compact"` drops
+   * the label column entirely, packs items into rows via a greedy
+   * no-overlap algorithm, and paints each as a single solid bar
+   * with its title inside. See the `RoadmapStyle` type for full
+   * detail. Default `"rows"` so a first-time visit (or any migrated
+   * user without an explicit pick) lands on the exact same layout
+   * as before.
+   */
+  roadmapStyle: RoadmapStyle;
+  /**
    * Persisted Admin-view tab state. `adminActiveTab` is the currently
    * open top-level tab (or `null` = "no explicit pick yet — fall back
    * to whatever the URL / default resolution picks"). `adminSubTabs`
@@ -259,6 +284,12 @@ type Store = {
    * downstream so it re-runs on picks and on reload-into-Gantt.
    */
   setRoadmapTimeframe: (zoom: Zoom) => void;
+  /**
+   * Set the persisted Roadmap render style. Purely a view preference
+   * — never touches backend state; RoadmapView dispatches between
+   * the Rows / Compact renderers on this value.
+   */
+  setRoadmapStyle: (style: RoadmapStyle) => void;
   setAdminActiveTab: (key: AdminTopTabKey) => void;
   setAdminSubTab: (parent: keyof AdminSubTabState, key: string) => void;
   /** EZEstimates-only "Created" dropdown. Null clears the filter
@@ -365,6 +396,12 @@ export const useViewStore = create<Store>()(
       // first-time visit lands on the exact same six-month Gantt
       // returning users had before the pick started persisting.
       roadmapTimeframe: "6mo",
+      // Default the Roadmap render style to the historical Rows
+      // layout so a first-time visit (or any migrated user without
+      // an explicit pick) lands on the exact same Gantt they had
+      // before. Users opt in to the Compact layout via the toolbar
+      // Style toggle.
+      roadmapStyle: "rows",
       // Admin tab state starts empty so the view falls back to its
       // "first visible tab" default until the user actually picks
       // one (which persists via setAdminActiveTab below).
@@ -438,6 +475,7 @@ export const useViewStore = create<Store>()(
         set((s) => ({ ...s, roadmapOverrideByGroup: {} })),
       setShowConflicts: (v) => set(() => ({ showConflicts: v })),
       setRoadmapTimeframe: (zoom) => set(() => ({ roadmapTimeframe: zoom })),
+      setRoadmapStyle: (style) => set(() => ({ roadmapStyle: style })),
       setAdminActiveTab: (key) => set(() => ({ adminActiveTab: key })),
       setAdminSubTab: (parent, key) =>
         set((s) => ({ adminSubTabs: { ...s.adminSubTabs, [parent]: key } })),
@@ -496,7 +534,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 13,
+      version: 14,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -636,6 +674,18 @@ export const useViewStore = create<Store>()(
             || !validZooms.includes(persisted.roadmapTimeframe)
           ) {
             persisted.roadmapTimeframe = "6mo";
+          }
+        }
+        // < v14: added the Roadmap render-style toggle
+        // (`roadmapStyle`, one of "rows" | "compact"). Backfill to
+        // "rows" so returning users see the exact same Gantt they
+        // had before the toggle landed — this is a pure defaulting
+        // migration with zero behavior change for anyone who hasn't
+        // touched the new control. Users opt in to Compact by
+        // clicking the toolbar Style toggle.
+        if (version < 14) {
+          if (persisted.roadmapStyle !== "rows" && persisted.roadmapStyle !== "compact") {
+            persisted.roadmapStyle = "rows";
           }
         }
         return persisted;

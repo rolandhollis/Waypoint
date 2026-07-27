@@ -2,7 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Lock, LockOpen, Star, X } from "lucide-react";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
@@ -125,6 +125,7 @@ export function ProjectDetailBody({
   // extracted body reads identically to its pre-refactor version.
   const id = projectId;
   const navigate = useNavigate();
+  const location = useLocation();
 
   const me = useMe();
   // Write / role checks go through the per-group hooks so a user
@@ -234,6 +235,12 @@ export function ProjectDetailBody({
       qc.invalidateQueries({ queryKey: ["projects"] });
       qc.invalidateQueries({ queryKey: ["projectStatusUpdates", id] });
       qc.invalidateQueries({ queryKey: ["projectHistory", id] });
+      // A description edit may add a fresh @mention that indexes
+      // into the current user's inbox (backend keeps self-mentions
+      // now — see the TODO in backend/src/routes/projects.ts).
+      // Flip the navbar badge without waiting for the poll.
+      qc.invalidateQueries({ queryKey: ["mentions", "unread-count"] });
+      qc.invalidateQueries({ queryKey: ["mentions", "recent"] });
       setDraft({});
       setTouchedPhaseFields(new Set());
       // Modal returns to the underlying view on save (existing
@@ -546,6 +553,111 @@ export function ProjectDetailBody({
       total: siblingIds.length,
     };
   }, [siblingIds, id, onOpenProject]);
+
+  // -----------------------------------------------------------------
+  // Hash-anchor scroll + highlight.
+  //
+  // When a mention is clicked in the navbar notifications popover
+  // we route to `/projects/<id>#comment-<uuid>` or
+  // `/projects/<id>#description`; on landing the target element
+  // needs to (a) scroll into view and (b) briefly ring-highlight
+  // so the user's eye lands on it rather than on wherever the
+  // page happened to open.
+  //
+  // Timing is tricky: the target might live inside a child that
+  // owns its own async query — `ProjectComments` renders each
+  // `<li id="comment-…">` only after `useProjectComments`
+  // resolves — so a naive one-shot `getElementById` right after
+  // mount will miss the row. We retry every 60ms for up to ~3s;
+  // that's a handful of frames past even a warm cache and still
+  // gives up cleanly if the target genuinely doesn't exist
+  // (deleted comment, stale URL). Keeping the retry inside the
+  // effect (rather than depending on `comments.data`, which lives
+  // in the child) means this component doesn't have to duplicate
+  // the comments query just to observe it.
+  //
+  // Highlight lands via a temporary Tailwind ring; `transition-
+  // shadow` animates it in and out. 1500ms is the "brief" flash
+  // the spec asks for — long enough to catch the eye without
+  // being annoying.
+  // -----------------------------------------------------------------
+  const lastHashHandledRef = useRef<string | null>(null);
+  useEffect(() => {
+    const hash = location.hash;
+    if (!hash) {
+      lastHashHandledRef.current = null;
+      return;
+    }
+    if (!hash.startsWith("#comment-") && hash !== "#description") return;
+    // Wait for the project itself to be loaded — the description
+    // field and the comments list are both gated behind it.
+    if (!maybeProject) return;
+
+    const targetId = hash === "#description" ? "description" : hash.slice(1);
+    // Re-runs are cheap, but if we already handled THIS exact
+    // hash for THIS project id, don't re-highlight — a second
+    // run would fire mid-scroll and jitter the user's viewport
+    // back. Cleared when the hash goes away (see the early
+    // return above) or when the id changes.
+    const cacheKey = `${id}:${hash}`;
+    if (lastHashHandledRef.current === cacheKey) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 50; // ~3s at 60ms per try
+
+    const tryLocate = () => {
+      if (cancelled) return;
+      const el = document.getElementById(targetId);
+      if (!el) {
+        attempts += 1;
+        if (attempts >= MAX_ATTEMPTS) return;
+        window.setTimeout(tryLocate, 60);
+        return;
+      }
+      lastHashHandledRef.current = cacheKey;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      // Ring-highlight fade. `ring-*` uses box-shadow under the
+      // hood, so `transition-shadow` animates both the appear
+      // (on class add) and the fade (on class removal).
+      const rings = [
+        "ring-2",
+        "ring-wp-red",
+        "ring-offset-2",
+        "ring-offset-white",
+        "rounded",
+        "transition-shadow",
+        "duration-500",
+      ];
+      el.classList.add(...rings);
+      window.setTimeout(() => {
+        if (cancelled) return;
+        // Drop the color / offset first — `transition-shadow`
+        // animates it back to no ring. `transition-shadow` and
+        // `rounded` stay on the element after; they're
+        // idempotent decoration classes that don't visibly
+        // change anything on their own once the ring is gone.
+        el.classList.remove(
+          "ring-2",
+          "ring-wp-red",
+          "ring-offset-2",
+          "ring-offset-white",
+        );
+        window.setTimeout(() => {
+          if (cancelled) return;
+          el.classList.remove("transition-shadow", "duration-500", "rounded");
+        }, 600);
+      }, 1500);
+    };
+
+    // Kick off after a paint so the target has a chance to render
+    // if it was mounted synchronously with this effect.
+    const raf = window.requestAnimationFrame(tryLocate);
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(raf);
+    };
+  }, [location.hash, id, maybeProject]);
 
   // Arrow-key navigation across siblings. Bound to the window (not
   // the panel root) so the shortcut works no matter where focus is
@@ -887,16 +999,24 @@ export function ProjectDetailBody({
             : "px-5 py-4"
         }
       >
-        <Field label="Description" className="mb-3">
-          <MentionTextarea
-            value={merged.description ?? ""}
-            onChange={(next) => setDraft((d) => ({ ...d, description: next }))}
-            users={mentionable.data ?? []}
-            disabled={!canWrite}
-            className="input min-h-[8rem]"
-            placeholder="Use @ to mention a teammate."
-          />
-        </Field>
+        {/* `id="description"` is the anchor the navbar
+            notifications popover targets for description-mention
+            rows (see the hash-scroll effect above); wrapping
+            rather than adding the id directly to `<Field>`'s
+            `<label>` keeps the label element unmodified and gives
+            the ring-highlight a clean rectangular target. */}
+        <div id="description">
+          <Field label="Description" className="mb-3">
+            <MentionTextarea
+              value={merged.description ?? ""}
+              onChange={(next) => setDraft((d) => ({ ...d, description: next }))}
+              users={mentionable.data ?? []}
+              disabled={!canWrite}
+              className="input min-h-[8rem]"
+              placeholder="Use @ to mention a teammate."
+            />
+          </Field>
+        </div>
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Owner">
