@@ -324,14 +324,22 @@ export function computeRoadmapForwardDays(
  *     Projects that extend past the selected timeframe still appear
  *     on the chart and are reachable by scroll-right.
  *
- * PDF mode (`pdfMode: true`): the same forward end as interactive
- * (so nothing past the timeframe gets cut off), but the left bound
- * is trimmed to exactly `today - ROADMAP_PDF_PAST_TRIM_DAYS`. We
+ * PDF mode (`pdfMode: true`): the forward end is anchored to the
+ * SELECTED TIMEFRAME (`today + forwardDays`), not extended to
+ * include late scheduled items — the PDF has no scroll affordance
+ * so the interactive "chartEnd = max(forwardEnd, latest)" would
+ * squeeze every bar horizontally when a single outlier project
+ * lives well past the visible timeframe. The left bound is
+ * trimmed to exactly `today - ROADMAP_PDF_PAST_TRIM_DAYS`. We
  * deliberately do NOT extend chartStart back to the earliest
  * scheduled item — the exported artefact should be timeframe-
  * focused, not a long-tail history dump. The 30-day past window is
  * enough to show partially-elapsed projects entering the frame
- * without dominating the slide.
+ * without dominating the slide. For `zoom === "all"` this still
+ * shows every item, because `computeRoadmapForwardDays("all", …)`
+ * derives `forwardDays` from the latest scheduled end so
+ * `forwardEnd ≈ latestScheduledEnd` (clamped to the 5-year
+ * ceiling); other zooms honor the toolbar timeframe pick.
  *
  * `forwardDays` is returned alongside so callers that also need to
  * size the day-column density (interactive dayPx auto-fit) can do
@@ -349,17 +357,24 @@ export function computeRoadmapChartRange(opts: {
   const forwardDays = computeRoadmapForwardDays(zoom, latest, today);
   const forwardEnd = addDays(today, forwardDays);
 
-  const endAnchor = latest ? maxDate([forwardEnd, latest]) : forwardEnd;
-  const chartEnd = endOfMonth(addDays(endAnchor, ROADMAP_CHART_EDGE_BUFFER_DAYS));
-
   if (pdfMode) {
     // PDF: hard past trim, no month snap on the left so the leftmost
     // visible date is EXACTLY `today - 30`. Earlier month labels
     // render at negative x and are clipped by the SVG viewport —
     // matches the pre-refactor PDF export behavior.
+    //
+    // Right edge anchored on `forwardEnd` only (no maxDate with
+    // `latest`). See doc-comment above for the rationale: the PDF
+    // has no scroll, so respecting the user's timeframe pick keeps
+    // bars from being crushed when one item is scheduled far past
+    // the visible window.
     const chartStart = addDays(today, -ROADMAP_PDF_PAST_TRIM_DAYS);
+    const chartEnd = endOfMonth(addDays(forwardEnd, ROADMAP_CHART_EDGE_BUFFER_DAYS));
     return { chartStart, chartEnd, forwardDays };
   }
+
+  const endAnchor = latest ? maxDate([forwardEnd, latest]) : forwardEnd;
+  const chartEnd = endOfMonth(addDays(endAnchor, ROADMAP_CHART_EDGE_BUFFER_DAYS));
 
   const startAnchor = earliest ? minDate([earliest, today]) : today;
   const chartStart = startOfMonth(addDays(startAnchor, -ROADMAP_CHART_EDGE_BUFFER_DAYS));
