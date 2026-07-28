@@ -38,6 +38,7 @@ import {
   computeRoadmapChartRange,
   computeRoadmapFitDayPx,
   computeRoadmapPdfDayPx,
+  isProjectActiveInWindow,
   type Zoom,
 } from "../lib/roadmapViewport";
 import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
@@ -383,6 +384,42 @@ export function GanttTimeline(props: Props) {
     return { start: range.chartStart, end: range.chartEnd, forwardDays: range.forwardDays };
   }, [projects, zoom, pdfMode]);
   const totalDays = Math.max(1, differenceInCalendarDays(end, start));
+
+  // Forward edge of the SELECTED timeframe (independent of the chart's
+  // looser `end`, which extends past the timeframe to include late
+  // scheduled items so they stay scroll-right discoverable). Mirrors
+  // the `viewEnd = today + forwardDays` derivation Compact uses so
+  // both roadmap styles agree on where "the visible window" ends.
+  const viewEnd = useMemo(
+    () => addDays(new Date(), forwardDays),
+    [forwardDays],
+  );
+
+  // Rows-view input filter: keep only items whose plottable date range
+  // overlaps the visible timeframe window. See `isProjectActiveInWindow`
+  // for the exact predicate (end >= today AND start <= viewEnd, with
+  // the "All" timeframe exempt from the end-in-past half — users pick
+  // "All" specifically to see historical items too). Compact enforces
+  // its own tighter cutoff inline (see `RoadmapCompactView`), so this
+  // filter lives here in the Rows path only.
+  //
+  // The auto-schedule proposal preview (`preserveInputOrder = true`)
+  // opts out: that modal is showing the PM the exact items being
+  // proposed, and hiding any of them behind a timeframe filter would
+  // defeat the purpose of the review step. The preview owns its own
+  // dnd-kit context and stubs out `onOpen` too — same "keep the batch
+  // whole" contract.
+  //
+  // Chart bounds above still compute against the unfiltered `projects`
+  // so the chart's month header and scroll extent don't collapse when
+  // an item is filtered out (an item's date range is still valid
+  // context for where the chart should start/end, even if we're not
+  // rendering its row).
+  const rowProjects = useMemo(() => {
+    if (preserveInputOrder) return projects;
+    const today = new Date();
+    return projects.filter((p) => isProjectActiveInWindow(p, today, viewEnd, zoom));
+  }, [projects, viewEnd, zoom, preserveInputOrder]);
   const dayPx = useMemo(() => {
     // PDF snapshot: force a fixed, screen-size-independent width so
     // the exported artefact drops nicely into a Google Slide
@@ -457,16 +494,16 @@ export function GanttTimeline(props: Props) {
   // `byId` / `kids` derive from the *scheduled* list only — a subtask
   // whose parent isn't scheduled won't render as a top-level fallback
   // because the roadmap deliberately anchors on epics.
-  const byId = useMemo(() => indexById(projects), [projects]);
-  const kids = useMemo(() => childrenByParent(projects), [projects]);
+  const byId = useMemo(() => indexById(rowProjects), [rowProjects]);
+  const kids = useMemo(() => childrenByParent(rowProjects), [rowProjects]);
   const rootIdsInSet = useMemo(() => {
     const s = new Set<string>();
-    for (const p of projects) {
+    for (const p of rowProjects) {
       const rooted = rootEpic(p, byId);
       if (rooted) s.add(rooted.id);
     }
     return s;
-  }, [projects, byId]);
+  }, [rowProjects, byId]);
 
   // KPI catalog is only needed when grouping by KPI, but the hook is
   // cheap (single cached query) and calling it unconditionally keeps
@@ -477,12 +514,12 @@ export function GanttTimeline(props: Props) {
 
   const groups = useMemo(
     () => groupTreeRows(
-      projects, byId, kids, rootIdsInSet, expandedSet, groupBy,
+      rowProjects, byId, kids, rootIdsInSet, expandedSet, groupBy,
       users, lanes, teams, kpis, preserveInputOrder,
       sortMode, overrideByGroup,
     ),
     [
-      projects, byId, kids, rootIdsInSet, expandedSet, groupBy,
+      rowProjects, byId, kids, rootIdsInSet, expandedSet, groupBy,
       users, lanes, teams, kpis, preserveInputOrder,
       sortMode, overrideByGroup,
     ],
@@ -555,16 +592,16 @@ export function GanttTimeline(props: Props) {
   );
   const deadlineStatusByProject = useMemo(() => {
     const out = new Map<string, DeadlineStatus[]>();
-    for (const p of projects) out.set(p.id, computeDeadlineStatuses(p, lanesById));
+    for (const p of rowProjects) out.set(p.id, computeDeadlineStatuses(p, lanesById));
     return out;
-  }, [projects, lanesById]);
+  }, [rowProjects, lanesById]);
   const dependencyStatusByProject = useMemo(() => {
     const out = new Map<string, DependencyStatus[]>();
-    for (const p of projects) {
+    for (const p of rowProjects) {
       out.set(p.id, computeDependencyStatuses(p, lanesById, allProjectsById));
     }
     return out;
-  }, [projects, lanesById, allProjectsById]);
+  }, [rowProjects, lanesById, allProjectsById]);
   // Group overloads by entity id so the group-render loop below can
   // do an O(1) lookup instead of scanning the full list per group.
   const overloadsByOwner = useMemo(() => bucketOverloads(overloads, "owner"), [overloads]);
@@ -678,7 +715,7 @@ export function GanttTimeline(props: Props) {
     // pointerdown/pointerup with no movement in-between fires
     // onOpen(projectId). Early-returning here would silently swallow
     // click-to-open for viewers.
-    const proj = projects.find((p) => p.id === projectId);
+    const proj = rowProjects.find((p) => p.id === projectId);
     if (!proj) return;
     // For viewers, only the whole-bar "move" gesture is meaningful as a
     // click target. Resize handles are hidden from them anyway, but
@@ -754,7 +791,7 @@ export function GanttTimeline(props: Props) {
       setDrag(null);
       return;
     }
-    const proj = projects.find((p) => p.id === d.projectId);
+    const proj = rowProjects.find((p) => p.id === d.projectId);
     if (proj) {
       const next = applyDragToProject(proj, d);
       const diff = diffProject(proj, next);
@@ -1384,7 +1421,7 @@ export function GanttTimeline(props: Props) {
         {(() => {
           const arrows: React.ReactNode[] = [];
           const rowMid = ROW_HEIGHT / 2;
-          for (const p of projects) {
+          for (const p of rowProjects) {
             const from = rowPositions.get(p.id);
             if (!from) continue;
             const statuses = dependencyStatusByProject.get(p.id) ?? [];

@@ -5,6 +5,7 @@ import {
   endOfMonth,
   max as maxDate,
   min as minDate,
+  startOfDay,
   startOfMonth,
 } from "date-fns";
 
@@ -393,4 +394,51 @@ export function isProjectInRoadmapViewport(
   const projStart = isoToLocalDate(span.start);
   const projEnd = isoToLocalDate(span.end);
   return projEnd >= chartStart && projStart <= chartEnd;
+}
+
+/**
+ * Stricter timeframe predicate used by the Rows and Compact roadmap
+ * styles to hide rows whose date range doesn't actually overlap the
+ * currently-selected timeframe window `[today, viewEnd]`. Unlike
+ * `isProjectInRoadmapViewport` (which is anchored to the chart's
+ * loose `[chartStart, chartEnd]` span and is near-tautological for
+ * scheduled items), this predicate matches the visible timeframe the
+ * user picked:
+ *
+ *   * `firstStart > viewEnd`  → item starts AFTER the visible
+ *     forward edge. Same rule the Compact view already enforces.
+ *   * `overallEnd < today`    → item finished BEFORE today. Rows
+ *     with no bar in the visible window read as empty rows;
+ *     hiding them keeps the list focused on active work.
+ *
+ * `today` is normalized to local midnight so an item ending today
+ * (whose `overallEnd` sits at midnight) survives — the ask is "end
+ * date >= today" (calendar-date, inclusive), not "end date >= now".
+ *
+ * The "All" timeframe is exempt from the end-in-past filter: users
+ * pick "All" specifically to see everything they've ever scheduled,
+ * so preserving historical items there matches intent. The forward-
+ * edge cutoff is naturally a no-op for "All" (viewEnd extends to the
+ * latest scheduled end) so this predicate collapses to "must have a
+ * plottable phase" in that mode.
+ *
+ * Items without a plottable phase (unschedulable / missing dates)
+ * return false — they don't have a bar to place. The Roadmap page
+ * already routes those to the Unscheduled section upstream, so this
+ * predicate is only exercised against scheduled items in practice.
+ */
+export function isProjectActiveInWindow(
+  project: Project,
+  today: Date,
+  viewEnd: Date,
+  zoom: Zoom,
+): boolean {
+  const phases = computePhases(project);
+  if (!phases.scheduled || !phases.firstStart || !phases.overallEnd) return false;
+  if (phases.firstStart.getTime() > viewEnd.getTime()) return false;
+  if (zoom !== "all") {
+    const startOfToday = startOfDay(today);
+    if (phases.overallEnd.getTime() < startOfToday.getTime()) return false;
+  }
+  return true;
 }
