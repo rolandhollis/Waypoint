@@ -141,6 +141,22 @@ type Store = {
    */
   roadmapLabelColumnPx: number;
   /**
+   * User-controlled height (in CSS px) of the Roadmap scrolling
+   * card — the same card both Rows (`GanttTimeline`, sticky-header
+   * branch) and Compact (`RoadmapCompactView`) render into. The
+   * card exposes a native `resize: vertical` drag handle; a
+   * `ResizeObserver` in each view writes the observed height here
+   * (debounced) so dragging to reveal more items survives a reload.
+   * `null` = "no explicit pick yet — fall back to the CSS-computed
+   * default"; the value is otherwise clamped into
+   * `[ROADMAP_HEIGHT_MIN_PX, ROADMAP_HEIGHT_MAX_PX]` on write.
+   * Quarters view and the auto-schedule preview modal don't share
+   * this pref (different layouts), and `pdfMode` deliberately
+   * ignores it so the export always captures the full natural
+   * content height.
+   */
+  roadmapHeightPx: number | null;
+  /**
    * How Roadmap rows are ordered within each group (or across the
    * chart when `groupBy === "none"`). Default is `"startDate"`,
    * which is the chronological byStart sort the chart has always
@@ -249,6 +265,13 @@ type Store = {
   setRoadmapRecentChangesOpen: (v: boolean) => void;
   setRoadmapUnscheduledOpen: (v: boolean) => void;
   setRoadmapLabelColumnPx: (px: number) => void;
+  /**
+   * Write the persisted roadmap height. Values are clamped into
+   * `[ROADMAP_HEIGHT_MIN_PX, ROADMAP_HEIGHT_MAX_PX]`; `null`
+   * explicitly restores the "use CSS default" state and lets the
+   * scrolling card size itself off the content again on next load.
+   */
+  setRoadmapHeightPx: (px: number | null) => void;
   /**
    * Set the Roadmap sort mode. Always clears every per-group
    * override — switching modes should never leave a stale
@@ -372,6 +395,29 @@ function clampRoadmapLabelColumnPx(px: number): number {
   );
 }
 
+/**
+ * Bounds for the persisted Roadmap scroll-card height. `MIN_PX`
+ * keeps the card tall enough to render the sticky month header
+ * plus a couple of rows on the smallest viewport we support;
+ * `MAX_PX` prevents a stuck drag / stale persisted value from
+ * writing an absurd height (e.g. a corrupted state that pins the
+ * card taller than the tallest realistic display). The CSS class
+ * still applies its own `max-h-[100vh]` cap at render time so
+ * dragging can never extend past the current viewport, but the
+ * store-level clamp is a defense-in-depth against any code path
+ * (or migration) that could otherwise persist a wild value.
+ */
+export const ROADMAP_HEIGHT_MIN_PX = 300;
+export const ROADMAP_HEIGHT_MAX_PX = 4000;
+
+function clampRoadmapHeightPx(px: number): number {
+  if (!Number.isFinite(px)) return ROADMAP_HEIGHT_MIN_PX;
+  return Math.max(
+    ROADMAP_HEIGHT_MIN_PX,
+    Math.min(ROADMAP_HEIGHT_MAX_PX, Math.round(px)),
+  );
+}
+
 export const useViewStore = create<Store>()(
   persist(
     (set) => ({
@@ -384,6 +430,11 @@ export const useViewStore = create<Store>()(
       roadmapRecentChangesOpen: false,
       roadmapUnscheduledOpen: false,
       roadmapLabelColumnPx: ROADMAP_LABEL_COLUMN_DEFAULT_PX,
+      // `null` = no explicit pick yet — the roadmap card falls back
+      // to whatever the CSS `min-h` + `max-h` + content computes to
+      // on first load. Populated by the ResizeObserver in each
+      // roadmap view once the user drags the native resize handle.
+      roadmapHeightPx: null,
       roadmapSort: "startDate",
       roadmapOverrideByGroup: {},
       // Default the Show-conflicts toggle to on so a first-time
@@ -432,6 +483,15 @@ export const useViewStore = create<Store>()(
       // by construction.
       setRoadmapLabelColumnPx: (px) =>
         set(() => ({ roadmapLabelColumnPx: clampRoadmapLabelColumnPx(px) })),
+      // Roadmap card height. `null` explicitly restores the CSS
+      // default (the card sizes itself off content again); numeric
+      // values are clamped to `[MIN_PX, MAX_PX]` so a corrupted
+      // persisted state or a runaway ResizeObserver callback can't
+      // wedge the card at 0 or many-thousands-of-px.
+      setRoadmapHeightPx: (px) =>
+        set(() => ({
+          roadmapHeightPx: px === null ? null : clampRoadmapHeightPx(px),
+        })),
       // Any sort-mode change (including re-picking the same mode)
       // wipes every per-group override so a stale "Custom order"
       // chip from the previous mode can't linger. The Start-date
@@ -534,7 +594,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 14,
+      version: 15,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -686,6 +746,20 @@ export const useViewStore = create<Store>()(
         if (version < 14) {
           if (persisted.roadmapStyle !== "rows" && persisted.roadmapStyle !== "compact") {
             persisted.roadmapStyle = "rows";
+          }
+        }
+        // < v15: added the persisted Roadmap scroll-card height
+        // (`roadmapHeightPx`, nullable). `null` means "no explicit
+        // pick yet — fall back to the CSS-computed default", which
+        // is exactly the pre-feature layout. Numeric values are
+        // clamped into `[MIN_PX, MAX_PX]` so an out-of-range value
+        // persisted by an experimental build (or a corrupted state)
+        // still rehydrates to a usable card size on load.
+        if (version < 15) {
+          if (typeof persisted.roadmapHeightPx !== "number") {
+            persisted.roadmapHeightPx = null;
+          } else {
+            persisted.roadmapHeightPx = clampRoadmapHeightPx(persisted.roadmapHeightPx);
           }
         }
         return persisted;

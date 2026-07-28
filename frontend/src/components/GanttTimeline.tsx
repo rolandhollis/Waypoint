@@ -51,6 +51,7 @@ import {
   type GroupBy,
   type RoadmapSort,
 } from "../lib/viewState";
+import { useResizableRoadmapHeight } from "../lib/useResizableRoadmapHeight";
 import { ColumnResizer } from "./ColumnResizer";
 
 type Props = {
@@ -378,6 +379,21 @@ export function GanttTimeline(props: Props) {
     ro.observe(el);
     return () => ro.disconnect();
   }, [useMonolithic]);
+
+  // "Drag the bottom edge to resize" behavior on the outer scroll
+  // card. Only wired in the sticky-header layout: the monolithic
+  // layout (pdfMode + auto-schedule preview modal) explicitly owns
+  // no vertical scroll of its own — pdfMode needs the natural
+  // content height for html-to-image, and the preview modal already
+  // has a scroll container of its own that would fight a nested
+  // resize handle. See `useResizableRoadmapHeight` for the full
+  // "apply saved height on mount + observe changes + persist"
+  // contract; both this view and RoadmapCompactView share the same
+  // hook so the two styles agree on the picked size.
+  const { style: resizableHeightStyle } = useResizableRoadmapHeight({
+    ref: scrollRef,
+    disabled: useMonolithic,
+  });
 
   // Chart date bounds + forward-timeframe length. Shared between the
   // interactive chart width (chartStart..chartEnd) and the auto-fit
@@ -1559,10 +1575,22 @@ export function GanttTimeline(props: Props) {
         // to be discoverable by the roadmap copy button can override
         // via a wrapper of their own; the auto-schedule preview
         // renders its own toolbar so it doesn't share the button.
+        //
+        // Sticky-layout branch (interactive Rows) adds `resize-y`
+        // + `min-h`/`max-h` so the user can drag the bottom edge
+        // to grow the card past its default cap and reveal more
+        // rows on a large screen; the picked height is applied on
+        // mount via the inline style from
+        // `useResizableRoadmapHeight` and persisted (debounced) to
+        // the view store on drag release. The monolithic branch
+        // (pdfMode + auto-schedule preview) keeps its historical
+        // classes so capture geometry + nested-modal scroll
+        // continue to behave the way those paths need.
         data-roadmap-capture-root="true"
         className={useMonolithic
           ? (pdfMode ? "card-surface" : "card-surface overflow-hidden")
-          : "card-surface max-h-[calc(100vh-240px)] overflow-auto"}
+          : "card-surface min-h-[300px] max-h-[100vh] overflow-auto resize-y"}
+        style={useMonolithic ? undefined : resizableHeightStyle}
       >
         {useMonolithic ? (
           <div className="flex">

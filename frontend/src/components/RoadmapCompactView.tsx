@@ -18,6 +18,7 @@ import {
 } from "../lib/roadmapViewport";
 import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy, GroupBy } from "../lib/viewState";
+import { useResizableRoadmapHeight } from "../lib/useResizableRoadmapHeight";
 
 /**
  * Compact roadmap render — the second Roadmap style option.
@@ -262,6 +263,17 @@ export function RoadmapCompactView({
     ro.observe(el);
     return () => ro.disconnect();
   }, [pdfMode]);
+
+  // "Drag the bottom edge to resize" behavior for the scroll card.
+  // The hook applies the persisted height on mount (via inline
+  // `style`) and observes subsequent height changes to write them
+  // back to the view store on a short debounce. pdfMode disables
+  // both halves so the export always captures the natural content
+  // height. See `useResizableRoadmapHeight` for the full contract.
+  const { style: resizableHeightStyle } = useResizableRoadmapHeight({
+    ref: scrollRef,
+    disabled: Boolean(pdfMode),
+  });
 
   // Reuse the exact date-range helper GanttTimeline uses so both
   // styles agree on what "in the chart" means — including the
@@ -577,8 +589,17 @@ export function RoadmapCompactView({
       className={
         pdfMode
           ? "card-surface"
-          : "card-surface max-h-[calc(100vh-240px)] overflow-auto"
+          // `resize-y` paints the browser's native drag handle in the
+          // bottom-right corner so the user can grow the card past
+          // the initial `max-h` cap and reveal more packed rows on a
+          // large screen. `min-h`/`max-h` bracket the drag; the
+          // persisted height is applied via inline `style` on
+          // rehydrate (see `useResizableRoadmapHeight`) so a picked
+          // size survives a reload. `overflow-auto` is required for
+          // `resize` to take effect at all.
+          : "card-surface min-h-[300px] max-h-[100vh] overflow-auto resize-y"
       }
+      style={resizableHeightStyle}
     >
       {/* Inner sizer defines the horizontal chart extent. The
           sticky month header + the absolutely-positioned bar body
