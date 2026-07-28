@@ -196,6 +196,7 @@ export function RoadmapCompactView({
   zoom,
   onOpen,
   pdfMode,
+  pinnedGroupKeys,
 }: {
   projects: Project[];
   lanes: SwimLane[];
@@ -226,6 +227,15 @@ export function RoadmapCompactView({
    * false so the on-screen viewport keeps its bounded scroll.
    */
   pdfMode?: boolean;
+  /**
+   * Group keys that should float to the TOP of the section-header
+   * order, in the array's own order. Populated by `RoadmapView`
+   * with the active Team filter ids when `groupBy === "team"` so
+   * the filtered team's packed section renders first — mirrors
+   * the same prop on `GanttTimeline`, so both roadmap styles pin
+   * bit-identically. Undefined / empty → no pinning.
+   */
+  pinnedGroupKeys?: string[];
 }) {
   // Ref-bound to the horizontal + vertical scroll container so the
   // today-snap effect can position `scrollLeft`. Same pattern
@@ -470,12 +480,13 @@ export function RoadmapCompactView({
         compareGroupBySortKey(
           { key: a.key, label: a.label ?? "", sortKey: a.sortKey },
           { key: b.key, label: b.label ?? "", sortKey: b.sortKey },
+          pinnedGroupKeys,
         ),
       );
     }
 
     return sections;
-  }, [projects, viewEnd, colorBy, groupBy, users, lanes, teams, kpis, laneById, teamById, userById]);
+  }, [projects, viewEnd, colorBy, groupBy, users, lanes, teams, kpis, laneById, teamById, userById, pinnedGroupKeys]);
 
   // Per-section vertical geometry. Computed alongside `bodyHeight`
   // so the render pass can look up each section's `headerTop`,

@@ -156,11 +156,39 @@ export function resolveProjectGroup(
  * Mirrors the inline comparator inside `GanttTimeline.groupTreeRows`
  * so Rows and Compact stack their group headers in bit-identical
  * order for any (groupBy, workspace) pair.
+ *
+ * `pinnedKeys` (optional): group keys that should sort BEFORE every
+ * non-pinned group, in the exact order they appear in the array.
+ * Currently used by the Roadmap page to float the currently-filtered
+ * team(s) to the top of the section list when Group by = Team —
+ * PMs opening the roadmap already know which team they care about,
+ * so surfacing that team's swim of bars first saves a scroll. Keys
+ * not present in the pinned list retain their normal sortKey /
+ * label ordering. Pinning is a no-op when the array is missing /
+ * empty; when only one of the compared groups is pinned it always
+ * wins. Unknown pinned keys (a filter targeting an entity with no
+ * projects, so no matching group exists) are silently ignored —
+ * `indexOf` returns -1 for both sides and the comparator falls
+ * through to its default rules.
+ *
+ * Unassigned handling: `pinnedKeys` in practice only contains real
+ * entity ids (team ids, etc.), never `__unassigned`, so the
+ * "unassigned sinks last" fallback below still owns the unassigned
+ * bucket's placement. The pin check runs first but is by
+ * construction inert for the unassigned key.
  */
 export function compareGroupBySortKey(
   a: { key: string; label: string; sortKey?: number },
   b: { key: string; label: string; sortKey?: number },
+  pinnedKeys?: string[],
 ): number {
+  if (pinnedKeys && pinnedKeys.length > 0) {
+    const ai = pinnedKeys.indexOf(a.key);
+    const bi = pinnedKeys.indexOf(b.key);
+    if (ai !== -1 && bi !== -1) return ai - bi;
+    if (ai !== -1) return -1;
+    if (bi !== -1) return 1;
+  }
   const aw = a.key === UNASSIGNED_GROUP_KEY ? UNASSIGNED_GROUP_SORT : a.sortKey;
   const bw = b.key === UNASSIGNED_GROUP_KEY ? UNASSIGNED_GROUP_SORT : b.sortKey;
   if (aw !== undefined && bw !== undefined) return aw - bw;

@@ -431,6 +431,21 @@ export function RoadmapView() {
   }
   const scheduledInViewport = scheduled.filter((p) => finalIds.has(p.id));
 
+  // When the user filters the roadmap by team AND groups by team,
+  // pin the filtered team(s) to the TOP of the section list so the
+  // team the PM cares about is the first swim of bars they see —
+  // no scrolling past the admin-ordered teams to find their own.
+  // Filter-array order determines pin order when multiple teams
+  // are picked. Only applied for `groupBy === "team"` because the
+  // team-filter ids would never match any group key under other
+  // groupings (owner, kpi, tag, swim_lane) — passing them would
+  // be an inert no-op but gating here keeps the intent obvious at
+  // the call site. Both Rows and Compact consume the same pinned
+  // list so a style flip doesn't reshuffle section order.
+  const pinnedGroupKeys = groupBy === "team" && filters.teamIds.length > 0
+    ? filters.teamIds
+    : undefined;
+
   // Pre-compute the AI Roadmap Headline inputs from the SAME
   // scheduled-in-viewport set the Gantt renders. Only scheduled
   // (Parking Lot / Archive / Unscheduled already dropped by the
@@ -805,6 +820,7 @@ export function RoadmapView() {
                 zoom={zoom}
                 onOpen={setSelectedId}
                 pdfMode={pdfMode}
+                pinnedGroupKeys={pinnedGroupKeys}
               />
             ) : (
               <GanttTimeline
@@ -831,6 +847,7 @@ export function RoadmapView() {
                   })
                 }
                 showConflicts={showConflicts}
+                pinnedGroupKeys={pinnedGroupKeys}
               />
             )
           ) : (

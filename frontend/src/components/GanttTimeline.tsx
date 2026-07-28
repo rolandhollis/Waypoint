@@ -219,6 +219,21 @@ type Props = {
    * indicators without a recompute pass.
    */
   showConflicts?: boolean;
+  /**
+   * Group keys that should float to the TOP of the group-header
+   * order, in the array's own order. Currently populated by
+   * `RoadmapView` with the active Team filter ids when
+   * `groupBy === "team"` so PMs who filtered to a team see that
+   * team's swim of bars first (its group header + rows sit at the
+   * top of the chart) without waiting for the alphabetical /
+   * team.order default to place it.
+   *
+   * Piped through as-is to `compareGroupBySortKey`. Unknown ids
+   * (a filter targeting a team with no projects, so no matching
+   * group exists) are silently ignored by the comparator.
+   * Undefined / empty → no pinning, ordering unchanged.
+   */
+  pinnedGroupKeys?: string[];
 };
 
 const ROW_HEIGHT = 34;
@@ -296,6 +311,7 @@ export function GanttTimeline(props: Props) {
     onReorderOverride,
     onReorderCrossLaneRejected,
     showConflicts = true,
+    pinnedGroupKeys,
   } = props;
   // Row reorder is only wired up on the main Roadmap view: the
   // auto-schedule proposal preview passes `preserveInputOrder=true`
@@ -516,12 +532,12 @@ export function GanttTimeline(props: Props) {
     () => groupTreeRows(
       rowProjects, byId, kids, rootIdsInSet, expandedSet, groupBy,
       users, lanes, teams, kpis, preserveInputOrder,
-      sortMode, overrideByGroup,
+      sortMode, overrideByGroup, pinnedGroupKeys,
     ),
     [
       rowProjects, byId, kids, rootIdsInSet, expandedSet, groupBy,
       users, lanes, teams, kpis, preserveInputOrder,
-      sortMode, overrideByGroup,
+      sortMode, overrideByGroup, pinnedGroupKeys,
     ],
   );
 
@@ -2421,6 +2437,7 @@ function groupTreeRows(
   preserveInputOrder: boolean,
   sortMode: RoadmapSort | undefined,
   overrideByGroup: Record<string, string[]> | undefined,
+  pinnedGroupKeys: string[] | undefined,
 ): Group[] {
   const lanesById = new Map(lanes.map((l) => [l.id, l] as const));
   // Composite comparator that ranks roots the same way the Board
@@ -2553,6 +2570,7 @@ function groupTreeRows(
       compareGroupBySortKey(
         { key: a.key, label: a.label ?? "", sortKey: sortKeys.get(a.key) },
         { key: b.key, label: b.label ?? "", sortKey: sortKeys.get(b.key) },
+        pinnedGroupKeys,
       ),
     );
 }
