@@ -4,7 +4,11 @@ import {
   disableRemindersForUser,
   runStatusReportReminders,
 } from "../notifications/statusReminders.js";
-import { runStatusReportDigest } from "../notifications/statusDigest.js";
+import {
+  DIGEST_UNSUB_KIND,
+  removeDigestRecipient,
+  runStatusReportDigest,
+} from "../notifications/statusDigest.js";
 import { verifyUnsubscribeToken } from "../notifications/unsubscribe.js";
 import { authenticate, groupScope, requireAdmin } from "../middleware/auth.js";
 
@@ -30,13 +34,17 @@ async function handleUnsubscribe(
   token: string,
 ): Promise<
   | { kind: "invalid"; message: string }
-  | { kind: "ok"; email?: string }
+  | { kind: "ok"; email?: string; notificationKind: string }
 > {
   if (!token) return { kind: "invalid", message: "This unsubscribe link is missing its token." };
   const decoded = verifyUnsubscribeToken(token);
   if (!decoded) return { kind: "invalid", message: "This unsubscribe link is invalid or has expired." };
+  if (decoded.kind === DIGEST_UNSUB_KIND) {
+    const removed = await removeDigestRecipient(decoded.userId);
+    return { kind: "ok", email: removed?.email, notificationKind: DIGEST_UNSUB_KIND };
+  }
   const user = await disableRemindersForUser(decoded.userId);
-  return { kind: "ok", email: user?.email };
+  return { kind: "ok", email: user?.email, notificationKind: decoded.kind };
 }
 
 notificationsRouter.get("/unsubscribe", async (req, res) => {
@@ -47,13 +55,22 @@ notificationsRouter.get("/unsubscribe", async (req, res) => {
     return;
   }
   if (!result.email) {
-    res.type("html").send(page("Unsubscribed", "You won't receive further reminder emails from Waypoint."));
+    res.type("html").send(
+      page(
+        "Unsubscribed",
+        result.notificationKind === DIGEST_UNSUB_KIND
+          ? "You won't receive further weekly digest emails from Waypoint."
+          : "You won't receive further reminder emails from Waypoint.",
+      ),
+    );
     return;
   }
   res.type("html").send(
     page(
       "Unsubscribed",
-      `You won't receive further reminder emails from Waypoint at <strong>${escapeHtml(result.email)}</strong>. You can re-enable them any time from your profile page inside the app.`,
+      result.notificationKind === DIGEST_UNSUB_KIND
+        ? `You won't receive further weekly digest emails from Waypoint at <strong>${escapeHtml(result.email)}</strong>.`
+        : `You won't receive further reminder emails from Waypoint at <strong>${escapeHtml(result.email)}</strong>. You can re-enable them any time from your profile page inside the app.`,
     ),
   );
 });
@@ -99,8 +116,9 @@ notificationsRouter.post("/unsubscribe", async (req, res) => {
  * they intend to. Guarded by requireAdmin so tenant admins can
  * nag their own tenant.
  */
-const runReminderSchema = z.object({
+const runJobSchema = z.object({
   dry_run: z.boolean().optional().default(false),
+  force_resend: z.boolean().optional().default(false),
 });
 
 notificationsRouter.post(
@@ -109,7 +127,7 @@ notificationsRouter.post(
   groupScope,
   requireAdmin,
   async (req, res) => {
-    const body = runReminderSchema.parse(req.body ?? {});
+    const body = runJobSchema.parse(req.body ?? {});
     const result = await runStatusReportReminders({
       dryRun: body.dry_run,
       scopeGroupId: req.groupId!,
@@ -131,9 +149,10 @@ notificationsRouter.post(
   groupScope,
   requireAdmin,
   async (req, res) => {
-    const body = runReminderSchema.parse(req.body ?? {});
+    const body = runJobSchema.parse(req.body ?? {});
     const result = await runStatusReportDigest({
       dryRun: body.dry_run,
+      forceResend: body.force_resend,
       scopeGroupId: req.groupId!,
     });
     res.json(result);

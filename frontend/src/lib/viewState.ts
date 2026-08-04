@@ -256,9 +256,16 @@ type Store = {
   roadmapHeadline: {
     byGroupId: Record<string, RoadmapHeadlineCacheEntry>;
   };
+  /**
+   * Status Report table grouping. Independent from the Roadmap's
+   * `groupBy` — the report reuses the same dimension enum but
+   * defaults to swim lane so PMs see the familiar lane slices.
+   */
+  statusReportGroupBy: GroupBy;
   setFilters: (view: ViewKey, filters: FilterState) => void;
   setColorBy: (view: ViewKey, colorBy: ColorBy) => void;
   setGroupBy: (view: ViewKey, groupBy: GroupBy) => void;
+  setStatusReportGroupBy: (groupBy: GroupBy) => void;
   toggleEpicExpanded: (epicId: string) => void;
   expandAllEpics: (epicIds: string[]) => void;
   collapseAllEpics: () => void;
@@ -462,9 +469,11 @@ export const useViewStore = create<Store>()(
       // ever populated by an explicit user-driven Generate; nothing
       // in the app auto-fills this on load.
       roadmapHeadline: { byGroupId: {} },
+      statusReportGroupBy: "swim_lane",
       setFilters: (view, filters) => set((s) => ({ ...s, [view]: { ...s[view], filters } })),
       setColorBy: (view, colorBy) => set((s) => ({ ...s, [view]: { ...s[view], colorBy } })),
       setGroupBy: (view, groupBy) => set((s) => ({ ...s, [view]: { ...s[view], groupBy } })),
+      setStatusReportGroupBy: (groupBy) => set(() => ({ statusReportGroupBy: groupBy })),
       toggleEpicExpanded: (epicId) => set((s) => {
         const has = s.expandedEpicIds.includes(epicId);
         return { expandedEpicIds: has
@@ -594,7 +603,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 15,
+      version: 16,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -760,6 +769,16 @@ export const useViewStore = create<Store>()(
             persisted.roadmapHeightPx = null;
           } else {
             persisted.roadmapHeightPx = clampRoadmapHeightPx(persisted.roadmapHeightPx);
+          }
+        }
+        // < v16: added Status Report group-by (defaults to swim lane).
+        if (version < 16) {
+          const validGroupBy = ["none", "owner", "swim_lane", "team", "tag", "kpi"];
+          if (
+            typeof persisted.statusReportGroupBy !== "string"
+            || !validGroupBy.includes(persisted.statusReportGroupBy)
+          ) {
+            persisted.statusReportGroupBy = "swim_lane";
           }
         }
         return persisted;

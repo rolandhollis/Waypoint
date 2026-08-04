@@ -10,9 +10,9 @@ import { config } from "../config.js";
  * decide who, when, and what to send.
  *
  * When RESEND_API_KEY is unset the client short-circuits: the
- * message body is logged and a fake message id is returned so the
- * job's happy-path exercises the same code path in dev / preview
- * environments that don't have real credentials wired.
+ * message body is logged and a fake message id is returned with
+ * delivered=false so callers treat the send as a failure and do
+ * not mark notification_log rows as successfully delivered.
  */
 
 let cached: Resend | null | undefined;
@@ -52,8 +52,9 @@ export type SendEmailInput = {
 export async function sendEmail(input: SendEmailInput): Promise<SendResult> {
   const resend = client();
   if (!resend) {
-    // Dev / preview: log and pretend it went out so the job's
-    // downstream steps (notification_log insert) still exercise.
+    // Dev / preview: log without sending. Callers must check
+    // delivered=false and fail the job so notification_log isn't
+    // left in a falsely-successful state.
     console.warn(
       `[email] RESEND_API_KEY not set — pretending to send:\n  to: ${input.to}\n  subject: ${input.subject}`,
     );

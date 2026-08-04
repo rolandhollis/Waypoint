@@ -27,9 +27,11 @@ import { makeUnsubscribeToken } from "./unsubscribe.js";
 
 const KIND = "status_report_reminder";
 
+type PendingProject = { id: string; title: string };
+
 type PendingByOwner = Map<
   string, // owner user_id
-  { ownerId: string; projectIds: string[]; groupNames: Set<string> }
+  { ownerId: string; projects: PendingProject[]; groupNames: Set<string> }
 >;
 
 /**
@@ -82,6 +84,12 @@ async function collectPending(week: Date, scopeGroupId?: string): Promise<Pendin
     if (!eligible.length) continue;
 
     const projectIds = eligible.map((e) => e.project_id);
+    const { rows: projectRows } = await query<{ id: string; title: string }>(
+      `SELECT id, title FROM projects WHERE id = ANY($1::uuid[])`,
+      [projectIds],
+    );
+    const titleById = new Map(projectRows.map((p) => [p.id, p.title]));
+
     const { rows: updates } = await query<{ project_id: string; completed: boolean }>(
       `SELECT project_id, completed
          FROM weekly_status_updates
@@ -95,14 +103,18 @@ async function collectPending(week: Date, scopeGroupId?: string): Promise<Pendin
     for (const e of eligible) {
       if (!e.owner_id) continue; // unowned pending items — nobody to nag
       if (completedIds.has(e.project_id)) continue;
+      const project: PendingProject = {
+        id: e.project_id,
+        title: titleById.get(e.project_id) ?? "Untitled project",
+      };
       const existing = out.get(e.owner_id);
       if (existing) {
-        existing.projectIds.push(e.project_id);
+        existing.projects.push(project);
         existing.groupNames.add(g.name);
       } else {
         out.set(e.owner_id, {
           ownerId: e.owner_id,
-          projectIds: [e.project_id],
+          projects: [project],
           groupNames: new Set([g.name]),
         });
       }
@@ -122,13 +134,14 @@ async function collectPending(week: Date, scopeGroupId?: string): Promise<Pendin
 function renderReminder(input: {
   name: string;
   pendingCount: number;
+  projectTitles: string[];
   groupNames: string[];
   weekOf: Date;
   dueAt: Date;
   appUrl: string;
   unsubscribeUrl: string;
 }): { subject: string; text: string; html: string } {
-  const { name, pendingCount, groupNames, weekOf, dueAt, appUrl, unsubscribeUrl } = input;
+  const { name, pendingCount, projectTitles, groupNames, weekOf, dueAt, appUrl, unsubscribeUrl } = input;
   const weekLabel = weekOf.toLocaleDateString("en-US", {
     month: "long",
     day: "numeric",
@@ -153,12 +166,23 @@ function renderReminder(input: {
 
   const subject = `Waypoint: ${itemsLabel} due ${dueLabel}`;
   const preheader = `${itemsLabel} pending in ${groupLabel} — due ${dueLabel}.`;
+  const projectListText =
+    projectTitles.length > 0
+      ? ["", "Pending projects:", ...projectTitles.map((t) => `• ${t}`), ""].join("\n")
+      : "";
+  const projectListHtml =
+    projectTitles.length > 0
+      ? `<ul style="margin:8px 0 0;padding-left:18px;color:#334155;">${projectTitles
+          .map((t) => `<li style="margin:2px 0;">${escapeHtml(t)}</li>`)
+          .join("")}</ul>`
+      : "";
+
   const text = [
     `Hi ${name.split(/\s+/)[0] ?? name},`,
     "",
     `You have ${itemsLabel} pending for the week of ${weekLabel} in ${groupLabel}.`,
     `They're due by ${dueLabel}.`,
-    "",
+    projectListText,
     `Open Waypoint to fill them in: ${appUrl}/status-report`,
     "",
     "Don't want these emails? Unsubscribe with one click:",
@@ -175,6 +199,7 @@ function renderReminder(input: {
       <p>Hi ${escapeHtml(name.split(/\s+/)[0] ?? name)},</p>
       <p>You have <strong>${itemsLabel}</strong> pending for the week of <strong>${escapeHtml(weekLabel)}</strong> in ${escapeHtml(groupLabel)}.</p>
       <p>They're due by <strong>${escapeHtml(dueLabel)}</strong>.</p>
+      ${projectListHtml}
       <p><a href="${appUrl}/status-report" style="display:inline-block;background:#DC2626;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;">Open Waypoint</a></p>
       <p style="color:#64748b;font-size:12px;margin-top:24px;">
         Don't want these emails?
@@ -260,7 +285,8 @@ export async function runStatusReportReminders({
       )}`;
       const msg = renderReminder({
         name: user.name,
-        pendingCount: bucket.projectIds.length,
+        pendingCount: bucket.projects.length,
+        projectTitles: bucket.projects.map((p) => p.title).sort((a, b) => a.localeCompare(b)),
         groupNames: Array.from(bucket.groupNames),
         weekOf: week,
         dueAt,
@@ -285,17 +311,14 @@ export async function runStatusReportReminders({
         subject: msg.subject,
         text: msg.text,
         html: msg.html,
-        // RFC 2369 + RFC 8058: lights up Gmail's one-click Unsubscribe
-        // button next to the sender name and lets Gmail POST to the
-        // link directly without a page load. Big trust signal against
-        // spam classification for bulk-ish transactional mail.
         headers: {
           "List-Unsubscribe": `<${unsubUrl}>`,
           "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
         },
       });
-      // Backfill the provider id on the reserved row so a delivery
-      // investigation can trace this send end-to-end.
+      if (!result.delivered) {
+        throw new Error("RESEND_API_KEY not set — email was not delivered");
+      }
       await query(
         `UPDATE notification_log SET provider_message_id = $1 WHERE user_id = $2 AND kind = $3 AND week_of = $4::date`,
         [result.messageId, ownerId, KIND, weekIso],

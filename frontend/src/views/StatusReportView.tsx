@@ -1,10 +1,25 @@
 import React, { useMemo, useState } from "react";
 import { format } from "date-fns";
 import { AlertTriangle, ChevronRight } from "lucide-react";
-import { useCanWrite, useIsAdmin, useProjects, useStatusReport } from "../lib/queries";
-import { useViewStore } from "../lib/viewState";
+import {
+  useCanWrite,
+  useIsAdmin,
+  useKpis,
+  useMe,
+  useProjects,
+  useStatusReport,
+  useSwimLanes,
+  useTeams,
+  useUsers,
+} from "../lib/queries";
+import { useViewStore, type GroupBy } from "../lib/viewState";
 import { applyFilters } from "../lib/filtering";
 import { cn } from "../lib/cn";
+import {
+  compareGroupBySortKey,
+  resolveProjectGroup,
+  type ProjectGroupInfo,
+} from "../lib/roadmapGrouping";
 import { Collapsible } from "../components/Collapsible";
 import { FilterBar } from "../components/FilterBar";
 import { StatusPill } from "../components/StatusPill";
@@ -12,12 +27,46 @@ import type { StatusReportRow } from "../lib/types";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
 import { StatusUpdateModal } from "../components/StatusUpdateModal";
 
-const UNASSIGNED_LANE_KEY = "__unassigned__";
-
 type CompletionFilter = "all" | "needs_update" | "submitted";
+
+type ReportGroupSection = {
+  info: ProjectGroupInfo;
+  rows: StatusReportRow[];
+};
+
+const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
+  { value: "swim_lane", label: "Swim lane" },
+  { value: "owner", label: "Owner" },
+  { value: "team", label: "Team" },
+  { value: "tag", label: "Tag" },
+  { value: "kpi", label: "KPI" },
+  { value: "none", label: "None" },
+];
 
 function needsStatusSubmission(row: StatusReportRow): boolean {
   return !row.completed;
+}
+
+function hasUnsubmittedDraftContent(row: StatusReportRow): boolean {
+  if (row.completed) return false;
+  if (row.health_flag && row.health_flag !== "white") return true;
+  if (row.executive_summary?.trim()) return true;
+  const raw = row.detailed_update;
+  if (!Array.isArray(raw)) return false;
+  return raw.some((b) => {
+    if (typeof b === "string") return b.trim().length > 0;
+    if (b && typeof b === "object" && "text" in b && typeof (b as { text: string }).text === "string") {
+      return (b as { text: string }).text.trim().length > 0;
+    }
+    return false;
+  });
+}
+
+function sortRowsWithinSection(rows: StatusReportRow[]): StatusReportRow[] {
+  return rows.slice().sort((a, b) => {
+    if (a.project_position !== b.project_position) return a.project_position - b.project_position;
+    return a.project_title.localeCompare(b.project_title);
+  });
 }
 
 type OwnerPendingGroup = {
@@ -31,13 +80,20 @@ export function StatusReportView() {
   const [weekOf, setWeekOf] = useState<string | undefined>(undefined);
   const report = useStatusReport(weekOf);
   const projects = useProjects();
+  const users = useUsers();
+  const lanes = useSwimLanes();
+  const teams = useTeams();
+  const kpis = useKpis();
   const filters = useViewStore((s) => s.board.filters);
+  const groupBy = useViewStore((s) => s.statusReportGroupBy);
+  const setStatusReportGroupBy = useViewStore((s) => s.setStatusReportGroupBy);
   const isAdmin = useIsAdmin();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [statusModalId, setStatusModalId] = useState<string | null>(null);
   const [completionFilter, setCompletionFilter] = useState<CompletionFilter | null>(null);
   const canWrite = useCanWrite();
+  const me = useMe();
 
   const filteredIds = useMemo(() => {
     if (!projects.data) return null;
@@ -58,14 +114,54 @@ export function StatusReportView() {
   const stats = useMemo(() => {
     const submitted = rows.filter((r) => r.completed).length;
     const needsUpdate = rows.filter(needsStatusSubmission).length;
-    return { total: rows.length, submitted, needsUpdate };
-  }, [rows]);
+    const draftsWithContent = rows.filter(hasUnsubmittedDraftContent).length;
+    const myDrafts = rows.filter(
+      (r) => r.owner_id === me.data?.id && hasUnsubmittedDraftContent(r),
+    ).length;
+    return { total: rows.length, submitted, needsUpdate, draftsWithContent, myDrafts };
+  }, [rows, me.data?.id]);
 
   const displayRows = useMemo(() => {
     if (activeCompletionFilter === "all") return rows;
     if (activeCompletionFilter === "submitted") return rows.filter((r) => r.completed);
     return rows.filter(needsStatusSubmission);
   }, [rows, activeCompletionFilter]);
+
+  const groupSections = useMemo((): ReportGroupSection[] => {
+    const projectById = new Map((projects.data ?? []).map((p) => [p.id, p]));
+    const ctx = {
+      users: users.data ?? [],
+      lanes: lanes.data ?? [],
+      teams: teams.data ?? [],
+      kpis: kpis.data ?? [],
+    };
+
+    if (groupBy === "none") {
+      return [{ info: { key: "all", label: "" }, rows: sortRowsWithinSection(displayRows) }];
+    }
+
+    const buckets = new Map<string, ReportGroupSection>();
+    for (const row of displayRows) {
+      const project = projectById.get(row.project_id);
+      const info = project
+        ? resolveProjectGroup(project, groupBy, ctx)
+        : {
+            key: row.swim_lane_id ?? "__unassigned",
+            label: row.swim_lane_name ?? "Unassigned",
+            sortKey: row.swim_lane_order ?? undefined,
+          };
+      const existing = buckets.get(info.key);
+      if (existing) existing.rows.push(row);
+      else buckets.set(info.key, { info, rows: [row] });
+    }
+
+    return Array.from(buckets.values())
+      .map((section) => ({
+        ...section,
+        rows: sortRowsWithinSection(section.rows),
+      }))
+      .sort((a, b) => compareGroupBySortKey(a.info, b.info));
+  }, [displayRows, groupBy, projects.data, users.data, lanes.data, teams.data, kpis.data]);
 
   const ownerPendingGroups = useMemo((): OwnerPendingGroup[] => {
     if (!isAdmin || isPastWeek) return [];
@@ -166,6 +262,18 @@ export function StatusReportView() {
             ))}
           </div>
           <div className="flex items-center gap-2">
+            <label className="text-xs text-wp-slate">Group by</label>
+            <select
+              className="input w-36"
+              value={groupBy}
+              onChange={(e) => setStatusReportGroupBy(e.target.value as GroupBy)}
+            >
+              {GROUP_BY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
             <label className="text-xs text-wp-slate">Week</label>
             <select
               className="input w-40"
@@ -179,6 +287,15 @@ export function StatusReportView() {
           </div>
         </div>
       </div>
+
+      {!isPastWeek && canWrite && stats.myDrafts > 0 ? (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+          You have <strong>{stats.myDrafts}</strong> draft
+          {stats.myDrafts === 1 ? "" : "s"} saved but not submitted. Click{" "}
+          <strong>Submit</strong> on each project so it counts as complete and appears in the
+          Friday digest.
+        </div>
+      ) : null}
 
       {isAdmin && !isPastWeek && stats.needsUpdate > 0 ? (
         <div
@@ -195,7 +312,11 @@ export function StatusReportView() {
                 — {stats.needsUpdate} project{stats.needsUpdate === 1 ? "" : "s"} not submitted
               </p>
               <p className="mt-1 text-xs opacity-80">
-                Drafts count as incomplete until the owner clicks Submit. Unassigned projects have no owner to notify.
+                Drafts count as incomplete until the owner clicks Submit
+                {stats.draftsWithContent > 0
+                  ? ` (${stats.draftsWithContent} saved draft${stats.draftsWithContent === 1 ? "" : "s"} won't appear in the Friday digest)`
+                  : ""}
+                . Unassigned projects have no owner to notify.
               </p>
               {ownerPendingGroups.length > 0 ? (
                 <ul className="mt-3 space-y-2">
@@ -259,30 +380,29 @@ export function StatusReportView() {
             </tr>
           </thead>
           <tbody>
-            {(() => {
-              const out: React.ReactNode[] = [];
-              let currentLaneKey: string | null = null;
-              displayRows.forEach((r, idx) => {
-                const laneKey = r.swim_lane_id ?? UNASSIGNED_LANE_KEY;
-                if (laneKey !== currentLaneKey) {
-                  currentLaneKey = laneKey;
-                  let count = 0;
-                  for (let j = idx; j < displayRows.length; j++) {
-                    const k = displayRows[j]!.swim_lane_id ?? UNASSIGNED_LANE_KEY;
-                    if (k !== laneKey) break;
-                    count++;
-                  }
-                  out.push(
-                    <tr key={`lane-${laneKey}`} className="bg-wp-stone/40">
+            {groupSections.flatMap((section) => {
+              const header =
+                groupBy !== "none" && section.info.label
+                  ? (
+                    <tr key={`group-${section.info.key}`} className="bg-wp-stone/40">
                       <td colSpan={8} className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-wp-slate">
-                        {r.swim_lane_name ?? "Unassigned"}
+                        {section.info.color ? (
+                          <span
+                            aria-hidden
+                            className="mr-2 inline-block h-2 w-2 rounded-full align-middle"
+                            style={{ background: section.info.color }}
+                          />
+                        ) : null}
+                        {section.info.label}
                         <span className="ml-2 font-normal normal-case tracking-normal text-wp-slate/70">
-                          {count} project{count === 1 ? "" : "s"}
+                          {section.rows.length} project{section.rows.length === 1 ? "" : "s"}
                         </span>
                       </td>
-                    </tr>,
-                  );
-                }
+                    </tr>
+                  )
+                  : null;
+
+              const body = section.rows.flatMap((r) => {
                 const key = r.id ?? r.project_id;
                 const isOpen = expanded.has(key);
                 const rowClickTitle = rowsAreEditable
@@ -290,7 +410,7 @@ export function StatusReportView() {
                   : isPastWeek
                     ? "Read-only (past week)"
                     : "Viewer access is read-only";
-                out.push(
+                return (
                   <React.Fragment key={key}>
                     <tr
                       onClick={() => rowsAreEditable && setStatusModalId(r.project_id)}
@@ -373,11 +493,12 @@ export function StatusReportView() {
                         </Collapsible>
                       </td>
                     </tr>
-                  </React.Fragment>,
+                  </React.Fragment>
                 );
               });
-              return out;
-            })()}
+
+              return header ? [header, ...body] : body;
+            })}
             {displayRows.length === 0 ? (
               <tr>
                 <td colSpan={8} className="p-6 text-center text-sm text-wp-slate">

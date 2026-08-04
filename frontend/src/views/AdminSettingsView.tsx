@@ -546,17 +546,25 @@ function ReminderAdmin() {
         <div
           className={
             "mt-4 rounded-md border px-3 py-2 text-xs " +
-            (last.dryRun
-              ? "border-wp-stone bg-wp-stone/20 text-wp-ink"
-              : "border-emerald-200 bg-emerald-50 text-emerald-900")
+            (last.errors > 0 && last.sent === 0
+              ? "border-red-200 bg-red-50 text-red-900"
+              : last.errors > 0
+                ? "border-amber-200 bg-amber-50 text-amber-900"
+                : last.dryRun
+                  ? "border-wp-stone bg-wp-stone/20 text-wp-ink"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-900")
           }
           role="status"
           aria-live="polite"
         >
           <div className="font-semibold">
-            {last.dryRun
-              ? "Preview complete — no emails sent, no log rows written."
-              : "Reminders sent."}
+            {last.errors > 0 && last.sent === 0
+              ? "Reminder send failed — check server logs and RESEND_API_KEY."
+              : last.errors > 0
+                ? "Reminders sent with errors — some owners may not have received email."
+                : last.dryRun
+                  ? "Preview complete — no emails sent; log rows rolled back after preview."
+                  : "Reminders sent."}
           </div>
           <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
             <li>
@@ -624,6 +632,7 @@ type DigestRecipient = {
 type DigestRunResult = {
   weekOf: string;
   dryRun: boolean;
+  forceResend: boolean;
   groups: number;
   recipients: number;
   updatesIncluded: number;
@@ -632,6 +641,8 @@ type DigestRunResult = {
   skippedEmptyGroups: number;
   errors: number;
 };
+
+type DigestRunArgs = { dry_run: boolean; force_resend?: boolean };
 
 function DigestAdmin() {
   const qc = useQueryClient();
@@ -663,10 +674,10 @@ function DigestAdmin() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["digestRecipients"] }),
   });
   const runDigest = useMutation({
-    mutationFn: (dryRun: boolean) =>
+    mutationFn: (args: DigestRunArgs) =>
       api<DigestRunResult>("/notifications/status-digest/run", {
         method: "POST",
-        body: JSON.stringify({ dry_run: dryRun }),
+        body: JSON.stringify(args),
       }),
   });
 
@@ -733,10 +744,10 @@ function DigestAdmin() {
             Weekly status-report digest
           </h2>
           <p className="mt-1 text-xs text-wp-slate">
-            Rolls up this week's completed status updates and emails the roster below.
-            Runs automatically every Friday at 5:00 PM Central. Skips silently when
-            the group has zero completed updates or zero recipients. Scoped to the
-            group you're currently viewing.
+            Rolls up this week's <strong>submitted</strong> status updates and emails the roster below.
+            Saved drafts are excluded until owners click Submit. Runs automatically every Friday at 5:00 PM
+            Central. Skips silently when the group has zero completed updates or zero recipients. Scoped to
+            the group you're currently viewing.
           </p>
         </div>
       </div>
@@ -748,10 +759,12 @@ function DigestAdmin() {
           type="button"
           className="btn-secondary inline-flex items-center gap-1.5"
           disabled={busySend}
-          onClick={() => runDigest.mutate(true)}
+          onClick={() => runDigest.mutate({ dry_run: true })}
         >
           <Mail size={13} />
-          {busySend && runDigest.variables === true ? "Previewing…" : "Preview (dry run)"}
+          {busySend && runDigest.variables?.dry_run && !runDigest.variables?.force_resend
+            ? "Previewing…"
+            : "Preview (dry run)"}
         </button>
         <button
           type="button"
@@ -763,11 +776,29 @@ function DigestAdmin() {
                 "Send the weekly digest email now to every recipient in this group's list?\n\nRecipients who already got one this week are automatically skipped.",
               )
             ) return;
-            runDigest.mutate(false);
+            runDigest.mutate({ dry_run: false });
           }}
         >
           <Send size={13} />
-          {busySend && runDigest.variables === false ? "Sending…" : "Send now"}
+          {busySend && runDigest.variables?.dry_run === false && !runDigest.variables?.force_resend
+            ? "Sending…"
+            : "Send now"}
+        </button>
+        <button
+          type="button"
+          className="btn-secondary inline-flex items-center gap-1.5"
+          disabled={busySend}
+          onClick={() => {
+            if (
+              !confirm(
+                "Send the digest again with the latest submitted updates?\n\nThis clears this week's send log for this group and emails every recipient again, even if they already received a digest earlier this week.",
+              )
+            ) return;
+            runDigest.mutate({ dry_run: false, force_resend: true });
+          }}
+        >
+          <Send size={13} />
+          {busySend && runDigest.variables?.force_resend ? "Sending…" : "Send again (latest)"}
         </button>
       </div>
 
@@ -775,17 +806,27 @@ function DigestAdmin() {
         <div
           className={
             "mt-4 rounded-md border px-3 py-2 text-xs " +
-            (lastRun.dryRun
-              ? "border-wp-stone bg-wp-stone/20 text-wp-ink"
-              : "border-emerald-200 bg-emerald-50 text-emerald-900")
+            (lastRun.errors > 0 && lastRun.sent === 0
+              ? "border-red-200 bg-red-50 text-red-900"
+              : lastRun.errors > 0
+                ? "border-amber-200 bg-amber-50 text-amber-900"
+                : lastRun.dryRun
+                  ? "border-wp-stone bg-wp-stone/20 text-wp-ink"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-900")
           }
           role="status"
           aria-live="polite"
         >
           <div className="font-semibold">
-            {lastRun.dryRun
-              ? "Preview complete — no emails sent, no log rows written."
-              : "Digests sent."}
+            {lastRun.errors > 0 && lastRun.sent === 0
+              ? "Digest send failed — check server logs and RESEND_API_KEY."
+              : lastRun.errors > 0
+                ? "Digests sent with errors — some recipients may not have received email."
+                : lastRun.dryRun
+                  ? "Preview complete — no emails sent; log rows rolled back after preview."
+                  : lastRun.forceResend
+                    ? "Digests sent again with latest updates."
+                    : "Digests sent."}
           </div>
           <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
             <li>
