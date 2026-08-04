@@ -82,15 +82,21 @@ statusUpdatesRouter.get("/report", async (req, res) => {
   const eligible = await eligibleProjects(week, req.groupId!);
   const projectIds = eligible.map((e) => e.project_id);
 
+  const dueAt = dueAtForWeek(week);
+  const weekIso = week.toISOString().slice(0, 10);
+
   if (!projectIds.length) {
-    res.json({ week_of: week.toISOString().slice(0, 10), rows: [] });
+    res.json({ week_of: weekIso, due_at: dueAt.toISOString(), rows: [] });
     return;
   }
 
   const { rows } = await query<
     WeeklyStatusUpdateRow & {
+      p_project_id: string;
       project_title: string;
+      owner_id: string | null;
       owner_name: string | null;
+      owner_email: string | null;
       team_names: string[];
       swim_lane_id: string | null;
       swim_lane_name: string | null;
@@ -100,9 +106,12 @@ statusUpdatesRouter.get("/report", async (req, res) => {
   >(
     `
     SELECT wsu.*,
+           p.id       AS p_project_id,
            p.title    AS project_title,
            p.position AS project_position,
+           p.owner_id AS owner_id,
            u.name     AS owner_name,
+           u.email    AS owner_email,
            COALESCE(
              (SELECT array_agg(t.name ORDER BY pt.position ASC)
                 FROM project_teams pt
@@ -120,7 +129,7 @@ statusUpdatesRouter.get("/report", async (req, res) => {
       LEFT JOIN swim_lanes sl ON sl.id = p.swim_lane_id
      WHERE p.id = ANY($2::uuid[])
     `,
-    [week.toISOString().slice(0, 10), projectIds],
+    [weekIso, projectIds],
   );
 
   // Order primarily by swim lane (matching the Board's left-to-right lane
@@ -128,7 +137,11 @@ statusUpdatesRouter.get("/report", async (req, res) => {
   // client group by swim lane while preserving the exact drag-and-drop
   // ordering users established on the Board.
   const shaped = rows
-    .map((r) => ({ ...r, health_flag: r.health_flag ?? "white" }))
+    .map((r) => ({
+      ...r,
+      project_id: r.project_id ?? r.p_project_id,
+      health_flag: r.health_flag ?? "white",
+    }))
     .sort((a, b) => {
       const laneA = a.swim_lane_order ?? Number.MAX_SAFE_INTEGER;
       const laneB = b.swim_lane_order ?? Number.MAX_SAFE_INTEGER;
@@ -137,7 +150,7 @@ statusUpdatesRouter.get("/report", async (req, res) => {
       return a.project_title.localeCompare(b.project_title);
     });
 
-  res.json({ week_of: week.toISOString().slice(0, 10), rows: shaped });
+  res.json({ week_of: weekIso, due_at: dueAt.toISOString(), rows: shaped });
 });
 
 /** GET /projects/:id/status-updates — mounted under the projects namespace below. */

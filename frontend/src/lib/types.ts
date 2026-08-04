@@ -652,7 +652,9 @@ export type PendingStatusResponse = {
 export type StatusReportRow = WeeklyStatusUpdate & {
   project_title: string;
   project_position: number;
+  owner_id: string | null;
   owner_name: string | null;
+  owner_email: string | null;
   team_names: string[];
   swim_lane_id: string | null;
   swim_lane_name: string | null;
@@ -661,5 +663,6 @@ export type StatusReportRow = WeeklyStatusUpdate & {
 
 export type StatusReportResponse = {
   week_of: string;
+  due_at: string;
   rows: StatusReportRow[];
 };
