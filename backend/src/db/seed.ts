@@ -33,14 +33,16 @@ const DEFAULT_LANES = [
   {
     name: "Discovery",
     color: "#0ea5e9",
+    requires_weekly_status: true,
     description:
-      "Actively researching the problem: user interviews, data exploration, competitive analysis. Exit criteria: a clear problem statement and enough evidence to justify solving it.",
+      "Actively researching the problem: user interviews, data exploration, competitive analysis. Exit criteria: a clear problem statement and enough evidence to justify solving it. Weekly status is required while work is active here.",
   },
   {
     name: "Definition",
     color: "#6366f1",
+    requires_weekly_status: true,
     description:
-      "Turning the discovered problem into a concrete solution shape: PRD, success metrics, and rough scope. Exit criteria: aligned stakeholders and a green light to design.",
+      "Turning the discovered problem into a concrete solution shape: PRD, success metrics, and rough scope. Exit criteria: aligned stakeholders and a green light to design. Weekly status is required while work is active here.",
   },
   {
     name: "Design",
