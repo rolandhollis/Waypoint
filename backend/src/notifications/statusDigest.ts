@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { pool, query, withTransaction } from "../db/pool.js";
 import { weekOfMonday } from "../lib/time.js";
+import { compareSwimLaneReportOrder } from "../lib/statusReportOrder.js";
 import { sendEmail } from "./email.js";
 import { makeUnsubscribeToken } from "./unsubscribe.js";
 
@@ -127,7 +128,7 @@ async function loadUpdatesBatch(weekIso: string, scopeGroupId?: string): Promise
             AND w.completed = TRUE
             AND p.group_id = $2
             AND p.deleted_at IS NULL
-          ORDER BY s."order" NULLS LAST, s.name, p.title`
+          ORDER BY s."order" DESC NULLS LAST, s.name, p.title`
       : `SELECT p.group_id,
                 p.id AS project_id,
                 p.title AS project_title,
@@ -147,7 +148,7 @@ async function loadUpdatesBatch(weekIso: string, scopeGroupId?: string): Promise
           WHERE w.week_of = $1::date
             AND w.completed = TRUE
             AND p.deleted_at IS NULL
-          ORDER BY p.group_id, s."order" NULLS LAST, s.name, p.title`,
+          ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.title`,
     scopeGroupId ? [weekIso, scopeGroupId] : [weekIso],
   );
 
@@ -221,6 +222,26 @@ function bullets(raw: unknown): string[] {
     .filter((s) => s.trim().length > 0);
 }
 
+function laneGroupsForReport(updates: UpdateRow[]): Array<{ laneName: string; laneOrder: number | null; items: UpdateRow[] }> {
+  const byLane = new Map<string, { laneName: string; laneOrder: number | null; items: UpdateRow[] }>();
+  for (const u of updates) {
+    const key = u.swim_lane_id ?? u.swim_lane_name ?? "(no lane)";
+    const existing = byLane.get(key);
+    if (existing) {
+      existing.items.push(u);
+    } else {
+      byLane.set(key, {
+        laneName: u.swim_lane_name ?? "(no lane)",
+        laneOrder: u.swim_lane_order ?? null,
+        items: [u],
+      });
+    }
+  }
+  return Array.from(byLane.values()).sort((a, b) =>
+    compareSwimLaneReportOrder(a.laneOrder, b.laneOrder, a.laneName, b.laneName),
+  );
+}
+
 function renderDigest(input: {
   groupName: string;
   weekOf: Date;
@@ -238,13 +259,8 @@ function renderDigest(input: {
   });
   const subject = `Waypoint · ${groupName} weekly update — ${weekLabel}`;
 
-  const byLane = new Map<string, UpdateRow[]>();
-  for (const u of updates) {
-    const key = u.swim_lane_name ?? "(no lane)";
-    const arr = byLane.get(key) ?? [];
-    arr.push(u);
-    byLane.set(key, arr);
-  }
+  const laneGroups = laneGroupsForReport(updates);
+  const laneCount = laneGroups.length;
 
   const greeting = recipientName ? `Hi ${recipientName.split(/\s+/)[0] ?? recipientName},` : "Hello,";
 
@@ -253,8 +269,8 @@ function renderDigest(input: {
   textLines.push("");
   textLines.push(`${groupName} status updates for the week of ${weekLabel}:`);
   textLines.push("");
-  for (const [lane, items] of byLane) {
-    textLines.push(`--- ${lane} ---`);
+  for (const { laneName, items } of laneGroups) {
+    textLines.push(`--- ${laneName} ---`);
     for (const u of items) {
       const projectUrl = `${appUrl}/projects/${u.project_id}`;
       textLines.push(`• ${u.project_title} [${healthLabel(u.health_flag)}]`);
@@ -277,12 +293,12 @@ function renderDigest(input: {
   textLines.push("— Waypoint");
   const text = textLines.join("\n");
 
-  const preheader = `${updates.length} update${updates.length === 1 ? "" : "s"} across ${byLane.size} lane${byLane.size === 1 ? "" : "s"} for ${groupName}.`;
-  const laneHtml = Array.from(byLane.entries())
+  const preheader = `${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} lane${laneCount === 1 ? "" : "s"} for ${groupName}.`;
+  const laneHtml = laneGroups
     .map(
-      ([lane, items]) => `
+      ({ laneName, items }) => `
     <section style="margin-top:22px;">
-      <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#334155;margin:0 0 8px;">${escapeHtml(lane)}</h2>
+      <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#334155;margin:0 0 8px;">${escapeHtml(laneName)}</h2>
       ${items
         .map((u) => {
           const projectUrl = `${appUrl}/projects/${u.project_id}`;
@@ -322,7 +338,7 @@ function renderDigest(input: {
     <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;max-width:640px;">
       <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}</span>
       <p>${escapeHtml(greeting)}</p>
-      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"} across ${byLane.size} swim lane${byLane.size === 1 ? "" : "s"}.</p>
+      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}.</p>
       ${laneHtml}
       <p style="margin-top:24px;">
         <a href="${appUrl}/status-report" style="display:inline-block;background:#DC2626;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;">Open status report</a>

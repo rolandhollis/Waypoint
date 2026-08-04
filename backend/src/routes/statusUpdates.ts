@@ -4,6 +4,7 @@ import { query, withTransaction } from "../db/pool.js";
 import { requireWrite } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
 import { dueAtForWeek, weekOfMonday } from "../lib/time.js";
+import { compareSwimLaneReportOrder } from "../lib/statusReportOrder.js";
 import { addDays } from "date-fns";
 import type { WeeklyStatusUpdateRow } from "../types.js";
 
@@ -143,9 +144,13 @@ statusUpdatesRouter.get("/report", async (req, res) => {
       health_flag: r.health_flag ?? "white",
     }))
     .sort((a, b) => {
-      const laneA = a.swim_lane_order ?? Number.MAX_SAFE_INTEGER;
-      const laneB = b.swim_lane_order ?? Number.MAX_SAFE_INTEGER;
-      if (laneA !== laneB) return laneA - laneB;
+      const laneCmp = compareSwimLaneReportOrder(
+        a.swim_lane_order,
+        b.swim_lane_order,
+        a.swim_lane_name ?? "",
+        b.swim_lane_name ?? "",
+      );
+      if (laneCmp !== 0) return laneCmp;
       if (a.project_position !== b.project_position) return a.project_position - b.project_position;
       return a.project_title.localeCompare(b.project_title);
     });

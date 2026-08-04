@@ -17,6 +17,7 @@ import { applyFilters } from "../lib/filtering";
 import { cn } from "../lib/cn";
 import {
   compareGroupBySortKey,
+  compareSwimLaneReportSortKey,
   resolveProjectGroup,
   type ProjectGroupInfo,
 } from "../lib/roadmapGrouping";
@@ -160,7 +161,11 @@ export function StatusReportView() {
         ...section,
         rows: sortRowsWithinSection(section.rows),
       }))
-      .sort((a, b) => compareGroupBySortKey(a.info, b.info));
+      .sort((a, b) =>
+        groupBy === "swim_lane"
+          ? compareSwimLaneReportSortKey(a.info, b.info)
+          : compareGroupBySortKey(a.info, b.info),
+      );
   }, [displayRows, groupBy, projects.data, users.data, lanes.data, teams.data, kpis.data]);
 
   const ownerPendingGroups = useMemo((): OwnerPendingGroup[] => {

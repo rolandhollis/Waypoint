@@ -196,3 +196,23 @@ export function compareGroupBySortKey(
   if (bw !== undefined) return 1;
   return a.label.localeCompare(b.label);
 }
+
+/**
+ * Swim-lane section order for status reports, digests, and other
+ * reporting views — reversed from the board (Complete and later
+ * lanes first, Parking Lot / Backlog last). Unassigned / missing
+ * lane order sinks to the bottom.
+ */
+export function compareSwimLaneReportSortKey(
+  a: { key: string; label: string; sortKey?: number },
+  b: { key: string; label: string; sortKey?: number },
+): number {
+  if (a.key === UNASSIGNED_GROUP_KEY && b.key !== UNASSIGNED_GROUP_KEY) return 1;
+  if (b.key === UNASSIGNED_GROUP_KEY && a.key !== UNASSIGNED_GROUP_KEY) return -1;
+  const aw = a.sortKey;
+  const bw = b.sortKey;
+  if (aw !== undefined && bw !== undefined && aw !== bw) return bw - aw;
+  if (aw !== undefined && bw === undefined) return -1;
+  if (aw === undefined && bw !== undefined) return 1;
+  return a.label.localeCompare(b.label);
+}
