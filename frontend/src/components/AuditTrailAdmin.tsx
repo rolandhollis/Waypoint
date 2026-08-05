@@ -8,6 +8,7 @@ import {
   auditEventTitle,
   recentEventToRenderEntry,
 } from "../lib/auditRender";
+import { AUDIT_EVENT_FILTER_OPTIONS } from "../lib/auditEventFilters";
 import { indexById } from "../lib/hierarchy";
 import {
   useAuditEvents,
@@ -17,16 +18,7 @@ import {
   useTeams,
   useUsers,
 } from "../lib/queries";
-import type { AuditAction, RecentAuditEvent } from "../lib/types";
-
-const ACTION_OPTIONS: { value: "" | AuditAction; label: string }[] = [
-  { value: "", label: "All event types" },
-  { value: "create", label: "Created" },
-  { value: "edit", label: "Edited" },
-  { value: "move", label: "Lane move" },
-  { value: "archive", label: "Archived" },
-  { value: "restore", label: "Restored" },
-];
+import type { RecentAuditEvent } from "../lib/types";
 
 function localDateTimeToIso(local: string): string | undefined {
   const trimmed = local.trim();
@@ -150,9 +142,11 @@ function AuditEventModal({
 
 export function AuditTrailAdmin() {
   const users = useUsers();
+  const projects = useProjects();
   const [page, setPage] = useState(1);
   const [userId, setUserId] = useState("");
-  const [action, setAction] = useState<"" | AuditAction>("");
+  const [projectId, setProjectId] = useState("");
+  const [eventFilter, setEventFilter] = useState("");
   const [fromLocal, setFromLocal] = useState("");
   const [toLocal, setToLocal] = useState("");
   const [selected, setSelected] = useState<RecentAuditEvent | null>(null);
@@ -161,11 +155,12 @@ export function AuditTrailAdmin() {
     () => ({
       page,
       user_id: userId || undefined,
-      action: action || undefined,
+      project_id: projectId || undefined,
+      event: eventFilter || undefined,
       from: localDateTimeToIso(fromLocal),
       to: localDateTimeToIso(toLocal),
     }),
-    [page, userId, action, fromLocal, toLocal],
+    [page, userId, projectId, eventFilter, fromLocal, toLocal],
   );
 
   const query = useAuditEvents(queryFilters);
@@ -175,9 +170,15 @@ export function AuditTrailAdmin() {
     [users.data],
   );
 
+  const projectOptions = useMemo(
+    () => (projects.data ?? []).slice().sort((a, b) => a.title.localeCompare(b.title)),
+    [projects.data],
+  );
+
   function clearFilters() {
     setUserId("");
-    setAction("");
+    setProjectId("");
+    setEventFilter("");
     setFromLocal("");
     setToLocal("");
     setPage(1);
@@ -195,7 +196,7 @@ export function AuditTrailAdmin() {
           Paginated log of project changes and lane moves in this workspace. Click a row for full details.
         </p>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <label className="block text-xs">
             <span className="text-wp-slate">User</span>
             <select
@@ -214,16 +215,33 @@ export function AuditTrailAdmin() {
           </label>
 
           <label className="block text-xs">
-            <span className="text-wp-slate">Event type</span>
+            <span className="text-wp-slate">Project</span>
             <select
               className="input mt-1 w-full"
-              value={action}
+              value={projectId}
               onChange={(e) => {
                 setPage(1);
-                setAction(e.target.value as "" | AuditAction);
+                setProjectId(e.target.value);
               }}
             >
-              {ACTION_OPTIONS.map((opt) => (
+              <option value="">All projects</option>
+              {projectOptions.map((p) => (
+                <option key={p.id} value={p.id}>{p.title}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block text-xs">
+            <span className="text-wp-slate">Event</span>
+            <select
+              className="input mt-1 w-full"
+              value={eventFilter}
+              onChange={(e) => {
+                setPage(1);
+                setEventFilter(e.target.value);
+              }}
+            >
+              {AUDIT_EVENT_FILTER_OPTIONS.map((opt) => (
                 <option key={opt.value || "all"} value={opt.value}>{opt.label}</option>
               ))}
             </select>
@@ -271,32 +289,50 @@ export function AuditTrailAdmin() {
         ) : events.length === 0 ? (
           <p className="p-4 text-sm text-wp-slate">No events match your filters.</p>
         ) : (
-          <ul className="divide-y divide-wp-stone/70">
-            {events.map((event) => (
-              <li key={`${event.kind}-${event.id}`}>
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-wp-stone/20"
-                  onClick={() => setSelected(event)}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium text-wp-ink">{auditEventTitle(event)}</div>
-                    <div className="mt-0.5 text-xs text-wp-slate">
-                      {auditActorLabel(event, users.data ?? [])}
-                      <span className="mx-1">·</span>
-                      {event.project_title}
-                    </div>
-                  </div>
-                  <time
-                    className="shrink-0 text-xs text-wp-slate tabular-nums"
-                    dateTime={event.occurred_at}
-                  >
-                    {format(parseISO(event.occurred_at), "MMM d, yyyy h:mm a")}
-                  </time>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="border-b border-wp-stone/70 bg-wp-stone/15 text-left text-[11px] font-semibold uppercase tracking-wide text-wp-slate">
+                  <th className="w-36 px-4 py-2.5">User</th>
+                  <th className="w-40 px-3 py-2.5">Event</th>
+                  <th className="px-3 py-2.5">Project</th>
+                  <th className="w-44 px-4 py-2.5 text-right">When</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-wp-stone/50">
+                {events.map((event) => {
+                  const actor = auditActorLabel(event, users.data ?? []);
+                  return (
+                    <tr
+                      key={`${event.kind}-${event.id}`}
+                      className="cursor-pointer transition hover:bg-wp-stone/20"
+                      onClick={() => setSelected(event)}
+                    >
+                      <td className="px-4 py-2.5 align-top font-medium text-wp-ink">
+                        <span className="line-clamp-2" title={actor}>{actor}</span>
+                      </td>
+                      <td className="px-3 py-2.5 align-top text-wp-ink">
+                        <span className="font-medium">{auditEventTitle(event)}</span>
+                      </td>
+                      <td className="px-3 py-2.5 align-top text-wp-slate">
+                        <span className="line-clamp-2" title={event.project_title}>
+                          {event.project_title}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 align-top text-right text-xs text-wp-slate tabular-nums whitespace-nowrap">
+                        <time dateTime={event.occurred_at}>
+                          {format(parseISO(event.occurred_at), "MMM d, yyyy")}
+                        </time>
+                        <div className="text-[11px] text-wp-slate/80">
+                          {format(parseISO(event.occurred_at), "h:mm a")}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-wp-stone/70 px-4 py-3 text-xs text-wp-slate">

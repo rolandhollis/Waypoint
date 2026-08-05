@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { query } from "../db/pool.js";
+import { parseEventFilter } from "../lib/auditEventFilter.js";
 import { requireAdmin } from "../middleware/auth.js";
 import type { RecentAuditEventRow } from "../types.js";
 
@@ -12,13 +13,12 @@ import type { RecentAuditEventRow } from "../types.js";
  */
 export const auditRouter = Router();
 
-const AUDIT_ACTIONS = ["create", "edit", "move", "archive", "restore"] as const;
-
 const listQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional().default(1),
   page_size: z.coerce.number().int().min(1).max(100).optional().default(50),
   user_id: z.string().uuid().optional(),
-  action: z.enum(AUDIT_ACTIONS).optional(),
+  project_id: z.string().uuid().optional(),
+  event: z.string().max(120).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
 });
@@ -34,7 +34,8 @@ type AuditListParams = {
   page: number;
   pageSize: number;
   userId?: string;
-  action?: typeof AUDIT_ACTIONS[number];
+  projectId?: string;
+  eventFilter: ReturnType<typeof parseEventFilter>;
   from?: Date;
   to?: Date;
 };
@@ -64,15 +65,38 @@ function buildCombinedSql(
     idx += 1;
   }
 
-  if (params.action) {
-    if (params.action === "move") {
+  if (params.projectId) {
+    auditClauses.push(`e.project_id = $${idx}`);
+    moveClauses.push(`sh.project_id = $${idx}`);
+    values.push(params.projectId);
+    idx += 1;
+  }
+
+  const { action, field, fieldPrefix } = params.eventFilter;
+
+  if (action) {
+    if (action === "move") {
       auditClauses.push("FALSE");
     } else {
       auditClauses.push(`e.action = $${idx}`);
-      values.push(params.action);
+      values.push(action);
       idx += 1;
       moveClauses.push("FALSE");
     }
+  }
+
+  if (field) {
+    auditClauses.push(`e.field = $${idx}`);
+    values.push(field);
+    idx += 1;
+    moveClauses.push("FALSE");
+  }
+
+  if (fieldPrefix) {
+    auditClauses.push(`e.field LIKE $${idx}`);
+    values.push(`${fieldPrefix}:%`);
+    idx += 1;
+    moveClauses.push("FALSE");
   }
 
   if (params.from) {
@@ -177,7 +201,8 @@ auditRouter.get("/events", requireAdmin, async (req, res) => {
     page: q.page,
     pageSize: q.page_size,
     userId: q.user_id,
-    action: q.action,
+    projectId: q.project_id,
+    eventFilter: parseEventFilter(q.event),
     from: parseInstant(q.from),
     to: parseInstant(q.to),
   };

@@ -5,7 +5,6 @@ import type {
   AiReferenceEstimate,
   AiSuggestionCached,
   AppConstants,
-  AuditAction,
   AuditEventsListResponse,
   Group,
   Kpi,
@@ -337,7 +336,8 @@ export function useRecentAuditEvents(days = 7) {
 export type AuditEventsQuery = {
   page: number;
   user_id?: string;
-  action?: AuditAction;
+  project_id?: string;
+  event?: string;
   from?: string;
   to?: string;
 };
@@ -347,7 +347,8 @@ export function useAuditEvents(filters: AuditEventsQuery) {
   qs.set("page", String(filters.page));
   qs.set("page_size", "50");
   if (filters.user_id) qs.set("user_id", filters.user_id);
-  if (filters.action) qs.set("action", filters.action);
+  if (filters.project_id) qs.set("project_id", filters.project_id);
+  if (filters.event) qs.set("event", filters.event);
   if (filters.from) qs.set("from", filters.from);
   if (filters.to) qs.set("to", filters.to);
   return useQuery({
