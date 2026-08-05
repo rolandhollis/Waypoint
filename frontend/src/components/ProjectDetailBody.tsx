@@ -1005,6 +1005,16 @@ export function ProjectDetailBody({
             rather than adding the id directly to `<Field>`'s
             `<label>` keeps the label element unmodified and gives
             the ring-highlight a clean rectangular target. */}
+        <Field label="Title" className="mb-3">
+          <input
+            className="input"
+            disabled={!canWrite}
+            value={merged.title ?? ""}
+            onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
+            maxLength={200}
+          />
+        </Field>
+
         <div id="description">
           <Field label="Description" className="mb-3">
             <MentionTextarea
@@ -1501,7 +1511,11 @@ export function ProjectDetailBody({
             </div>
             <button
               className="btn-primary"
-              disabled={Object.keys(draft).length === 0 || patch.isPending}
+              disabled={
+                Object.keys(draft).length === 0 ||
+                patch.isPending ||
+                !(merged.title ?? "").trim()
+              }
               onClick={() => {
                 // Build `_meta` for the backend's per-phase
                 // provenance stamping. We attach it only when
@@ -1512,6 +1526,9 @@ export function ProjectDetailBody({
                 // 'cascade' with no accompanying direct-edit
                 // stamp (still correct, but noisier).
                 const filled = fillMissingPhaseDates(draft, project);
+                if (typeof filled.title === "string") {
+                  filled.title = filled.title.trim();
+                }
                 const editedPhases = new Set<
                   "discovery" | "development" | "post_dev"
                 >();
