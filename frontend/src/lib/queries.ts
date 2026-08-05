@@ -5,6 +5,8 @@ import type {
   AiReferenceEstimate,
   AiSuggestionCached,
   AppConstants,
+  AuditAction,
+  AuditEventsListResponse,
   Group,
   Kpi,
   PendingStatusResponse,
@@ -329,6 +331,28 @@ export function useRecentAuditEvents(days = 7) {
     queryKey: ["recentAuditEvents", days],
     queryFn: () => api<RecentAuditEventsResponse>(`/projects/audit/recent?days=${days}`),
     refetchInterval: POLL_MS,
+  });
+}
+
+export type AuditEventsQuery = {
+  page: number;
+  user_id?: string;
+  action?: AuditAction;
+  from?: string;
+  to?: string;
+};
+
+export function useAuditEvents(filters: AuditEventsQuery) {
+  const qs = new URLSearchParams();
+  qs.set("page", String(filters.page));
+  qs.set("page_size", "50");
+  if (filters.user_id) qs.set("user_id", filters.user_id);
+  if (filters.action) qs.set("action", filters.action);
+  if (filters.from) qs.set("from", filters.from);
+  if (filters.to) qs.set("to", filters.to);
+  return useQuery({
+    queryKey: ["auditEvents", filters],
+    queryFn: () => api<AuditEventsListResponse>(`/audit/events?${qs}`),
   });
 }
 

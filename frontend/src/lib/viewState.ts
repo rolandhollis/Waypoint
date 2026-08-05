@@ -94,6 +94,7 @@ export type AdminTopTabKey =
   | "users"
   | "archived"
   | "notifications"
+  | "audit-trail"
   | "tshirt-sizes"
   | "ai-reference-estimates"
   | "csv"

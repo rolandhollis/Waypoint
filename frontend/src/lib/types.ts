@@ -484,6 +484,14 @@ export type RecentAuditEventsResponse = {
   truncated: boolean;
 };
 
+export type AuditEventsListResponse = {
+  events: RecentAuditEvent[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+};
+
 /**
  * One-phase slice of a Claude-generated AI suggestion. The `size`
  * is a T-shirt catalog label (whatever the admin has renamed the

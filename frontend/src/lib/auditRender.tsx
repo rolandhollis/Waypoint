@@ -264,20 +264,6 @@ export function AuditEventBody({
   return <>changed {label} from {strong(String(from))} to {strong(String(to))}.</>;
 }
 
-/** Human-readable display name for `user_id` on an audit row.
- *  Prefers the joined `user_name` (present on Recent Changes rows),
- *  falls back to a users-list lookup by id (for per-project history),
- *  and finally "system" for null user ids or unresolved rows. */
-export function auditActorLabel(
-  entry: { user_id: string | null; user_name?: string | null },
-  users: UserLookup[],
-): string {
-  if (entry.user_name) return entry.user_name;
-  if (!entry.user_id) return "system";
-  const found = users.find((u) => u.id === entry.user_id);
-  return found?.name ?? "(deleted user)";
-}
-
 export const FIELD_LABELS: Record<string, string> = {
   title: "title",
   description: "description",
@@ -301,6 +287,38 @@ export const FIELD_LABELS: Record<string, string> = {
   is_key_strategic: "key strategic",
   global_priority: "global priority",
 };
+
+/** Short label for audit list rows and modal titles. */
+export function auditEventTitle(entry: {
+  kind: string;
+  action: string;
+  field: string | null;
+}): string {
+  if (entry.kind === "move" || entry.action === "move") return "Lane move";
+  if (entry.action === "create") return "Created";
+  if (entry.action === "archive") return "Archived";
+  if (entry.action === "restore") return "Restored";
+  if (entry.action === "edit" && entry.field) {
+    if (entry.field.startsWith("deadline:")) return "Deadline updated";
+    if (entry.field.startsWith("dependency:")) return "Dependency updated";
+    if (entry.field.startsWith("link:")) return "Link updated";
+    const label = FIELD_LABELS[entry.field] ?? entry.field;
+    return `Edited ${label}`;
+  }
+  if (entry.action === "edit") return "Edited";
+  return entry.action || "Event";
+}
+
+/** Human-readable display name for `user_id` on an audit row. */
+export function auditActorLabel(
+  entry: { user_id: string | null; user_name?: string | null },
+  users: UserLookup[],
+): string {
+  if (entry.user_name) return entry.user_name;
+  if (!entry.user_id) return "system";
+  const found = users.find((u) => u.id === entry.user_id);
+  return found?.name ?? "(deleted user)";
+}
 
 function isBlank(v: unknown): boolean {
   return v == null || v === "" || (Array.isArray(v) && v.length === 0);

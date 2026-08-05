@@ -29,6 +29,7 @@ import { projectStatusUpdatesRouter, statusUpdatesRouter } from "./routes/status
 import { notificationsRouter } from "./routes/notifications.js";
 import { mentionsRouter } from "./routes/mentions.js";
 import { digestRecipientsRouter } from "./routes/digestRecipients.js";
+import { auditRouter } from "./routes/audit.js";
 import { startCron } from "./jobs/weeklyStatus.js";
 
 const app = express();
@@ -108,6 +109,7 @@ app.use("/api/mentions", authenticate, groupScope, mentionsRouter);
 // specific prefix wins. Routes inside layer requireAdmin on each
 // verb; group scoping is handled here so req.groupId is set.
 app.use("/api/notifications/digest-recipients", authenticate, groupScope, digestRecipientsRouter);
+app.use("/api/audit", authenticate, groupScope, auditRouter);
 
 // Notifications router carries both public (unsubscribe) and admin
 // (ad-hoc reminder/digest triggers) endpoints. Public endpoints

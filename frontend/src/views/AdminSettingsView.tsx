@@ -27,6 +27,7 @@ import {
   useUsers,
 } from "../lib/queries";
 import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, TshirtSize, User } from "../lib/types";
+import { AuditTrailAdmin } from "../components/AuditTrailAdmin";
 import { AdminConstants } from "../components/AdminConstants";
 import { AiReferenceEstimatesAdmin } from "../components/AiReferenceEstimatesAdmin";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
@@ -84,6 +85,7 @@ const TOP_TABS: TopTabDef[] = [
   // (soft-delete via deleted_at) flow.
   { key: "archived",               label: "Deleted cards",         render: () => <ArchivedProjectsAdmin /> },
   { key: "notifications",          label: "Notifications",         render: () => <NotificationsAdmin /> },
+  { key: "audit-trail",            label: "Audit trail",           render: () => <AuditTrailAdmin /> },
   { key: "tshirt-sizes",           label: "T-Shirt Sizes",         render: () => <TshirtSizesAdmin /> },
   { key: "ai-reference-estimates", label: "AI reference estimates", render: () => <AiReferenceEstimatesAdmin /> },
   {
