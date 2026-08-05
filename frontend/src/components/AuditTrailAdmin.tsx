@@ -151,45 +151,36 @@ function AuditEventModal({
 export function AuditTrailAdmin() {
   const users = useUsers();
   const [page, setPage] = useState(1);
-  const [draftUserId, setDraftUserId] = useState("");
-  const [draftAction, setDraftAction] = useState<"" | AuditAction>("");
-  const [draftFromLocal, setDraftFromLocal] = useState("");
-  const [draftToLocal, setDraftToLocal] = useState("");
-  const [applied, setApplied] = useState<{
-    user_id?: string;
-    action?: AuditAction;
-    from?: string;
-    to?: string;
-  }>({});
+  const [userId, setUserId] = useState("");
+  const [action, setAction] = useState<"" | AuditAction>("");
+  const [fromLocal, setFromLocal] = useState("");
+  const [toLocal, setToLocal] = useState("");
   const [selected, setSelected] = useState<RecentAuditEvent | null>(null);
 
-  const query = useAuditEvents({
-    page,
-    ...applied,
-  });
+  const queryFilters = useMemo(
+    () => ({
+      page,
+      user_id: userId || undefined,
+      action: action || undefined,
+      from: localDateTimeToIso(fromLocal),
+      to: localDateTimeToIso(toLocal),
+    }),
+    [page, userId, action, fromLocal, toLocal],
+  );
+
+  const query = useAuditEvents(queryFilters);
 
   const userOptions = useMemo(
     () => (users.data ?? []).slice().sort((a, b) => a.name.localeCompare(b.name)),
     [users.data],
   );
 
-  function applyFilters() {
-    setPage(1);
-    setApplied({
-      user_id: draftUserId || undefined,
-      action: draftAction || undefined,
-      from: localDateTimeToIso(draftFromLocal),
-      to: localDateTimeToIso(draftToLocal),
-    });
-  }
-
   function clearFilters() {
-    setDraftUserId("");
-    setDraftAction("");
-    setDraftFromLocal("");
-    setDraftToLocal("");
+    setUserId("");
+    setAction("");
+    setFromLocal("");
+    setToLocal("");
     setPage(1);
-    setApplied({});
   }
 
   const events = query.data?.events ?? [];
@@ -209,8 +200,11 @@ export function AuditTrailAdmin() {
             <span className="text-wp-slate">User</span>
             <select
               className="input mt-1 w-full"
-              value={draftUserId}
-              onChange={(e) => setDraftUserId(e.target.value)}
+              value={userId}
+              onChange={(e) => {
+                setPage(1);
+                setUserId(e.target.value);
+              }}
             >
               <option value="">All users</option>
               {userOptions.map((u) => (
@@ -223,8 +217,11 @@ export function AuditTrailAdmin() {
             <span className="text-wp-slate">Event type</span>
             <select
               className="input mt-1 w-full"
-              value={draftAction}
-              onChange={(e) => setDraftAction(e.target.value as "" | AuditAction)}
+              value={action}
+              onChange={(e) => {
+                setPage(1);
+                setAction(e.target.value as "" | AuditAction);
+              }}
             >
               {ACTION_OPTIONS.map((opt) => (
                 <option key={opt.value || "all"} value={opt.value}>{opt.label}</option>
@@ -237,8 +234,11 @@ export function AuditTrailAdmin() {
             <input
               type="datetime-local"
               className="input mt-1 w-full"
-              value={draftFromLocal}
-              onChange={(e) => setDraftFromLocal(e.target.value)}
+              value={fromLocal}
+              onChange={(e) => {
+                setPage(1);
+                setFromLocal(e.target.value);
+              }}
             />
           </label>
 
@@ -247,18 +247,18 @@ export function AuditTrailAdmin() {
             <input
               type="datetime-local"
               className="input mt-1 w-full"
-              value={draftToLocal}
-              onChange={(e) => setDraftToLocal(e.target.value)}
+              value={toLocal}
+              onChange={(e) => {
+                setPage(1);
+                setToLocal(e.target.value);
+              }}
             />
           </label>
         </div>
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" className="btn-primary" onClick={applyFilters}>
-            Apply filters
-          </button>
+        <div className="mt-3">
           <button type="button" className="btn-secondary" onClick={clearFilters}>
-            Clear
+            Clear filters
           </button>
         </div>
       </section>
