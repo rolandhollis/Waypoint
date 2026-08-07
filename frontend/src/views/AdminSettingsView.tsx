@@ -2343,15 +2343,6 @@ function UsersAdmin() {
     mutationFn: (v: { id: string; role: User["role"] }) => api<User>(`/users/${v.id}/role`, { method: "PATCH", body: JSON.stringify({ role: v.role }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   });
-  const patchName = useMutation({
-    mutationFn: (v: { id: string; name: string }) =>
-      api<User>(`/users/${v.id}`, { method: "PATCH", body: JSON.stringify({ name: v.name }) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["users"] });
-      qc.invalidateQueries({ queryKey: ["mentionableUsers"] });
-      qc.invalidateQueries({ queryKey: ["projects"] });
-    },
-  });
   const patchCapacity = useMutation({
     mutationFn: (v: { id: string; capacity: number | null }) =>
       api<User>(`/users/${v.id}`, { method: "PATCH", body: JSON.stringify({ capacity: v.capacity }) }),
@@ -2394,16 +2385,19 @@ function UsersAdmin() {
         </button>
       </div>
       <MutationErrorBanner mutation={patchRole} className="mt-3" />
-      <MutationErrorBanner mutation={patchName} className="mt-3" />
       <MutationErrorBanner mutation={patchCapacity} className="mt-3" />
       <MutationErrorBanner mutation={delUser} className="mt-3" />
       <ul className="mt-3 divide-y divide-wp-stone">
         {users.data?.map((u) => (
           <li key={u.id} className="flex items-center gap-3 py-2">
+            {/* Identity region — click opens the detail modal. Right-side
+                controls (capacity, role, reset, delete) stay independent
+                so a stray click on a dropdown doesn't also open the
+                dialog. */}
             <button
               type="button"
               onClick={() => setViewingUser(u)}
-              className="-m-1 shrink-0 rounded p-1 transition hover:bg-wp-stone/40 focus:bg-wp-stone/40 focus:outline-none"
+              className="-m-1 flex min-w-0 flex-1 items-center gap-3 rounded p-1 text-left transition hover:bg-wp-stone/40 focus:bg-wp-stone/40 focus:outline-none"
               title="View details and manage group memberships"
             >
               <span
@@ -2412,51 +2406,29 @@ function UsersAdmin() {
               >
                 {u.name.split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("")}
               </span>
-            </button>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="text"
-                  className="input min-w-0 flex-1 text-sm font-medium"
-                  maxLength={120}
-                  key={`name-${u.id}-${u.updated_at}`}
-                  defaultValue={u.name}
-                  onBlur={(e) => {
-                    const next = e.target.value.trim();
-                    if (next === u.name) return;
-                    if (!next) {
-                      e.target.value = u.name;
-                      return;
-                    }
-                    patchName.mutate({ id: u.id, name: next });
-                  }}
-                  aria-label={`Name for ${u.email}`}
-                />
-                {u.is_super_user ? (
-                  <span
-                    className="rounded bg-wp-red/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-wp-red"
-                    title="Super-admin — implicit member of every group"
-                  >
-                    Super
-                  </span>
-                ) : null}
-                {isPasswordMode && !u.password_updated_at ? (
-                  <span
-                    className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
-                    title="This user has no password set and cannot sign in until one is created."
-                  >
-                    No password
-                  </span>
-                ) : null}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-sm font-medium text-wp-ink">
+                  {u.name}
+                  {u.is_super_user ? (
+                    <span
+                      className="rounded bg-wp-red/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-wp-red"
+                      title="Super-admin — implicit member of every group"
+                    >
+                      Super
+                    </span>
+                  ) : null}
+                  {isPasswordMode && !u.password_updated_at ? (
+                    <span
+                      className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
+                      title="This user has no password set and cannot sign in until one is created."
+                    >
+                      No password
+                    </span>
+                  ) : null}
+                </div>
+                <div className="text-xs text-wp-slate">{u.email}</div>
               </div>
-              <button
-                type="button"
-                onClick={() => setViewingUser(u)}
-                className="mt-0.5 text-left text-xs text-wp-slate transition hover:text-wp-ink hover:underline"
-              >
-                {u.email}
-              </button>
-            </div>
+            </button>
             <label className="flex items-center gap-1 text-xs text-wp-slate">
               Cap
               <input
@@ -2541,7 +2513,10 @@ function UsersAdmin() {
         />
       ) : null}
       {viewingUser ? (
-        <UserDetailDialog user={viewingUser} onClose={() => setViewingUser(null)} />
+        <UserDetailDialog
+          user={users.data?.find((row) => row.id === viewingUser.id) ?? viewingUser}
+          onClose={() => setViewingUser(null)}
+        />
       ) : null}
     </section>
   );
