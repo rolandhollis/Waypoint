@@ -529,7 +529,7 @@ function reminderRunTitle(last: ReminderRunResult): string {
     return "Preview complete — no emails sent; log rows rolled back after preview.";
   }
   if (last.sent === 0 && last.skippedAlreadySent > 0) {
-    return "No new emails sent — every owner who owed an update already received a reminder this week.";
+    return "No new emails sent — scheduled sends skip owners who already received a reminder this week.";
   }
   if (last.sent === 0 && last.pendingOwners === 0) {
     return "No owners owe a status update this week — nothing to send.";
@@ -674,7 +674,7 @@ function ReminderAdmin() {
               !(await confirm({
                 title: "Send reminder emails now?",
                 description:
-                  "Every owner in this group who owes a status update this week will get one email.\n\nOwners who already got one this week are automatically skipped.",
+                  "Every owner in this group who owes a status update this week will get one email — including anyone who already received a reminder this week.",
                 confirmLabel: "Send now",
               }))
             ) return;
@@ -783,7 +783,7 @@ function digestRunTitle(last: DigestRunResult): string {
     return "Preview complete — no emails sent; log rows rolled back after preview.";
   }
   if (last.sent === 0 && last.skippedAlreadySent > 0) {
-    return "No new emails sent — everyone on the list already received this week's digest. Use \"Send again (latest)\" to resend.";
+    return "No new emails sent — scheduled sends skip recipients who already got this week's digest.";
   }
   if (last.sent === 0 && last.recipients === 0) {
     return "No digest recipients configured.";
@@ -1013,7 +1013,7 @@ function DigestAdmin() {
               !(await confirm({
                 title: "Send digest now?",
                 description:
-                  "Send the weekly digest to every recipient in this group's list.\n\nRecipients who already got one this week are automatically skipped.",
+                  "Send the weekly digest to every recipient on this group's list, including anyone who already received one this week.",
                 confirmLabel: "Send now",
               }))
             ) return;

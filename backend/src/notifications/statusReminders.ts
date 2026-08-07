@@ -312,6 +312,20 @@ export async function runStatusReportReminders({
   const candidates = await loadCandidates();
   const pending = await collectPending(now, scope);
 
+  // Admin manual sends (scopeGroupId) email every pending owner in the
+  // group; scheduled cron (scopeGroupIds) keeps per-week idempotency.
+  if (!dryRun && scopeGroupId && pending.size > 0) {
+    const ownerIds = Array.from(pending.keys());
+    const deleted = await query(
+      `DELETE FROM notification_log
+        WHERE kind = $1 AND week_of = $2::date AND user_id = ANY($3::uuid[])`,
+      [KIND, weekIso, ownerIds],
+    );
+    console.log(
+      `[reminders] manual scope cleared ${deleted.rowCount ?? 0} notification_log row(s)`,
+    );
+  }
+
   let sent = 0;
   let skipped = 0;
   let errors = 0;

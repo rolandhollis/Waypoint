@@ -492,7 +492,9 @@ export async function runStatusReportDigest({
   const weekIso = week.toISOString().slice(0, 10);
   const appUrl = config.publicAppUrl.replace(/\/$/, "");
 
-  if (forceResend && !dryRun) {
+  // Admin manual sends (scopeGroupId) always email the full roster;
+  // scheduled cron (scopeGroupIds) keeps per-week idempotency.
+  if (!dryRun && (forceResend || scopeGroupId)) {
     const deleted = await query(
       scope?.groupId
         ? `DELETE FROM notification_log
@@ -508,7 +510,9 @@ export async function runStatusReportDigest({
           ? [KIND, weekIso, scope.groupIds]
           : [KIND, weekIso],
     );
-    console.log(`[digest] force_resend cleared ${deleted.rowCount ?? 0} notification_log row(s)`);
+    console.log(
+      `[digest] cleared ${deleted.rowCount ?? 0} notification_log row(s) before manual send`,
+    );
   }
 
   const bundles = await collectByGroup(weekIso, scope);
