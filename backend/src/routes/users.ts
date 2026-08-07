@@ -570,6 +570,7 @@ usersRouter.post("/", groupScope, requireAdmin, async (req, res) => {
 // -----------------------------------------------------------------
 
 const patchUserSchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
   role: roleEnum.optional(),
   capacity: z.number().int().min(1).max(1000).nullable().optional(),
 });
