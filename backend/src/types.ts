@@ -89,6 +89,8 @@ export type GroupRow = {
 export type AppConstants = {
   /** Tenant-visible product name shown in navbar / document title. */
   app_name?: string | null;
+  /** Sender display name on outbound emails for this tenant. */
+  email_title?: string | null;
   /** Admin overrides for weekly status cadence (partial — unset keys use defaults). */
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */

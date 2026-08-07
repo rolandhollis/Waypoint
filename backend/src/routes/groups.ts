@@ -270,6 +270,7 @@ const weeklyStatusSchedulePatchSchema = z
 const constantsPatchSchema = z
   .object({
     app_name: z.string().trim().min(1).max(60).nullable().optional(),
+    email_title: z.string().trim().min(1).max(80).nullable().optional(),
     weekly_status_schedule: weeklyStatusSchedulePatchSchema.nullable().optional(),
   })
   .strict();
@@ -286,6 +287,11 @@ function mergeConstantsBag(
   if (body.app_name !== undefined) {
     if (body.app_name === null) delete bag.app_name;
     else bag.app_name = body.app_name;
+  }
+
+  if (body.email_title !== undefined) {
+    if (body.email_title === null) delete bag.email_title;
+    else bag.email_title = body.email_title;
   }
 
   if (body.weekly_status_schedule !== undefined) {

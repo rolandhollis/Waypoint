@@ -527,6 +527,12 @@ export function useAiReferenceEstimates(enabled = true) {
 export const DEFAULT_APP_NAME = "Waypoint";
 
 /**
+ * Platform default sender display name when a group has no
+ * `email_title` override (matches EMAIL_FROM_NAME server default).
+ */
+export const DEFAULT_EMAIL_TITLE = "RetailMeNot Product";
+
+/**
  * The Group row (from `useGroups`) matching the user's current
  * tenant, or `null` while `useMe` / `useGroups` are still loading
  * or the user has no active group (pre-auth, or an admin-just-

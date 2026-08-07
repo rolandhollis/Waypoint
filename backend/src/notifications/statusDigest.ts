@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { pool, query } from "../db/pool.js";
 import {
+  loadGroupConstants,
   loadGroupWeeklyStatusSchedules,
   type GroupScheduleScope,
 } from "../lib/groupConstants.js";
@@ -678,6 +679,7 @@ export async function runStatusReportDigest({
       ? { groupId: scopeGroupId }
       : undefined;
   const schedules = await loadGroupWeeklyStatusSchedules(scope);
+  const groupConstants = await loadGroupConstants(scope);
   const anchorSchedule =
     schedules.values().next().value ?? resolveWeeklyStatusSchedule();
   const now = new Date();
@@ -793,6 +795,7 @@ export async function runStatusReportDigest({
 
         const result = await sendEmail({
           to: r.email,
+          from: config.email.formatFrom(groupConstants.get(bundle.groupId)?.email_title),
           subject: msg.subject,
           text: msg.text,
           html: msg.html,

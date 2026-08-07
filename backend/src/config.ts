@@ -19,6 +19,9 @@ function formatEmailFrom(displayName: string, rawAddress: string): string {
   return `${displayName} <${parseEmailAddress(rawAddress)}>`;
 }
 
+const defaultEmailFromAddress = process.env.EMAIL_FROM_ADDRESS ?? "onboarding@resend.dev";
+const defaultEmailFromName = process.env.EMAIL_FROM_NAME ?? "RetailMeNot Product";
+
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
@@ -73,11 +76,13 @@ export const config = {
    */
   email: {
     resendApiKey: process.env.RESEND_API_KEY ?? "",
-    fromName: process.env.EMAIL_FROM_NAME ?? "RetailMeNot Product",
-    fromAddress: formatEmailFrom(
-      process.env.EMAIL_FROM_NAME ?? "RetailMeNot Product",
-      process.env.EMAIL_FROM_ADDRESS ?? "onboarding@resend.dev",
-    ),
+    fromName: defaultEmailFromName,
+    fromAddress: formatEmailFrom(defaultEmailFromName, defaultEmailFromAddress),
+    /** Build a Resend `from` header, optionally overriding the display name. */
+    formatFrom(displayName?: string | null): string {
+      const name = displayName?.trim() || defaultEmailFromName;
+      return formatEmailFrom(name, defaultEmailFromAddress);
+    },
     /** Signing key for one-click unsubscribe tokens. When unset we
      *  derive one from SUPER_ADMIN_PASSWORD as a last resort so
      *  unsubscribe links keep working in single-tenant self-hosts

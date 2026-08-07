@@ -103,6 +103,8 @@ export type WeeklyStatusScheduleInput = {
 export type AppConstants = {
   /** Tenant-visible product name shown in navbar / document title. */
   app_name?: string | null;
+  /** Sender display name on outbound emails for this tenant. */
+  email_title?: string | null;
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */
   weekly_status_schedule_effective?: WeeklyStatusSchedule;

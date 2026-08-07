@@ -1,3 +1,4 @@
+import { config } from "../config.js";
 import { query } from "../db/pool.js";
 import type { AppConstants } from "../types.js";
 import {
@@ -20,6 +21,11 @@ export function deriveConstants(raw: unknown): AppConstants {
     const v = bag.app_name;
     if (v === null) out.app_name = null;
     else if (typeof v === "string") out.app_name = v;
+  }
+  if ("email_title" in bag) {
+    const v = bag.email_title;
+    if (v === null) out.email_title = null;
+    else if (typeof v === "string") out.email_title = v;
   }
   if ("weekly_status_schedule" in bag) {
     const v = bag.weekly_status_schedule;
@@ -98,4 +104,29 @@ export async function loadGroupWeeklyStatusSchedules(
 export async function loadGroupWeeklyStatusSchedule(groupId: string): Promise<WeeklyStatusSchedule> {
   const map = await loadGroupWeeklyStatusSchedules({ groupId });
   return map.get(groupId) ?? resolveWeeklyStatusSchedule();
+}
+
+/** Effective sender display name for outbound email from this tenant. */
+export function emailTitleForConstants(constants: AppConstants): string {
+  const title = constants.email_title?.trim();
+  return title && title.length > 0 ? title : config.email.fromName;
+}
+
+/** Load derived constants for one, many, or all groups. */
+export async function loadGroupConstants(
+  scope?: GroupScheduleScope,
+): Promise<Map<string, AppConstants>> {
+  const { rows } = await query<{ id: string; constants: unknown }>(
+    scope?.groupId
+      ? `SELECT id, constants FROM groups WHERE id = $1`
+      : scope?.groupIds?.length
+        ? `SELECT id, constants FROM groups WHERE id = ANY($1::uuid[])`
+        : `SELECT id, constants FROM groups`,
+    scope?.groupId ? [scope.groupId] : scope?.groupIds?.length ? [scope.groupIds] : [],
+  );
+  const out = new Map<string, AppConstants>();
+  for (const row of rows) {
+    out.set(row.id, deriveConstants(row.constants));
+  }
+  return out;
 }

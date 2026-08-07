@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
 import { api } from "../lib/api";
-import { DEFAULT_APP_NAME, useCurrentGroup, useGroupConstants, useMe } from "../lib/queries";
+import { DEFAULT_APP_NAME, DEFAULT_EMAIL_TITLE, useCurrentGroup, useGroupConstants, useMe } from "../lib/queries";
 import type { AppConstants } from "../lib/types";
 import { useAppDialog } from "./AppDialogProvider";
 import { MutationErrorBanner } from "./MutationErrorBanner";
@@ -19,8 +19,8 @@ import { MutationErrorBanner } from "./MutationErrorBanner";
  *     AdminSettingsView tab-nav already gates on `useIsAdmin()`, so
  *     this component doesn't re-check role; a viewer landing here
  *     would have been blocked at the outer view.
- *   * Only surfaces recognized keys. Today that's just `app_name`;
- *     when new constants ship, add a new field-row here.
+ *   * Only surfaces recognized keys (`app_name`, `email_title`, …).
+ *     When new constants ship, add a new field-row here.
  *
  * Save UX mirrors the compact card-form idiom used by
  * `TshirtSizesAdmin` and `KpisAdmin`: explicit Save button per
@@ -60,8 +60,9 @@ export function AdminConstants() {
         </p>
       </div>
 
-      <div className="mt-4">
+      <div className="mt-4 space-y-6">
         <AppNameField groupId={groupId} />
+        <EmailTitleField groupId={groupId} />
       </div>
     </section>
   );
@@ -161,6 +162,92 @@ function AppNameField({ groupId }: { groupId: string }) {
         this group. Max 60 characters. Leave blank and reset to fall back to
         the platform default (
         <span className="font-mono">{DEFAULT_APP_NAME}</span>).
+      </p>
+    </div>
+  );
+}
+
+function EmailTitleField({ groupId }: { groupId: string }) {
+  const qc = useQueryClient();
+  const { confirm } = useAppDialog();
+  const constantsQ = useGroupConstants(groupId);
+  const persisted = (constantsQ.data?.email_title ?? "") as string;
+
+  const [draft, setDraft] = useState<string>(persisted);
+  useEffect(() => {
+    setDraft(persisted);
+  }, [persisted]);
+
+  const patch = useMutation({
+    mutationFn: (body: Pick<AppConstants, "email_title">) =>
+      api<AppConstants>(`/groups/${groupId}/constants`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["groups"] });
+      qc.invalidateQueries({ queryKey: ["groupConstants", groupId] });
+    },
+  });
+
+  const trimmed = draft.trim();
+  const isDirty = trimmed !== persisted.trim();
+  const canSave = isDirty && trimmed.length > 0 && trimmed.length <= 80 && !patch.isPending;
+  const isCleared = persisted.trim().length === 0;
+
+  return (
+    <div className="space-y-2">
+      <MutationErrorBanner mutation={patch} />
+      <label className="block text-xs font-medium text-wp-slate">
+        Email title
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <input
+            className="input min-w-[16rem] flex-1"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={DEFAULT_EMAIL_TITLE}
+            maxLength={80}
+            disabled={constantsQ.isLoading || patch.isPending}
+          />
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={!canSave}
+            onClick={() => patch.mutate({ email_title: trimmed })}
+          >
+            {patch.isPending && patch.variables?.email_title !== null ? "Saving…" : "Save"}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary inline-flex items-center gap-1.5"
+            disabled={isCleared || patch.isPending}
+            title={
+              isCleared
+                ? `Already using the platform default ("${DEFAULT_EMAIL_TITLE}")`
+                : `Clear override; emails use "${DEFAULT_EMAIL_TITLE}"`
+            }
+            onClick={async () => {
+              if (
+                !(await confirm({
+                  title: "Reset email title?",
+                  description: `Reset the email sender name to the platform default ("${DEFAULT_EMAIL_TITLE}")?`,
+                }))
+              )
+                return;
+              patch.mutate({ email_title: null });
+            }}
+          >
+            <RotateCcw size={13} />
+            {patch.isPending && patch.variables?.email_title === null
+              ? "Resetting…"
+              : "Reset to default"}
+          </button>
+        </div>
+      </label>
+      <p className="text-[11px] text-wp-slate/80">
+        Sender name shown in the inbox for digest and reminder emails from this
+        workspace. Max 80 characters. Reset to use the platform default (
+        <span className="font-mono">{DEFAULT_EMAIL_TITLE}</span>).
       </p>
     </div>
   );

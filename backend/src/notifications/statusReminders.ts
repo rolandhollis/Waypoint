@@ -2,6 +2,7 @@ import { config } from "../config.js";
 import { pool, query, withTransaction } from "../db/pool.js";
 import { eligibleProjects } from "../routes/statusUpdates.js";
 import {
+  loadGroupConstants,
   loadGroupWeeklyStatusSchedules,
   type GroupScheduleScope,
 } from "../lib/groupConstants.js";
@@ -300,6 +301,7 @@ export async function runStatusReportReminders({
       ? { groupId: scopeGroupId }
       : undefined;
   const schedules = await loadGroupWeeklyStatusSchedules(scope);
+  const groupConstants = await loadGroupConstants(scope);
   const anchorSchedule =
     schedules.values().next().value ?? resolveWeeklyStatusSchedule();
   const now = new Date();
@@ -393,8 +395,15 @@ export async function runStatusReportReminders({
         continue;
       }
 
+      const reminderFromGroupId = scope?.groupId
+        ? scope.groupId
+        : Array.from(bucket.groupIds).sort()[0];
+
       const result = await sendEmail({
         to: user.email,
+        from: config.email.formatFrom(
+          reminderFromGroupId ? groupConstants.get(reminderFromGroupId)?.email_title : null,
+        ),
         subject: msg.subject,
         text: msg.text,
         html: msg.html,

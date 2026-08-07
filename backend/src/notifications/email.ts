@@ -47,6 +47,8 @@ export type SendEmailInput = {
    *  so Gmail lights up the built-in "Unsubscribe" button — a
    *  meaningful inbox-placement signal. */
   headers?: Record<string, string>;
+  /** Optional override for the Resend `from` display name (per-tenant). */
+  from?: string;
 };
 
 export async function sendEmail(input: SendEmailInput): Promise<SendResult> {
@@ -62,7 +64,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendResult> {
   }
 
   const { data, error } = await resend.emails.send({
-    from: config.email.fromAddress,
+    from: input.from ?? config.email.fromAddress,
     to: input.to,
     subject: input.subject,
     text: input.text,
