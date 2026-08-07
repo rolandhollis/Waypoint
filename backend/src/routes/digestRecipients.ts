@@ -112,6 +112,56 @@ digestRecipientsRouter.post("/user", requireAdmin, async (req, res) => {
   }
 });
 
+const addUsersSchema = z.object({
+  user_ids: z.array(z.string().uuid()).min(1).max(100),
+});
+
+/**
+ * Batch add user-linked digest recipients. Non-members and duplicates
+ * are skipped without failing the whole batch.
+ */
+digestRecipientsRouter.post("/users", requireAdmin, async (req, res) => {
+  const body = addUsersSchema.parse(req.body ?? {});
+  const unique = [...new Set(body.user_ids)];
+
+  let added = 0;
+  let skipped_duplicate = 0;
+  let skipped_not_member = 0;
+
+  await withTransaction(async (client) => {
+    for (const user_id of unique) {
+      const { rows: memberCheck } = await client.query<{ email: string }>(
+        `SELECT u.email
+           FROM user_groups ug
+           JOIN users u ON u.id = ug.user_id
+          WHERE ug.user_id = $1 AND ug.group_id = $2`,
+        [user_id, req.groupId!],
+      );
+      if (!memberCheck[0]) {
+        skipped_not_member += 1;
+        continue;
+      }
+      const { email } = memberCheck[0];
+      try {
+        await client.query(
+          `INSERT INTO status_digest_recipients (group_id, user_id, email, created_by)
+           VALUES ($1, $2, $3, $4)`,
+          [req.groupId!, user_id, email, req.user?.id ?? null],
+        );
+        added += 1;
+      } catch (e) {
+        if ((e as { code?: string }).code === "23505") {
+          skipped_duplicate += 1;
+        } else {
+          throw e;
+        }
+      }
+    }
+  });
+
+  res.status(201).json({ added, skipped_duplicate, skipped_not_member });
+});
+
 const addEmailSchema = z.object({
   email: z
     .string()

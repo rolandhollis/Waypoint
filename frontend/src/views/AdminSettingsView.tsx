@@ -34,6 +34,7 @@ import { WeeklyStatusScheduleAdmin } from "../components/WeeklyStatusScheduleAdm
 import { AiReferenceEstimatesAdmin } from "../components/AiReferenceEstimatesAdmin";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
+import { MultiSelect } from "../components/MultiSelect";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
 import { PasswordField } from "../components/PasswordField";
 import { passwordIsValid } from "../lib/password";
@@ -802,6 +803,12 @@ type DigestRunArgs = { dry_run: boolean; force_resend?: boolean; admin_note?: st
 
 type AddDigestEmailsResult = { added: number; skipped_duplicate: number };
 
+type AddDigestUsersResult = {
+  added: number;
+  skipped_duplicate: number;
+  skipped_not_member: number;
+};
+
 const EMAIL_LIST_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Split comma / semicolon / whitespace separated paste into unique emails. */
@@ -831,11 +838,11 @@ function DigestAdmin() {
   });
   const users = useUsers();
 
-  const addUser = useMutation({
-    mutationFn: (user_id: string) =>
-      api<{ id: string }>("/notifications/digest-recipients/user", {
+  const addUsers = useMutation({
+    mutationFn: (user_ids: string[]) =>
+      api<AddDigestUsersResult>("/notifications/digest-recipients/users", {
         method: "POST",
-        body: JSON.stringify({ user_id }),
+        body: JSON.stringify({ user_ids }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["digestRecipients"] }),
   });
@@ -861,7 +868,7 @@ function DigestAdmin() {
   });
 
   const [mode, setMode] = useState<"user" | "email">("user");
-  const [pickUserId, setPickUserId] = useState<string>("");
+  const [pickUserIds, setPickUserIds] = useState<string[]>([]);
   const [emailInput, setEmailInput] = useState("");
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
@@ -890,6 +897,15 @@ function DigestAdmin() {
       .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
   }, [users.data, recipientEmails]);
 
+  const pickableUserOptions = useMemo(
+    () =>
+      pickableUsers.map((u) => ({
+        id: u.id,
+        label: `${u.name} (${u.email})`,
+      })),
+    [pickableUsers],
+  );
+
   const parsedEmails = useMemo(() => parseEmailList(emailInput), [emailInput]);
   const newEmailsToAdd = useMemo(
     () => parsedEmails.valid.filter((e) => !recipientEmails.has(e)),
@@ -902,9 +918,28 @@ function DigestAdmin() {
     setEmailError(null);
     setEmailSuccess(null);
     if (mode === "user") {
-      if (!pickUserId) return;
-      addUser.mutate(pickUserId, {
-        onSuccess: () => setPickUserId(""),
+      if (!pickUserIds.length) return;
+      addUsers.mutate(pickUserIds, {
+        onSuccess: (result) => {
+          setPickUserIds([]);
+          const parts: string[] = [];
+          if (result.added > 0) {
+            parts.push(
+              `Added ${result.added} recipient${result.added === 1 ? "" : "s"}.`,
+            );
+          }
+          if (result.skipped_duplicate > 0) {
+            parts.push(
+              `${result.skipped_duplicate} skipped (already on the list).`,
+            );
+          }
+          if (result.skipped_not_member > 0) {
+            parts.push(
+              `${result.skipped_not_member} skipped (not in this group).`,
+            );
+          }
+          if (parts.length) setEmailSuccess(parts.join(" "));
+        },
         onError: (err) => setEmailError(err instanceof Error ? err.message : "failed to add"),
       });
     } else {
@@ -1099,8 +1134,8 @@ function DigestAdmin() {
       <div className="mt-6 border-t border-wp-stone/60 pt-4">
         <h3 className="text-sm font-semibold text-wp-ink">Digest recipients</h3>
         <p className="mt-0.5 text-xs text-wp-slate">
-          Add anyone who should receive the Friday email — pick a group member from
-          the dropdown or paste one or more ad-hoc addresses (comma, space, or newline separated).
+          Add anyone who should receive the Friday email — pick one or more group
+          members or paste ad-hoc addresses (comma, space, or newline separated).
         </p>
 
         <form onSubmit={handleAdd} className="mt-3 flex flex-wrap items-start gap-2">
@@ -1128,18 +1163,14 @@ function DigestAdmin() {
           </div>
 
           {mode === "user" ? (
-            <select
-              className="input h-9 min-w-[240px]"
-              value={pickUserId}
-              onChange={(e) => setPickUserId(e.target.value)}
-            >
-              <option value="">— pick a user —</option>
-              {pickableUsers.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name} ({u.email})
-                </option>
-              ))}
-            </select>
+            <MultiSelect
+              label="Select users"
+              options={pickableUserOptions}
+              value={pickUserIds}
+              onChange={setPickUserIds}
+              emptyMessage="Everyone in this group is already on the list"
+              widthClass="w-72"
+            />
           ) : (
             <textarea
               className="input min-h-[4.5rem] min-w-[min(100%,20rem)] flex-1 text-sm"
@@ -1159,16 +1190,18 @@ function DigestAdmin() {
             type="submit"
             className="btn-primary h-9"
             disabled={
-              addUser.isPending ||
+              addUsers.isPending ||
               addEmails.isPending ||
-              (mode === "user" ? !pickUserId : !emailAddReady)
+              (mode === "user" ? pickUserIds.length === 0 : !emailAddReady)
             }
           >
-            {addUser.isPending || addEmails.isPending
+            {addUsers.isPending || addEmails.isPending
               ? "Adding…"
-              : mode === "email" && newEmailsToAdd.length > 1
-                ? `Add ${newEmailsToAdd.length}`
-                : "Add"}
+              : mode === "user" && pickUserIds.length > 1
+                ? `Add ${pickUserIds.length}`
+                : mode === "email" && newEmailsToAdd.length > 1
+                  ? `Add ${newEmailsToAdd.length}`
+                  : "Add"}
           </button>
         </form>
         {emailError ? (
