@@ -505,6 +505,39 @@ type ReminderRunResult = {
   dryRun: boolean;
 };
 
+function notificationRunBannerClass(
+  errors: number,
+  sent: number,
+  dryRun: boolean,
+  skippedAlreadySent: number,
+): string {
+  if (errors > 0 && sent === 0) return "border-red-200 bg-red-50 text-red-900";
+  if (errors > 0) return "border-amber-200 bg-amber-50 text-amber-900";
+  if (dryRun) return "border-wp-stone bg-wp-stone/20 text-wp-ink";
+  if (sent === 0) return "border-amber-200 bg-amber-50 text-amber-900";
+  return "border-emerald-200 bg-emerald-50 text-emerald-900";
+}
+
+function reminderRunTitle(last: ReminderRunResult): string {
+  if (last.errors > 0 && last.sent === 0) {
+    return "Reminder send failed — check server logs and RESEND_API_KEY.";
+  }
+  if (last.errors > 0) {
+    return "Reminders sent with errors — some owners may not have received email.";
+  }
+  if (last.dryRun) {
+    return "Preview complete — no emails sent; log rows rolled back after preview.";
+  }
+  if (last.sent === 0 && last.skippedAlreadySent > 0) {
+    return "No new emails sent — every owner who owed an update already received a reminder this week.";
+  }
+  if (last.sent === 0 && last.pendingOwners === 0) {
+    return "No owners owe a status update this week — nothing to send.";
+  }
+  if (last.sent === 0) return "No reminder emails sent.";
+  return `Reminder sent to ${last.sent} owner${last.sent === 1 ? "" : "s"}.`;
+}
+
 function NotificationsAdmin() {
   return (
     <div className="flex flex-col gap-4">
@@ -657,26 +690,12 @@ function ReminderAdmin() {
         <div
           className={
             "mt-4 rounded-md border px-3 py-2 text-xs " +
-            (last.errors > 0 && last.sent === 0
-              ? "border-red-200 bg-red-50 text-red-900"
-              : last.errors > 0
-                ? "border-amber-200 bg-amber-50 text-amber-900"
-                : last.dryRun
-                  ? "border-wp-stone bg-wp-stone/20 text-wp-ink"
-                  : "border-emerald-200 bg-emerald-50 text-emerald-900")
+            notificationRunBannerClass(last.errors, last.sent, last.dryRun, last.skippedAlreadySent)
           }
           role="status"
           aria-live="polite"
         >
-          <div className="font-semibold">
-            {last.errors > 0 && last.sent === 0
-              ? "Reminder send failed — check server logs and RESEND_API_KEY."
-              : last.errors > 0
-                ? "Reminders sent with errors — some owners may not have received email."
-                : last.dryRun
-                  ? "Preview complete — no emails sent; log rows rolled back after preview."
-                  : "Reminders sent."}
-          </div>
+          <div className="font-semibold">{reminderRunTitle(last)}</div>
           <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
             <li>
               <span className="text-wp-slate">Week of</span>
@@ -752,6 +771,32 @@ type DigestRunResult = {
   skippedEmptyGroups: number;
   errors: number;
 };
+
+function digestRunTitle(last: DigestRunResult): string {
+  if (last.errors > 0 && last.sent === 0) {
+    return "Digest send failed — check server logs and RESEND_API_KEY.";
+  }
+  if (last.errors > 0) {
+    return "Digests sent with errors — some recipients may not have received email.";
+  }
+  if (last.dryRun) {
+    return "Preview complete — no emails sent; log rows rolled back after preview.";
+  }
+  if (last.sent === 0 && last.skippedAlreadySent > 0) {
+    return "No new emails sent — everyone on the list already received this week's digest. Use \"Send again (latest)\" to resend.";
+  }
+  if (last.sent === 0 && last.recipients === 0) {
+    return "No digest recipients configured.";
+  }
+  if (last.sent === 0 && last.updatesIncluded === 0) {
+    return "No submitted updates to include this week.";
+  }
+  if (last.forceResend) {
+    return `Digest resent to ${last.sent} recipient${last.sent === 1 ? "" : "s"}.`;
+  }
+  if (last.sent === 0) return "No digest emails sent.";
+  return `Digest sent to ${last.sent} recipient${last.sent === 1 ? "" : "s"}.`;
+}
 
 type DigestRunArgs = { dry_run: boolean; force_resend?: boolean; admin_note?: string };
 
@@ -1005,28 +1050,17 @@ function DigestAdmin() {
         <div
           className={
             "mt-4 rounded-md border px-3 py-2 text-xs " +
-            (lastRun.errors > 0 && lastRun.sent === 0
-              ? "border-red-200 bg-red-50 text-red-900"
-              : lastRun.errors > 0
-                ? "border-amber-200 bg-amber-50 text-amber-900"
-                : lastRun.dryRun
-                  ? "border-wp-stone bg-wp-stone/20 text-wp-ink"
-                  : "border-emerald-200 bg-emerald-50 text-emerald-900")
+            notificationRunBannerClass(
+              lastRun.errors,
+              lastRun.sent,
+              lastRun.dryRun,
+              lastRun.skippedAlreadySent,
+            )
           }
           role="status"
           aria-live="polite"
         >
-          <div className="font-semibold">
-            {lastRun.errors > 0 && lastRun.sent === 0
-              ? "Digest send failed — check server logs and RESEND_API_KEY."
-              : lastRun.errors > 0
-                ? "Digests sent with errors — some recipients may not have received email."
-                : lastRun.dryRun
-                  ? "Preview complete — no emails sent; log rows rolled back after preview."
-                  : lastRun.forceResend
-                    ? "Digests sent again with latest updates."
-                    : "Digests sent."}
-          </div>
+          <div className="font-semibold">{digestRunTitle(lastRun)}</div>
           <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
             <li>
               <span className="text-wp-slate">Week of</span>

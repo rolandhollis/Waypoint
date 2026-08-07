@@ -1,5 +1,5 @@
 import { config } from "../config.js";
-import { pool, query, withTransaction } from "../db/pool.js";
+import { pool, query } from "../db/pool.js";
 import {
   loadGroupWeeklyStatusSchedules,
   type GroupScheduleScope,
@@ -532,23 +532,39 @@ export async function runStatusReportDigest({
 
     for (const r of list) {
       try {
-        const alreadySent = await withTransaction(async (client) => {
+        const { rows: prior } = await query<{ provider_message_id: string | null }>(
+          `SELECT provider_message_id FROM notification_log
+            WHERE kind = $1 AND group_id = $2 AND LOWER(recipient_email) = LOWER($3) AND week_of = $4::date`,
+          [KIND, bundle.groupId, r.email, weekIso],
+        );
+        if (prior[0]?.provider_message_id) {
+          skipped += 1;
+          continue;
+        }
+
+        if (!prior[0]) {
           try {
-            await client.query(
+            await query(
               `INSERT INTO notification_log
                  (user_id, group_id, kind, week_of, recipient_email, provider_message_id)
                VALUES ($1, $2, $3, $4::date, $5, NULL)`,
               [r.user_id, bundle.groupId, KIND, weekIso, r.email],
             );
-            return false;
           } catch (e) {
-            if ((e as { code?: string }).code === "23505") return true;
-            throw e;
+            if ((e as { code?: string }).code === "23505") {
+              const { rows: raced } = await query<{ provider_message_id: string | null }>(
+                `SELECT provider_message_id FROM notification_log
+                  WHERE kind = $1 AND group_id = $2 AND LOWER(recipient_email) = LOWER($3) AND week_of = $4::date`,
+                [KIND, bundle.groupId, r.email, weekIso],
+              );
+              if (raced[0]?.provider_message_id) {
+                skipped += 1;
+                continue;
+              }
+            } else {
+              throw e;
+            }
           }
-        });
-        if (alreadySent) {
-          skipped += 1;
-          continue;
         }
 
         const unsubUrl = `${appUrl}/api/notifications/unsubscribe?token=${encodeURIComponent(

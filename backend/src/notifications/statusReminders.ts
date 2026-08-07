@@ -320,26 +320,38 @@ export async function runStatusReportReminders({
     const user = candidates.get(ownerId);
     if (!user) continue; // owner isn't opted in or has no email
     try {
-      const alreadySent = await withTransaction(async (client) => {
-        // Reserve the slot first — a unique-violation here means
-        // another worker (or a prior run) already sent this week's
-        // email and we should bail without hitting the provider.
+      const { rows: prior } = await query<{ provider_message_id: string | null }>(
+        `SELECT provider_message_id FROM notification_log
+          WHERE user_id = $1 AND kind = $2 AND week_of = $3::date`,
+        [ownerId, KIND, weekIso],
+      );
+      if (prior[0]?.provider_message_id) {
+        skipped += 1;
+        continue;
+      }
+
+      if (!prior[0]) {
         try {
-          await client.query(
+          await query(
             `INSERT INTO notification_log (user_id, kind, week_of, provider_message_id)
              VALUES ($1, $2, $3::date, NULL)`,
             [ownerId, KIND, weekIso],
           );
-          return false;
         } catch (e) {
-          const err = e as { code?: string };
-          if (err.code === "23505") return true; // unique_violation
-          throw e;
+          if ((e as { code?: string }).code === "23505") {
+            const { rows: raced } = await query<{ provider_message_id: string | null }>(
+              `SELECT provider_message_id FROM notification_log
+                WHERE user_id = $1 AND kind = $2 AND week_of = $3::date`,
+              [ownerId, KIND, weekIso],
+            );
+            if (raced[0]?.provider_message_id) {
+              skipped += 1;
+              continue;
+            }
+          } else {
+            throw e;
+          }
         }
-      });
-      if (alreadySent) {
-        skipped += 1;
-        continue;
       }
 
       const unsubUrl = `${appUrl}/api/notifications/unsubscribe?token=${encodeURIComponent(
