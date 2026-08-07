@@ -368,9 +368,92 @@ function laneGroupsForReport(updates: UpdateRow[]): Array<{ laneName: string; la
       });
     }
   }
-  return Array.from(byLane.values()).sort((a, b) =>
-    compareSwimLaneReportOrder(a.laneOrder, b.laneOrder, a.laneName, b.laneName),
+  return Array.from(byLane.values())
+    .sort((a, b) =>
+      compareSwimLaneReportOrder(a.laneOrder, b.laneOrder, a.laneName, b.laneName),
+    )
+    .map((g) => ({
+      ...g,
+      items: g.items.slice().sort((a, b) => a.project_title.localeCompare(b.project_title)),
+    }));
+}
+
+function compareDigestUpdates(a: UpdateRow, b: UpdateRow): number {
+  const laneCmp = compareSwimLaneReportOrder(
+    a.swim_lane_order,
+    b.swim_lane_order,
+    a.swim_lane_name ?? "(no lane)",
+    b.swim_lane_name ?? "(no lane)",
   );
+  if (laneCmp !== 0) return laneCmp;
+  return a.project_title.localeCompare(b.project_title);
+}
+
+/** At-risk (yellow) items first, then the remainder grouped by swim lane. */
+function splitDigestUpdates(updates: UpdateRow[]): {
+  atRisk: UpdateRow[];
+  laneGroups: Array<{ laneName: string; laneOrder: number | null; items: UpdateRow[] }>;
+} {
+  const atRisk = updates.filter((u) => u.health_flag === "yellow").sort(compareDigestUpdates);
+  const rest = updates.filter((u) => u.health_flag !== "yellow");
+  return { atRisk, laneGroups: laneGroupsForReport(rest) };
+}
+
+function formatUpdateTextLines(u: UpdateRow, appUrl: string, showLane = false): string[] {
+  const projectUrl = `${appUrl}/projects/${u.project_id}`;
+  const lines: string[] = [
+    `• ${u.project_title} [${healthLabel(u.health_flag)}]`,
+    `   ${projectUrl}`,
+  ];
+  if (showLane && u.swim_lane_name) lines.push(`   Lane: ${u.swim_lane_name}`);
+  if (u.owner_name) lines.push(`   Owner: ${u.owner_name}`);
+  if (u.submitted_by_name) lines.push(`   Submitted by: ${u.submitted_by_name}`);
+  if (u.executive_summary?.trim()) lines.push(`   ${u.executive_summary.trim()}`);
+  const bs = bullets(u.detailed_update);
+  for (const b of bs) lines.push(`   - ${b}`);
+  lines.push("");
+  return lines;
+}
+
+function renderUpdateArticleHtml(u: UpdateRow, appUrl: string, showLane = false): string {
+  const projectUrl = `${appUrl}/projects/${u.project_id}`;
+  const bs = bullets(u.detailed_update);
+  const bulletsHtml = bs.length
+    ? `<ul style="margin:6px 0 0;padding-left:18px;color:#334155;">${bs
+        .map((b) => `<li style="margin:2px 0;">${escapeHtml(b)}</li>`)
+        .join("")}</ul>`
+    : "";
+  const summaryHtml = u.executive_summary?.trim()
+    ? `<p style="margin:6px 0 0;color:#334155;">${escapeHtml(u.executive_summary.trim())}</p>`
+    : "";
+  const laneHtml =
+    showLane && u.swim_lane_name
+      ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Lane: ${escapeHtml(u.swim_lane_name)}</div>`
+      : "";
+  const ownerHtml = u.owner_name
+    ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Owner: ${escapeHtml(u.owner_name)}</div>`
+    : "";
+  const submitterHtml = u.submitted_by_name
+    ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Submitted by: ${escapeHtml(u.submitted_by_name)}</div>`
+    : "";
+  return `
+        <article style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:8px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+            <tr>
+              <td style="vertical-align:top;padding-right:12px;">
+                <a href="${projectUrl}" style="font-weight:600;color:#0f172a;text-decoration:none;">${escapeHtml(u.project_title)}</a>
+              </td>
+              <td align="right" style="vertical-align:top;white-space:nowrap;width:1%;">
+                ${healthBadgeHtml(u.health_flag)}
+              </td>
+            </tr>
+          </table>
+          ${laneHtml}
+          ${ownerHtml}
+          ${submitterHtml}
+          ${summaryHtml}
+          ${bulletsHtml}
+        </article>`;
 }
 
 function missingUpdateCount(missingByOwner: OwnerMissingGroup[]): number {
@@ -456,7 +539,7 @@ function renderDigest(input: {
   });
   const subject = `${groupName} weekly update — ${weekLabel}`;
 
-  const laneGroups = laneGroupsForReport(updates);
+  const { atRisk, laneGroups } = splitDigestUpdates(updates);
   const laneCount = laneGroups.length;
   const missingCount = missingUpdateCount(missingByOwner);
 
@@ -472,20 +555,16 @@ function renderDigest(input: {
   }
   textLines.push(`${groupName} status updates for the week of ${weekLabel}:`);
   textLines.push("");
+  if (atRisk.length) {
+    textLines.push("--- At risk ---");
+    for (const u of atRisk) {
+      textLines.push(...formatUpdateTextLines(u, appUrl, true));
+    }
+  }
   for (const { laneName, items } of laneGroups) {
     textLines.push(`--- ${laneName} ---`);
     for (const u of items) {
-      const projectUrl = `${appUrl}/projects/${u.project_id}`;
-      textLines.push(`• ${u.project_title} [${healthLabel(u.health_flag)}]`);
-      textLines.push(`   ${projectUrl}`);
-      if (u.owner_name) textLines.push(`   Owner: ${u.owner_name}`);
-      if (u.submitted_by_name) textLines.push(`   Submitted by: ${u.submitted_by_name}`);
-      if (u.executive_summary?.trim()) {
-        textLines.push(`   ${u.executive_summary.trim()}`);
-      }
-      const bs = bullets(u.detailed_update);
-      for (const b of bs) textLines.push(`   - ${b}`);
-      textLines.push("");
+      textLines.push(...formatUpdateTextLines(u, appUrl));
     }
   }
   textLines.push(...renderMissingSectionText(missingByOwner, appUrl));
@@ -496,53 +575,28 @@ function renderDigest(input: {
   const text = textLines.join("\n");
 
   const preheader =
-    `${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} lane${laneCount === 1 ? "" : "s"}` +
+    `${updates.length} update${updates.length === 1 ? "" : "s"}` +
+    (atRisk.length > 0 ? ` · ${atRisk.length} at risk` : "") +
+    (laneCount > 0 ? ` across ${laneCount} lane${laneCount === 1 ? "" : "s"}` : "") +
     (missingCount > 0
       ? ` · ${missingCount} item${missingCount === 1 ? "" : "s"} without an update`
       : "") +
     ` for ${groupName}.`;
+
+  const atRiskHtml = atRisk.length
+    ? `
+    <section style="margin-top:22px;">
+      <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#334155;margin:0 0 8px;">At risk</h2>
+      ${atRisk.map((u) => renderUpdateArticleHtml(u, appUrl, true)).join("")}
+    </section>`
+    : "";
+
   const laneHtml = laneGroups
     .map(
       ({ laneName, items }) => `
     <section style="margin-top:22px;">
       <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#334155;margin:0 0 8px;">${escapeHtml(laneName)}</h2>
-      ${items
-        .map((u) => {
-          const projectUrl = `${appUrl}/projects/${u.project_id}`;
-          const bs = bullets(u.detailed_update);
-          const bulletsHtml = bs.length
-            ? `<ul style="margin:6px 0 0;padding-left:18px;color:#334155;">${bs
-                .map((b) => `<li style="margin:2px 0;">${escapeHtml(b)}</li>`)
-                .join("")}</ul>`
-            : "";
-          const summaryHtml = u.executive_summary?.trim()
-            ? `<p style="margin:6px 0 0;color:#334155;">${escapeHtml(u.executive_summary.trim())}</p>`
-            : "";
-          const ownerHtml = u.owner_name
-            ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Owner: ${escapeHtml(u.owner_name)}</div>`
-            : "";
-          const submitterHtml = u.submitted_by_name
-            ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Submitted by: ${escapeHtml(u.submitted_by_name)}</div>`
-            : "";
-          return `
-        <article style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:8px;">
-          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
-            <tr>
-              <td style="vertical-align:top;padding-right:12px;">
-                <a href="${projectUrl}" style="font-weight:600;color:#0f172a;text-decoration:none;">${escapeHtml(u.project_title)}</a>
-              </td>
-              <td align="right" style="vertical-align:top;white-space:nowrap;width:1%;">
-                ${healthBadgeHtml(u.health_flag)}
-              </td>
-            </tr>
-          </table>
-          ${ownerHtml}
-          ${submitterHtml}
-          ${summaryHtml}
-          ${bulletsHtml}
-        </article>`;
-        })
-        .join("")}
+      ${items.map((u) => renderUpdateArticleHtml(u, appUrl)).join("")}
     </section>`,
     )
     .join("");
@@ -553,16 +607,20 @@ function renderDigest(input: {
 
   const missingHtml = renderMissingSectionHtml(missingByOwner, appUrl);
   const summaryExtra =
-    missingCount > 0
+    (atRisk.length > 0
+      ? ` · <strong>${atRisk.length}</strong> at risk`
+      : "") +
+    (missingCount > 0
       ? ` · <strong>${missingCount}</strong> eligible item${missingCount === 1 ? "" : "s"} without a submitted update`
-      : "";
+      : "");
 
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;max-width:640px;">
       <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}</span>
       <p>${escapeHtml(greeting)}</p>
       ${noteHtml}
-      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}${summaryExtra}.</p>
+      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"}${laneCount > 0 ? ` across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}` : ""}${summaryExtra}.</p>
+      ${atRiskHtml}
       ${laneHtml}
       ${missingHtml}
       <p style="margin-top:24px;">
