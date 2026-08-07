@@ -198,7 +198,7 @@ function renderReminder(input: {
       ? (groupNames[0] ?? "your workspace")
       : `${groupNames.slice(0, -1).join(", ")} and ${groupNames[groupNames.length - 1] ?? ""}`;
 
-  const subject = `Waypoint: ${itemsLabel} due ${dueLabel}`;
+  const subject = `${itemsLabel} due ${dueLabel}`;
   const preheader = `${itemsLabel} pending in ${groupLabel} — due ${dueLabel}.`;
   const projectListText =
     projectTitles.length > 0
@@ -217,12 +217,10 @@ function renderReminder(input: {
     `You have ${itemsLabel} pending for the week of ${weekLabel} in ${groupLabel}.`,
     `They're due by ${dueLabel}.`,
     projectListText,
-    `Open Waypoint to fill them in: ${appUrl}/status-report`,
+    `Open the status report to fill them in: ${appUrl}/status-report`,
     "",
     "Don't want these emails? Unsubscribe with one click:",
     unsubscribeUrl,
-    "",
-    "— Waypoint",
   ].join("\n");
   // The preheader span uses display:none plus a "spacer" trick so
   // Gmail/Outlook use it as inbox preview text without letting it
@@ -234,7 +232,7 @@ function renderReminder(input: {
       <p>You have <strong>${itemsLabel}</strong> pending for the week of <strong>${escapeHtml(weekLabel)}</strong> in ${escapeHtml(groupLabel)}.</p>
       <p>They're due by <strong>${escapeHtml(dueLabel)}</strong>.</p>
       ${projectListHtml}
-      <p><a href="${appUrl}/status-report" style="display:inline-block;background:#DC2626;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;">Open Waypoint</a></p>
+      <p><a href="${appUrl}/status-report" style="display:inline-block;background:#DC2626;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;">Open status report</a></p>
       <p style="color:#64748b;font-size:12px;margin-top:24px;">
         Don't want these emails?
         <a href="${unsubscribeUrl}" style="color:#64748b;">Unsubscribe with one click</a>.

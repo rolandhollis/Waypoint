@@ -115,7 +115,7 @@ export async function sendMentionEmail(
     "",
     `Open item: ${projectUrl}`,
     "",
-    `You're receiving this because ${mentioning.name} tagged you in Waypoint.`,
+    `You're receiving this because ${mentioning.name} tagged you on this item.`,
   ]
     .filter((line) => line !== "")
     .join("\n");
@@ -135,7 +135,7 @@ export async function sendMentionEmail(
         : ""}
       <p><a href="${escapeHtml(projectUrl)}" style="display:inline-block;background:#DC2626;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;">Open item</a></p>
       <p style="color:#64748b;font-size:12px;margin-top:24px;">
-        You&rsquo;re receiving this because ${escapeHtml(mentioning.name)} tagged you in Waypoint.
+        You&rsquo;re receiving this because ${escapeHtml(mentioning.name)} tagged you on this item.
       </p>
     </div>
   `.trim();

@@ -1,15 +1,13 @@
 import { Router } from "express";
 import { z } from "zod";
-import {
-  disableRemindersForUser,
-  runStatusReportReminders,
-} from "../notifications/statusReminders.js";
+import { disableRemindersForUser, runStatusReportReminders } from "../notifications/statusReminders.js";
 import {
   DIGEST_UNSUB_KIND,
   removeDigestRecipient,
   runStatusReportDigest,
 } from "../notifications/statusDigest.js";
 import { verifyUnsubscribeToken } from "../notifications/unsubscribe.js";
+import { config } from "../config.js";
 import { authenticate, groupScope, requireAdmin } from "../middleware/auth.js";
 
 /**
@@ -59,8 +57,8 @@ notificationsRouter.get("/unsubscribe", async (req, res) => {
       page(
         "Unsubscribed",
         result.notificationKind === DIGEST_UNSUB_KIND
-          ? "You won't receive further weekly digest emails from Waypoint."
-          : "You won't receive further reminder emails from Waypoint.",
+          ? "You won't receive further weekly digest emails."
+          : "You won't receive further reminder emails.",
       ),
     );
     return;
@@ -69,8 +67,8 @@ notificationsRouter.get("/unsubscribe", async (req, res) => {
     page(
       "Unsubscribed",
       result.notificationKind === DIGEST_UNSUB_KIND
-        ? `You won't receive further weekly digest emails from Waypoint at <strong>${escapeHtml(result.email)}</strong>.`
-        : `You won't receive further reminder emails from Waypoint at <strong>${escapeHtml(result.email)}</strong>. You can re-enable them any time from your profile page inside the app.`,
+        ? `You won't receive further weekly digest emails at <strong>${escapeHtml(result.email)}</strong>.`
+        : `You won't receive further reminder emails at <strong>${escapeHtml(result.email)}</strong>. You can re-enable them any time from your profile page in the app.`,
     ),
   );
 });
@@ -171,7 +169,7 @@ function page(title: string, message: string): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>${escapeHtml(title)} · Waypoint</title>
+  <title>${escapeHtml(title)} · ${escapeHtml(config.email.fromName)}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#f8fafc; color:#0f172a; margin:0; padding:0; }
     .card { max-width: 480px; margin: 10vh auto; background:#fff; border:1px solid #e2e8f0; border-radius: 12px; padding: 32px; box-shadow: 0 10px 30px rgba(15,23,42,0.06); }

@@ -8,6 +8,17 @@ function required(name: string, fallback?: string): string {
 
 export type AuthMode = "mock" | "password" | "okta" | "cloudflare-access";
 
+function parseEmailAddress(raw: string): string {
+  const match = raw.match(/<([^>]+)>\s*$/);
+  const email = match?.[1]?.trim();
+  return email && email.length > 0 ? email : raw.trim();
+}
+
+/** Resend `from` header — display name is configurable; email comes from EMAIL_FROM_ADDRESS. */
+function formatEmailFrom(displayName: string, rawAddress: string): string {
+  return `${displayName} <${parseEmailAddress(rawAddress)}>`;
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
@@ -49,23 +60,24 @@ export const config = {
   reportingTimezone: process.env.REPORTING_TIMEZONE ?? "America/Chicago",
   /**
    * Outbound URL the app is reachable at from the recipient's
-   * inbox — used to build "Open Waypoint" and "Unsubscribe" links
-   * in reminder emails. Falls back to the local dev URL so emails
-   * don't accidentally leak internal Fly hostnames when the env
-   * var is missing.
+   * inbox — used to build status-report and unsubscribe links
+   * in notification emails.
    */
   publicAppUrl: process.env.PUBLIC_APP_URL ?? "http://localhost:5173",
   /**
    * Resend transactional email config. When apiKey is unset the
    * notification code short-circuits and logs instead of sending —
    * so the app boots cleanly on local dev / preview envs without a
-   * real key. fromAddress defaults to Resend's shared verified
-   * domain so we can ship without owning a sender domain yet;
-   * point it at "Waypoint <no-reply@your-domain>" once DNS is set.
+   * real key. `fromName` is the inbox display name; the SMTP address
+   * comes from EMAIL_FROM_ADDRESS (or Resend's shared domain default).
    */
   email: {
     resendApiKey: process.env.RESEND_API_KEY ?? "",
-    fromAddress: process.env.EMAIL_FROM_ADDRESS ?? "Waypoint <onboarding@resend.dev>",
+    fromName: process.env.EMAIL_FROM_NAME ?? "RetailMeNot Product",
+    fromAddress: formatEmailFrom(
+      process.env.EMAIL_FROM_NAME ?? "RetailMeNot Product",
+      process.env.EMAIL_FROM_ADDRESS ?? "onboarding@resend.dev",
+    ),
     /** Signing key for one-click unsubscribe tokens. When unset we
      *  derive one from SUPER_ADMIN_PASSWORD as a last resort so
      *  unsubscribe links keep working in single-tenant self-hosts

@@ -454,7 +454,7 @@ function renderDigest(input: {
     year: "numeric",
     timeZone: timezone,
   });
-  const subject = `Waypoint · ${groupName} weekly update — ${weekLabel}`;
+  const subject = `${groupName} weekly update — ${weekLabel}`;
 
   const laneGroups = laneGroupsForReport(updates);
   const laneCount = laneGroups.length;
@@ -493,8 +493,6 @@ function renderDigest(input: {
   textLines.push("");
   textLines.push("Unsubscribe from digest emails:");
   textLines.push(unsubscribeUrl);
-  textLines.push("");
-  textLines.push("— Waypoint");
   const text = textLines.join("\n");
 
   const preheader =
@@ -571,7 +569,7 @@ function renderDigest(input: {
         <a href="${appUrl}/status-report" style="display:inline-block;background:#DC2626;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;">Open status report</a>
       </p>
       <p style="color:#64748b;font-size:12px;margin-top:16px;">
-        You're receiving this because a Waypoint admin added your address to the ${escapeHtml(groupName)} digest list.
+        You're receiving this because an admin added your address to the ${escapeHtml(groupName)} digest list.
         <a href="${unsubscribeUrl}" style="color:#64748b;">Unsubscribe with one click</a>.
       </p>
     </div>

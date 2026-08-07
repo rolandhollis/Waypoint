@@ -179,18 +179,16 @@ async function sendResetEmail(user: UserRow, plaintext: string): Promise<void> {
   if (!config.email.resendApiKey) {
     console.warn(`[password-reset] dry-run link for ${user.email}: ${url}`);
   }
-  const subject = "Reset your Waypoint password";
+  const subject = "Reset your password";
   const text = [
     `Hi ${user.name || "there"},`,
     ``,
-    `Someone (hopefully you) asked to reset the Waypoint password for ${user.email}.`,
+    `Someone (hopefully you) asked to reset the password for ${user.email}.`,
     ``,
     `Open this link within the next ${ttlMinutes} minutes to pick a new password:`,
     url,
     ``,
     `If you didn't request this, you can ignore this email — your existing password will keep working.`,
-    ``,
-    `— Waypoint`,
   ].join("\n");
 
   const html = `
@@ -199,12 +197,12 @@ async function sendResetEmail(user: UserRow, plaintext: string): Promise<void> {
   <body style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; color: #0f172a; line-height: 1.5; padding: 24px;">
     <div style="max-width: 480px; margin: 0 auto;">
       <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;font-size:1px;line-height:1px;mso-hide:all;">
-        Reset your Waypoint password. Link expires in ${ttlMinutes} minutes.
+        Reset your password. Link expires in ${ttlMinutes} minutes.
       </div>
-      <h1 style="font-size: 18px; margin: 0 0 12px 0;">Reset your Waypoint password</h1>
+      <h1 style="font-size: 18px; margin: 0 0 12px 0;">Reset your password</h1>
       <p style="margin: 0 0 12px 0;">Hi ${escapeHtml(user.name || "there")},</p>
       <p style="margin: 0 0 12px 0;">
-        Someone (hopefully you) asked to reset the Waypoint password for
+        Someone (hopefully you) asked to reset the password for
         <strong>${escapeHtml(user.email)}</strong>.
       </p>
       <p style="margin: 20px 0;">
