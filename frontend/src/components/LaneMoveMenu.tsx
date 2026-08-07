@@ -2,22 +2,14 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { MoreHorizontal } from "lucide-react";
 import { useState } from "react";
-import { ApiError, api } from "../lib/api";
+import { api } from "../lib/api";
 import type { Project, SwimLane } from "../lib/types";
 import { useCanWrite, useProjects } from "../lib/queries";
+import { useAppDialog, appDialogErrorMessage } from "./AppDialogProvider";
 import { PhaseDatePromptModal } from "./PhaseDatePromptModal";
 
 // Dropdowns close immediately on click so we can't render an inline
-// error banner; surface failures via a native alert instead.
-function alertMutationError(err: unknown) {
-  const msg = err instanceof ApiError
-    ? err.message
-    : err instanceof Error
-      ? err.message
-      : "Something went wrong. Try again.";
-  alert(msg);
-}
-
+// error banner; surface failures via the app dialog instead.
 export function LaneMoveMenu({
   projectId,
   currentLaneId,
@@ -28,6 +20,7 @@ export function LaneMoveMenu({
   lanes: SwimLane[];
 }) {
   const qc = useQueryClient();
+  const { alert, confirm } = useAppDialog();
   const projects = useProjects();
   const canWrite = useCanWrite();
   // When the move lands in a phase-bound lane, open the same
@@ -47,12 +40,22 @@ export function LaneMoveMenu({
         setPhasePromptLaneId(v.swim_lane_id);
       }
     },
-    onError: alertMutationError,
+    onError: (err) => {
+      void alert({
+        title: "Move failed",
+        description: appDialogErrorMessage(err),
+      });
+    },
   });
   const deleteMutation = useMutation({
     mutationFn: () => api<Project>(`/projects/${projectId}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["projects"] }),
-    onError: alertMutationError,
+    onError: (err) => {
+      void alert({
+        title: "Delete failed",
+        description: appDialogErrorMessage(err),
+      });
+    },
   });
 
   if (!canWrite) return null;
@@ -98,11 +101,15 @@ export function LaneMoveMenu({
           <DropdownMenu.Separator className="my-1 h-px bg-wp-stone" />
           <DropdownMenu.Item
             onSelect={() => {
-              if (confirm(
-                "Delete this card?\n\nThis is a hard delete — the card disappears from the board and only an admin can restore it from Admin → Archived cards. To keep the card in history but out of everyone's way, use \"Move to archive\" from the card detail instead.",
-              )) {
-                deleteMutation.mutate();
-              }
+              void confirm({
+                title: "Delete this card?",
+                description:
+                  "This is a hard delete — the card disappears from the board and only an admin can restore it from Admin → Archived cards. To keep the card in history but out of everyone's way, use \"Move to archive\" from the card detail instead.",
+                confirmLabel: "Delete",
+                destructive: true,
+              }).then((ok) => {
+                if (ok) deleteMutation.mutate();
+              });
             }}
             className="cursor-pointer rounded px-2 py-1.5 text-red-600 outline-none hover:bg-red-50"
           >

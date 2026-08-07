@@ -1,7 +1,14 @@
 import { config } from "../config.js";
 import { pool, query, withTransaction } from "../db/pool.js";
-import { weekOfMonday } from "../lib/time.js";
+import {
+  loadGroupWeeklyStatusSchedules,
+  type GroupScheduleScope,
+} from "../lib/groupConstants.js";
 import { compareSwimLaneReportOrder } from "../lib/statusReportOrder.js";
+import {
+  resolveWeeklyStatusSchedule,
+  weekOfMondayForSchedule,
+} from "../lib/weeklyStatusSchedule.js";
 import { sendEmail } from "./email.js";
 import { makeUnsubscribeToken } from "./unsubscribe.js";
 
@@ -60,7 +67,7 @@ type GroupBundle = {
   recipients: DigestRecipient[];
 };
 
-async function loadRecipientsBatch(scopeGroupId?: string): Promise<Map<string, DigestRecipient[]>> {
+async function loadRecipientsBatch(scope?: GroupScheduleScope): Promise<Map<string, DigestRecipient[]>> {
   const { rows } = await query<{
     group_id: string;
     id: string;
@@ -69,7 +76,7 @@ async function loadRecipientsBatch(scopeGroupId?: string): Promise<Map<string, D
     user_name: string | null;
     user_email: string | null;
   }>(
-    scopeGroupId
+    scope?.groupId
       ? `SELECT r.group_id,
                 r.id,
                 r.email,
@@ -79,15 +86,29 @@ async function loadRecipientsBatch(scopeGroupId?: string): Promise<Map<string, D
            FROM status_digest_recipients r
            LEFT JOIN users u ON u.id = r.user_id
           WHERE r.group_id = $1`
-      : `SELECT r.group_id,
-                r.id,
-                r.email,
-                r.user_id,
-                u.name AS user_name,
-                u.email AS user_email
-           FROM status_digest_recipients r
-           LEFT JOIN users u ON u.id = r.user_id`,
-    scopeGroupId ? [scopeGroupId] : [],
+      : scope?.groupIds?.length
+        ? `SELECT r.group_id,
+                  r.id,
+                  r.email,
+                  r.user_id,
+                  u.name AS user_name,
+                  u.email AS user_email
+             FROM status_digest_recipients r
+             LEFT JOIN users u ON u.id = r.user_id
+            WHERE r.group_id = ANY($1::uuid[])`
+        : `SELECT r.group_id,
+                  r.id,
+                  r.email,
+                  r.user_id,
+                  u.name AS user_name,
+                  u.email AS user_email
+             FROM status_digest_recipients r
+             LEFT JOIN users u ON u.id = r.user_id`,
+    scope?.groupId
+      ? [scope.groupId]
+      : scope?.groupIds?.length
+        ? [scope.groupIds]
+        : [],
   );
 
   const out = new Map<string, DigestRecipient[]>();
@@ -105,9 +126,9 @@ async function loadRecipientsBatch(scopeGroupId?: string): Promise<Map<string, D
   return out;
 }
 
-async function loadUpdatesBatch(weekIso: string, scopeGroupId?: string): Promise<Map<string, UpdateRow[]>> {
+async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Promise<Map<string, UpdateRow[]>> {
   const { rows } = await query<UpdateRow & { group_id: string }>(
-    scopeGroupId
+    scope?.groupId
       ? `SELECT p.group_id,
                 p.id AS project_id,
                 p.title AS project_title,
@@ -129,27 +150,53 @@ async function loadUpdatesBatch(weekIso: string, scopeGroupId?: string): Promise
             AND p.group_id = $2
             AND p.deleted_at IS NULL
           ORDER BY s."order" DESC NULLS LAST, s.name, p.title`
-      : `SELECT p.group_id,
-                p.id AS project_id,
-                p.title AS project_title,
-                s.id AS swim_lane_id,
-                s.name AS swim_lane_name,
-                s."order" AS swim_lane_order,
-                w.health_flag,
-                w.executive_summary,
-                w.detailed_update,
-                owner.name AS owner_name,
-                submitter.name AS submitted_by_name
-           FROM weekly_status_updates w
-           JOIN projects p ON p.id = w.project_id
-           LEFT JOIN swim_lanes s ON s.id = p.swim_lane_id
-           LEFT JOIN users owner ON owner.id = p.owner_id
-           LEFT JOIN users submitter ON submitter.id = w.submitted_by_user_id
-          WHERE w.week_of = $1::date
-            AND w.completed = TRUE
-            AND p.deleted_at IS NULL
-          ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.title`,
-    scopeGroupId ? [weekIso, scopeGroupId] : [weekIso],
+      : scope?.groupIds?.length
+        ? `SELECT p.group_id,
+                  p.id AS project_id,
+                  p.title AS project_title,
+                  s.id AS swim_lane_id,
+                  s.name AS swim_lane_name,
+                  s."order" AS swim_lane_order,
+                  w.health_flag,
+                  w.executive_summary,
+                  w.detailed_update,
+                  owner.name AS owner_name,
+                  submitter.name AS submitted_by_name
+             FROM weekly_status_updates w
+             JOIN projects p ON p.id = w.project_id
+             LEFT JOIN swim_lanes s ON s.id = p.swim_lane_id
+             LEFT JOIN users owner ON owner.id = p.owner_id
+             LEFT JOIN users submitter ON submitter.id = w.submitted_by_user_id
+            WHERE w.week_of = $1::date
+              AND w.completed = TRUE
+              AND p.group_id = ANY($2::uuid[])
+              AND p.deleted_at IS NULL
+            ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.title`
+        : `SELECT p.group_id,
+                  p.id AS project_id,
+                  p.title AS project_title,
+                  s.id AS swim_lane_id,
+                  s.name AS swim_lane_name,
+                  s."order" AS swim_lane_order,
+                  w.health_flag,
+                  w.executive_summary,
+                  w.detailed_update,
+                  owner.name AS owner_name,
+                  submitter.name AS submitted_by_name
+             FROM weekly_status_updates w
+             JOIN projects p ON p.id = w.project_id
+             LEFT JOIN swim_lanes s ON s.id = p.swim_lane_id
+             LEFT JOIN users owner ON owner.id = p.owner_id
+             LEFT JOIN users submitter ON submitter.id = w.submitted_by_user_id
+            WHERE w.week_of = $1::date
+              AND w.completed = TRUE
+              AND p.deleted_at IS NULL
+            ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.title`,
+    scope?.groupId
+      ? [weekIso, scope.groupId]
+      : scope?.groupIds?.length
+        ? [weekIso, scope.groupIds]
+        : [weekIso],
   );
 
   const out = new Map<string, UpdateRow[]>();
@@ -162,16 +209,18 @@ async function loadUpdatesBatch(weekIso: string, scopeGroupId?: string): Promise
   return out;
 }
 
-async function collectByGroup(weekIso: string, scopeGroupId?: string): Promise<GroupBundle[]> {
+async function collectByGroup(weekIso: string, scope?: GroupScheduleScope): Promise<GroupBundle[]> {
   const { rows: groups } = await query<{ id: string; name: string }>(
-    scopeGroupId
+    scope?.groupId
       ? `SELECT id, name FROM groups WHERE id = $1`
-      : `SELECT id, name FROM groups`,
-    scopeGroupId ? [scopeGroupId] : [],
+      : scope?.groupIds?.length
+        ? `SELECT id, name FROM groups WHERE id = ANY($1::uuid[])`
+        : `SELECT id, name FROM groups`,
+    scope?.groupId ? [scope.groupId] : scope?.groupIds?.length ? [scope.groupIds] : [],
   );
 
-  const updatesByGroup = await loadUpdatesBatch(weekIso, scopeGroupId);
-  const recipientsByGroup = await loadRecipientsBatch(scopeGroupId);
+  const updatesByGroup = await loadUpdatesBatch(weekIso, scope);
+  const recipientsByGroup = await loadRecipientsBatch(scope);
 
   return groups.map((g) => ({
     groupId: g.id,
@@ -249,13 +298,25 @@ function renderDigest(input: {
   appUrl: string;
   recipientName?: string;
   unsubscribeUrl: string;
+  timezone: string;
+  /** Optional preamble for admin-triggered sends (not used by cron). */
+  adminNote?: string;
 }): { subject: string; text: string; html: string } {
-  const { groupName, weekOf, updates, appUrl, recipientName, unsubscribeUrl } = input;
+  const {
+    groupName,
+    weekOf,
+    updates,
+    appUrl,
+    recipientName,
+    unsubscribeUrl,
+    timezone,
+    adminNote,
+  } = input;
   const weekLabel = weekOf.toLocaleDateString("en-US", {
     month: "long",
     day: "numeric",
     year: "numeric",
-    timeZone: config.reportingTimezone,
+    timeZone: timezone,
   });
   const subject = `Waypoint · ${groupName} weekly update — ${weekLabel}`;
 
@@ -263,10 +324,15 @@ function renderDigest(input: {
   const laneCount = laneGroups.length;
 
   const greeting = recipientName ? `Hi ${recipientName.split(/\s+/)[0] ?? recipientName},` : "Hello,";
+  const noteText = adminNote?.trim() ?? "";
 
   const textLines: string[] = [];
   textLines.push(greeting);
   textLines.push("");
+  if (noteText) {
+    textLines.push(noteText);
+    textLines.push("");
+  }
   textLines.push(`${groupName} status updates for the week of ${weekLabel}:`);
   textLines.push("");
   for (const { laneName, items } of laneGroups) {
@@ -334,10 +400,15 @@ function renderDigest(input: {
     )
     .join("");
 
+  const noteHtml = noteText
+    ? `<div style="margin:16px 0;padding:12px 14px;border-left:3px solid #DC2626;background:#fef2f2;border-radius:0 8px 8px 0;color:#334155;">${escapeHtml(noteText).replace(/\n/g, "<br>")}</div>`
+    : "";
+
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;max-width:640px;">
       <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}</span>
       <p>${escapeHtml(greeting)}</p>
+      ${noteHtml}
       <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}.</p>
       ${laneHtml}
       <p style="margin-top:24px;">
@@ -386,24 +457,50 @@ export async function runStatusReportDigest({
   dryRun = false,
   forceResend = false,
   scopeGroupId,
-}: { dryRun?: boolean; forceResend?: boolean; scopeGroupId?: string } = {}): Promise<DigestRunResult> {
-  const week = weekOfMonday(new Date());
+  scopeGroupIds,
+  adminNote,
+}: {
+  dryRun?: boolean;
+  forceResend?: boolean;
+  scopeGroupId?: string;
+  scopeGroupIds?: string[];
+  /** Optional preamble included when an admin triggers send manually. */
+  adminNote?: string;
+} = {}): Promise<DigestRunResult> {
+  const noteText = adminNote?.trim() || undefined;
+  const scope: GroupScheduleScope | undefined = scopeGroupIds?.length
+    ? { groupIds: scopeGroupIds }
+    : scopeGroupId
+      ? { groupId: scopeGroupId }
+      : undefined;
+  const schedules = await loadGroupWeeklyStatusSchedules(scope);
+  const anchorSchedule =
+    schedules.values().next().value ?? resolveWeeklyStatusSchedule();
+  const now = new Date();
+  const week = weekOfMondayForSchedule(now, anchorSchedule);
   const weekIso = week.toISOString().slice(0, 10);
   const appUrl = config.publicAppUrl.replace(/\/$/, "");
 
   if (forceResend && !dryRun) {
     const deleted = await query(
-      scopeGroupId
+      scope?.groupId
         ? `DELETE FROM notification_log
             WHERE kind = $1 AND week_of = $2::date AND group_id = $3`
-        : `DELETE FROM notification_log
-            WHERE kind = $1 AND week_of = $2::date`,
-      scopeGroupId ? [KIND, weekIso, scopeGroupId] : [KIND, weekIso],
+        : scope?.groupIds?.length
+          ? `DELETE FROM notification_log
+              WHERE kind = $1 AND week_of = $2::date AND group_id = ANY($3::uuid[])`
+          : `DELETE FROM notification_log
+              WHERE kind = $1 AND week_of = $2::date`,
+      scope?.groupId
+        ? [KIND, weekIso, scope.groupId]
+        : scope?.groupIds?.length
+          ? [KIND, weekIso, scope.groupIds]
+          : [KIND, weekIso],
     );
     console.log(`[digest] force_resend cleared ${deleted.rowCount ?? 0} notification_log row(s)`);
   }
 
-  const bundles = await collectByGroup(weekIso, scopeGroupId);
+  const bundles = await collectByGroup(weekIso, scope);
 
   let recipients = 0;
   let updatesIncluded = 0;
@@ -446,6 +543,7 @@ export async function runStatusReportDigest({
         const unsubUrl = `${appUrl}/api/notifications/unsubscribe?token=${encodeURIComponent(
           makeUnsubscribeToken(r.id, DIGEST_UNSUB_KIND),
         )}`;
+        const bundleSchedule = schedules.get(bundle.groupId) ?? anchorSchedule;
         const msg = renderDigest({
           groupName: bundle.groupName,
           weekOf: week,
@@ -453,6 +551,8 @@ export async function runStatusReportDigest({
           appUrl,
           recipientName: r.user_name ?? undefined,
           unsubscribeUrl: unsubUrl,
+          timezone: bundleSchedule.timezone,
+          adminNote: noteText,
         });
 
         if (dryRun) {
@@ -503,7 +603,7 @@ export async function runStatusReportDigest({
   }
 
   console.log(
-    `[digest] status_report_digest scope=${scopeGroupId ?? "global"} dryRun=${dryRun} forceResend=${forceResend} groups=${bundles.length} recipients=${recipients} updates=${updatesIncluded} sent=${sent} alreadySent=${skipped} skippedEmptyGroups=${skippedEmpty} errors=${errors}`,
+    `[digest] status_report_digest scope=${scopeGroupIds?.length ? scopeGroupIds.join(",") : scopeGroupId ?? "global"} dryRun=${dryRun} forceResend=${forceResend} groups=${bundles.length} recipients=${recipients} updates=${updatesIncluded} sent=${sent} alreadySent=${skipped} skippedEmptyGroups=${skippedEmpty} errors=${errors}`,
   );
 
   return {

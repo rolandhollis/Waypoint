@@ -53,6 +53,7 @@ import {
 } from "../lib/viewState";
 import { useResizableRoadmapHeight } from "../lib/useResizableRoadmapHeight";
 import { ColumnResizer } from "./ColumnResizer";
+import { useAppDialog } from "./AppDialogProvider";
 
 type Props = {
   projects: Project[];
@@ -720,6 +721,7 @@ export function GanttTimeline(props: Props) {
   const dragRef = useRef<DragState | null>(null);
   dragRef.current = drag;
   const qc = useQueryClient();
+  const { alert } = useAppDialog();
 
   const patchMutation = useMutation({
     mutationFn: (v: { id: string; body: Partial<Project> }) =>
@@ -735,7 +737,7 @@ export function GanttTimeline(props: Props) {
     onError: (err, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(["projects"], ctx.prev);
       const msg = err instanceof Error ? err.message : "Roadmap change didn't save. Try again.";
-      alert(msg);
+      void alert({ title: "Save failed", description: msg });
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ["projects"] }),
   });
@@ -852,7 +854,7 @@ export function GanttTimeline(props: Props) {
     onError: (err, v) => {
       if (v._prev) qc.setQueryData(["projects"], v._prev);
       const msg = err instanceof Error ? err.message : "Reorder didn't save. Try again.";
-      alert(msg);
+      void alert({ title: "Reorder failed", description: msg });
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });

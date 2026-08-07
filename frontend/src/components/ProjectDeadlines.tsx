@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { useCanWrite, useSwimLanes } from "../lib/queries";
 import { computeDeadlineStatuses, type DeadlineStatus } from "../lib/deadlines";
 import type { Project, ProjectDeadline } from "../lib/types";
+import { useAppDialog } from "./AppDialogProvider";
 
 /**
  * Deadlines section for the project detail panel.
@@ -24,6 +25,7 @@ import type { Project, ProjectDeadline } from "../lib/types";
 export function ProjectDeadlines({ project }: { project: Project }) {
   const lanes = useSwimLanes();
   const canWrite = useCanWrite();
+  const { confirm } = useAppDialog();
   const qc = useQueryClient();
 
   // At most one row can be in "edit" mode at a time. Click a row to
@@ -90,8 +92,14 @@ export function ProjectDeadlines({ project }: { project: Project }) {
                 status={s}
                 canWrite={canWrite}
                 onEdit={canWrite ? () => setEditingId(s.deadline.id) : undefined}
-                onDelete={() => {
-                  if (confirm(`Remove the ${s.lane?.name ?? "deadline"} deadline?`)) {
+                onDelete={async () => {
+                  if (
+                    await confirm({
+                      title: `Remove the ${s.lane?.name ?? "deadline"} deadline?`,
+                      confirmLabel: "Remove",
+                      destructive: true,
+                    })
+                  ) {
                     del.mutate(s.deadline.id);
                   }
                 }}

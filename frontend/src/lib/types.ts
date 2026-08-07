@@ -73,6 +73,26 @@ export type Group = {
   updated_at: string;
 };
 
+export type WeeklyStatusSchedule = {
+  timezone: string;
+  due_day: number;
+  due_time: string;
+  reminder_day: number;
+  reminder_time: string;
+  digest_day: number;
+  digest_time: string;
+};
+
+export type WeeklyStatusScheduleInput = {
+  timezone?: string | null;
+  due_day?: number | null;
+  due_time?: string | null;
+  reminder_day?: number | null;
+  reminder_time?: string | null;
+  digest_day?: number | null;
+  digest_time?: string | null;
+};
+
 /**
  * Stable-shape mirror of the backend `AppConstants` type. Every
  * key is optional; a `null` value means "admin explicitly cleared
@@ -83,6 +103,9 @@ export type Group = {
 export type AppConstants = {
   /** Tenant-visible product name shown in navbar / document title. */
   app_name?: string | null;
+  weekly_status_schedule?: WeeklyStatusScheduleInput | null;
+  /** Resolved schedule after merging overrides with deployment defaults. */
+  weekly_status_schedule_effective?: WeeklyStatusSchedule;
 };
 
 /**

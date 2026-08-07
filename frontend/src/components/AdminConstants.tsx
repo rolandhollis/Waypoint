@@ -4,6 +4,7 @@ import { RotateCcw } from "lucide-react";
 import { api } from "../lib/api";
 import { DEFAULT_APP_NAME, useCurrentGroup, useGroupConstants, useMe } from "../lib/queries";
 import type { AppConstants } from "../lib/types";
+import { useAppDialog } from "./AppDialogProvider";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 
 /**
@@ -73,6 +74,7 @@ export function AdminConstants() {
  */
 function AppNameField({ groupId }: { groupId: string }) {
   const qc = useQueryClient();
+  const { confirm } = useAppDialog();
   const constantsQ = useGroupConstants(groupId);
   const persisted = (constantsQ.data?.app_name ?? "") as string;
 
@@ -137,11 +139,12 @@ function AppNameField({ groupId }: { groupId: string }) {
                 ? `Already using the built-in default ("${DEFAULT_APP_NAME}")`
                 : `Clear override; UI falls back to "${DEFAULT_APP_NAME}"`
             }
-            onClick={() => {
+            onClick={async () => {
               if (
-                !confirm(
-                  `Reset the app name to the built-in default ("${DEFAULT_APP_NAME}")?`,
-                )
+                !(await confirm({
+                  title: "Reset app name?",
+                  description: `Reset the app name to the built-in default ("${DEFAULT_APP_NAME}")?`,
+                }))
               ) return;
               patch.mutate({ app_name: null });
             }}

@@ -14,6 +14,7 @@ import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
 import { ancestors, childrenByParent, descendants, indexById } from "../lib/hierarchy";
 import { makeAiEstimateHandlers, type AiEstimatePatchArgs } from "../lib/aiEstimateApply";
 import { AiSuggestPopover } from "./AiSuggestPopover";
+import { useAppDialog } from "./AppDialogProvider";
 import { CapacityWarning } from "./CapacityWarning";
 import { MentionTextarea } from "./MentionTextarea";
 import { computeOverloads, overloadsForProject } from "../lib/capacity";
@@ -144,6 +145,7 @@ export function ProjectDetailBody({
   const tshirtSizes = useTshirtSizes();
   const allProjects = useProjects();
   const qc = useQueryClient();
+  const { confirm } = useAppDialog();
 
   // `me` / `currentRole` are read to keep the panel subscribed to
   // identity + role changes (a mid-session group swap must re-render
@@ -1497,10 +1499,15 @@ export function ProjectDetailBody({
                   type="button"
                   className="btn-ghost text-xs text-wp-slate hover:text-red-600"
                   disabled={archive.isPending}
-                  onClick={() => {
-                    if (confirm(
-                      "Move this item to Archive?\n\nIt will disappear from the board and be hidden from non-admin users. Admins can restore it by moving it back into any other lane.",
-                    )) {
+                  onClick={async () => {
+                    if (
+                      await confirm({
+                        title: "Move to archive?",
+                        description:
+                          "It will disappear from the board and be hidden from non-admin users. Admins can restore it by moving it back into any other lane.",
+                        confirmLabel: "Move to archive",
+                      })
+                    ) {
                       archive.mutate();
                     }
                   }}

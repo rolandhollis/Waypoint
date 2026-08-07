@@ -14,6 +14,7 @@ import type { Project, SwimLane, Team, User } from "../lib/types";
 import { useViewStore } from "../lib/viewState";
 import { applyFilters } from "../lib/filtering";
 import { reindexAfterMove } from "../lib/boardReorder";
+import { useAppDialog } from "../components/AppDialogProvider";
 import { FilterBar } from "../components/FilterBar";
 import { ProjectCard } from "../components/ProjectCard";
 import type { BoardCardQuickActionsProps } from "../components/BoardCardQuickActions";
@@ -28,6 +29,7 @@ export function BoardView() {
   // gating (drag-to-move, add-item) flow through the per-group
   // hooks so RMN admin ↔ VC viewer swaps propagate immediately.
   const isAdmin = useIsAdmin();
+  const { alert } = useAppDialog();
   const lanes = useSwimLanes();
   const projects = useProjects();
   const users = useUsers();
@@ -189,7 +191,7 @@ export function BoardView() {
     onError: (err, v) => {
       if (v._prev) qc.setQueryData(["projects"], v._prev);
       const msg = err instanceof Error ? err.message : "Move failed. Try again.";
-      alert(msg);
+      void alert({ title: "Move failed", description: msg });
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });
@@ -212,7 +214,7 @@ export function BoardView() {
         : err instanceof Error
           ? err.message
           : "Archive failed. Try again.";
-      alert(msg);
+      void alert({ title: "Archive failed", description: msg });
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ["projects"] });

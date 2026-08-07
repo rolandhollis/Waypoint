@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useCanWrite, useProjectLinks } from "../lib/queries";
 import type { Project, ProjectLink } from "../lib/types";
+import { useAppDialog } from "./AppDialogProvider";
 import { DEFAULT_NEW_LABEL, LinkLabelPicker } from "./LinkLabelPicker";
 
 /**
@@ -21,6 +22,7 @@ import { DEFAULT_NEW_LABEL, LinkLabelPicker } from "./LinkLabelPicker";
  */
 export function ProjectLinks({ project }: { project: Project }) {
   const canWrite = useCanWrite();
+  const { confirm } = useAppDialog();
   const links = useProjectLinks(project.id);
   const qc = useQueryClient();
 
@@ -75,8 +77,16 @@ export function ProjectLinks({ project }: { project: Project }) {
                 link={link}
                 canWrite={canWrite}
                 onEdit={canWrite ? () => setEditingId(link.id) : undefined}
-                onDelete={() => {
-                  if (confirm(`Remove the ${link.label} link?`)) del.mutate(link.id);
+                onDelete={async () => {
+                  if (
+                    await confirm({
+                      title: `Remove the ${link.label} link?`,
+                      confirmLabel: "Remove",
+                      destructive: true,
+                    })
+                  ) {
+                    del.mutate(link.id);
+                  }
                 }}
               />
             ),

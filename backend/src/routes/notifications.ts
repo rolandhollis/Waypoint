@@ -116,9 +116,14 @@ notificationsRouter.post("/unsubscribe", async (req, res) => {
  * they intend to. Guarded by requireAdmin so tenant admins can
  * nag their own tenant.
  */
-const runJobSchema = z.object({
+const runReminderJobSchema = z.object({
+  dry_run: z.boolean().optional().default(false),
+});
+
+const runDigestJobSchema = z.object({
   dry_run: z.boolean().optional().default(false),
   force_resend: z.boolean().optional().default(false),
+  admin_note: z.string().trim().max(2000).optional(),
 });
 
 notificationsRouter.post(
@@ -127,7 +132,7 @@ notificationsRouter.post(
   groupScope,
   requireAdmin,
   async (req, res) => {
-    const body = runJobSchema.parse(req.body ?? {});
+    const body = runReminderJobSchema.parse(req.body ?? {});
     const result = await runStatusReportReminders({
       dryRun: body.dry_run,
       scopeGroupId: req.groupId!,
@@ -149,11 +154,12 @@ notificationsRouter.post(
   groupScope,
   requireAdmin,
   async (req, res) => {
-    const body = runJobSchema.parse(req.body ?? {});
+    const body = runDigestJobSchema.parse(req.body ?? {});
     const result = await runStatusReportDigest({
       dryRun: body.dry_run,
       forceResend: body.force_resend,
       scopeGroupId: req.groupId!,
+      adminNote: body.admin_note,
     });
     res.json(result);
   },

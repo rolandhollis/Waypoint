@@ -31,6 +31,7 @@ import {
 import { api } from "../lib/api";
 import { useAiReferenceEstimates, useProjects } from "../lib/queries";
 import type { AiReferenceEstimate } from "../lib/types";
+import { useAppDialog } from "./AppDialogProvider";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 
 /**
@@ -104,6 +105,7 @@ export function AiReferenceEstimatesAdmin() {
   const refs = useAiReferenceEstimates();
   const projects = useProjects();
   const qc = useQueryClient();
+  const { confirm } = useAppDialog();
 
   const [editing, setEditing] = useState<AiReferenceEstimate | null>(null);
   const [creating, setCreating] = useState(false);
@@ -235,11 +237,15 @@ export function AiReferenceEstimatesAdmin() {
                     key={r.id}
                     row={r}
                     onEdit={() => setEditing(r)}
-                    onDelete={() => {
+                    onDelete={async () => {
                       if (
-                        confirm(
-                          `Delete curated reference "${r.title}"? This immediately removes it from the AI suggester's few-shot pool.`,
-                        )
+                        await confirm({
+                          title: `Delete "${r.title}"?`,
+                          description:
+                            "This immediately removes it from the AI suggester's few-shot pool.",
+                          confirmLabel: "Delete",
+                          destructive: true,
+                        })
                       ) {
                         del.mutate(r.id);
                       }

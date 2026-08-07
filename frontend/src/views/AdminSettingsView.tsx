@@ -28,7 +28,9 @@ import {
 } from "../lib/queries";
 import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, TshirtSize, User } from "../lib/types";
 import { AuditTrailAdmin } from "../components/AuditTrailAdmin";
+import { useAppDialog } from "../components/AppDialogProvider";
 import { AdminConstants } from "../components/AdminConstants";
+import { WeeklyStatusScheduleAdmin } from "../components/WeeklyStatusScheduleAdmin";
 import { AiReferenceEstimatesAdmin } from "../components/AiReferenceEstimatesAdmin";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
@@ -53,6 +55,12 @@ type TopTabDef = {
   /** Two-level tabs. When present, the panel renders a sub-tab
    *  nav strip whose items follow the same shape. */
   subTabs?: SubTabDef[];
+  /**
+   * Where sub-tab navigation renders when `subTabs` is set.
+   *   * `sidebar` (default) — nested items in the left nav (Workspace).
+   *   * `content` — horizontal tabs at the top of the page (CSV).
+   */
+  subTabNav?: "sidebar" | "content";
 };
 
 type SubTabDef = {
@@ -85,12 +93,14 @@ const TOP_TABS: TopTabDef[] = [
   // (soft-delete via deleted_at) flow.
   { key: "archived",               label: "Deleted cards",         render: () => <ArchivedProjectsAdmin /> },
   { key: "notifications",          label: "Notifications",         render: () => <NotificationsAdmin /> },
+  { key: "status-schedule",        label: "Status schedule",       render: () => <WeeklyStatusScheduleAdmin /> },
   { key: "audit-trail",            label: "Audit trail",           render: () => <AuditTrailAdmin /> },
   { key: "tshirt-sizes",           label: "T-Shirt Sizes",         render: () => <TshirtSizesAdmin /> },
   { key: "ai-reference-estimates", label: "AI reference estimates", render: () => <AiReferenceEstimatesAdmin /> },
   {
     key: "csv",
     label: "CSV",
+    subTabNav: "content",
     subTabs: [
       { key: "import", label: "Import", render: () => <CsvImportAdmin /> },
       { key: "export", label: "Export", render: () => <CsvExportAdmin /> },
@@ -231,6 +241,7 @@ export function AdminSettingsView() {
     next.set("tab", parentKey);
     next.set("subtab", subKey);
     setParams(next, { replace: true });
+    setStoredTop(parentKey);
     // Only parents with sub-tabs are recorded; the type guard on the
     // store's setter enforces that at the type level too.
     if (parentKey === "workspace" || parentKey === "csv") {
@@ -238,106 +249,114 @@ export function AdminSettingsView() {
     }
   }
 
+  function selectPanel(key: AdminTopTabKey) {
+    if (key === activeTop) return;
+    setActive(key);
+  }
+
   const activeSubDef = activeSub ? subTabs.find((s) => s.key === activeSub) : null;
+  const horizontalSubNav = activeTopDef.subTabNav === "content" && subTabs.length > 0;
+
+  /** Flatten top tabs + sidebar-nested sub-tabs into one vertical nav list. */
+  const navEntries = useMemo(() => {
+    type NavEntry =
+      | { kind: "heading"; parentKey: AdminTopTabKey; label: string }
+      | { kind: "sub"; parentKey: AdminTopTabKey; subKey: string; label: string }
+      | { kind: "panel"; key: AdminTopTabKey; label: string };
+
+    const out: NavEntry[] = [];
+    for (const t of tabs) {
+      if (t.subTabs?.length && t.subTabNav !== "content") {
+        out.push({ kind: "heading", parentKey: t.key, label: t.label });
+        for (const s of t.subTabs) {
+          out.push({
+            kind: "sub",
+            parentKey: t.key,
+            subKey: s.key,
+            label: s.label,
+          });
+        }
+      } else {
+        out.push({ kind: "panel", key: t.key, label: t.label });
+      }
+    }
+    return out;
+  }, [tabs]);
 
   return (
-    <div className="mx-auto max-w-5xl p-6">
+    <div className="mx-auto max-w-6xl p-6">
       <h1 className="text-xl font-semibold text-wp-ink">Admin Settings</h1>
 
-      <TabNav
-        ariaLabel="Admin sections"
-        tabs={tabs.map((t) => ({ key: t.key, label: t.label }))}
-        activeKey={activeTop}
-        onSelect={(k) => setActive(k as AdminTopTabKey)}
-        tabIdPrefix="admin-tab"
-        panelIdPrefix="admin-panel"
-      />
+      <div className="mt-6 flex gap-8">
+        <AdminSidebarNav
+          entries={navEntries}
+          activeTop={activeTop}
+          activeSub={activeSub}
+          onSelectPanel={selectPanel}
+          onSelectSub={setSub}
+        />
 
-      <div
-        role="tabpanel"
-        id={`admin-panel-${activeTop}`}
-        aria-labelledby={`admin-tab-${activeTop}`}
-        className="mt-6"
-      >
-        {subTabs.length > 0 ? (
-          <>
-            <TabNav
-              ariaLabel={`${activeTopDef.label} sub-sections`}
-              tabs={subTabs.map((s) => ({ key: s.key, label: s.label }))}
-              activeKey={activeSub!}
-              onSelect={(k) => setSub(activeTop, k)}
-              tabIdPrefix={`admin-subtab-${activeTop}`}
-              panelIdPrefix={`admin-subpanel-${activeTop}`}
-              variant="sub"
-            />
+        <div className="min-w-0 flex-1">
+          {subTabs.length > 0 ? (
+            <>
+              {horizontalSubNav ? (
+                <AdminHorizontalTabNav
+                  ariaLabel={`${activeTopDef.label} sections`}
+                  tabs={subTabs.map((s) => ({ key: s.key, label: s.label }))}
+                  activeKey={activeSub!}
+                  onSelect={(k) => setSub(activeTop, k)}
+                  tabIdPrefix={`admin-subtab-${activeTop}`}
+                  panelIdPrefix={`admin-subpanel-${activeTop}`}
+                />
+              ) : null}
+              <div
+                role="tabpanel"
+                id={`admin-subpanel-${activeTop}-${activeSub}`}
+                aria-labelledby={
+                  horizontalSubNav
+                    ? `admin-subtab-${activeTop}-${activeSub}`
+                    : `admin-nav-${activeTop}-${activeSub}`
+                }
+                className={horizontalSubNav ? "mt-6" : undefined}
+              >
+                {activeSubDef ? activeSubDef.render() : null}
+              </div>
+            </>
+          ) : (
             <div
               role="tabpanel"
-              id={`admin-subpanel-${activeTop}-${activeSub}`}
-              aria-labelledby={`admin-subtab-${activeTop}-${activeSub}`}
-              className="mt-6"
+              id={`admin-panel-${activeTop}`}
+              aria-labelledby={`admin-nav-${activeTop}`}
             >
-              {activeSubDef ? activeSubDef.render() : null}
+              {activeTopDef.render ? activeTopDef.render() : null}
             </div>
-          </>
-        ) : activeTopDef.render ? (
-          activeTopDef.render()
-        ) : null}
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-/**
- * Shared tab-nav strip used at both the top-level and sub-tab
- * levels of the Admin view. Keeping this local to the file (rather
- * than in `frontend/src/components/`) because it is *only* used
- * here — every other view in the app either uses no tabs or has
- * bespoke navigation. If a second call site appears, promote this
- * to a shared component.
- *
- * `variant`:
- *   * `"top"` (default) — the underline-bar strip that sits under
- *     the page title. Matches the pre-nesting Admin tab styling
- *     exactly so the shell doesn't look different post-refactor.
- *   * `"sub"` — the nested strip inside a parent panel. Same
- *     underline idiom (for visual consistency with the top level)
- *     but rendered a step smaller and against a lighter divider so
- *     the two levels are still visually distinguishable.
- */
-function TabNav({
+function AdminHorizontalTabNav({
   ariaLabel,
   tabs,
   activeKey,
   onSelect,
   tabIdPrefix,
   panelIdPrefix,
-  variant = "top",
 }: {
   ariaLabel: string;
   tabs: Array<{ key: string; label: string }>;
   activeKey: string;
   onSelect: (key: string) => void;
-  /** Prefix used to build each tab button's DOM id (`{prefix}-{key}`).
-   *  Matches the id caller uses for the tab's `aria-labelledby` on the
-   *  panel — kept separate from `panelIdPrefix` because the tab and
-   *  panel ids can't collide. */
   tabIdPrefix: string;
-  /** Prefix used to build each tab's `aria-controls` (`{prefix}-{key}`).
-   *  Must match the DOM id the caller renders on the corresponding
-   *  `role="tabpanel"` element. */
   panelIdPrefix: string;
-  variant?: "top" | "sub";
 }) {
-  const isTop = variant === "top";
   return (
     <div
       role="tablist"
       aria-label={ariaLabel}
-      className={
-        isTop
-          ? "mt-4 flex gap-1 border-b border-wp-stone"
-          : "flex gap-1 border-b border-wp-stone/60"
-      }
+      className="flex gap-1 border-b border-wp-stone"
     >
       {tabs.map((t) => {
         const isActive = t.key === activeKey;
@@ -352,10 +371,7 @@ function TabNav({
             tabIndex={isActive ? 0 : -1}
             onClick={() => onSelect(t.key)}
             className={
-              "-mb-px cursor-pointer border-b-2 transition " +
-              (isTop
-                ? "px-3 py-2 text-sm font-medium "
-                : "px-2.5 py-1.5 text-xs font-medium ") +
+              "-mb-px cursor-pointer border-b-2 px-3 py-2 text-sm font-medium transition " +
               (isActive
                 ? "border-wp-red text-wp-ink"
                 : "border-transparent text-wp-slate hover:text-wp-ink")
@@ -366,6 +382,94 @@ function TabNav({
         );
       })}
     </div>
+  );
+}
+
+type AdminNavEntry =
+  | { kind: "heading"; parentKey: AdminTopTabKey; label: string }
+  | { kind: "sub"; parentKey: AdminTopTabKey; subKey: string; label: string }
+  | { kind: "panel"; key: AdminTopTabKey; label: string };
+
+function AdminSidebarNav({
+  entries,
+  activeTop,
+  activeSub,
+  onSelectPanel,
+  onSelectSub,
+}: {
+  entries: AdminNavEntry[];
+  activeTop: AdminTopTabKey;
+  activeSub: string | null;
+  onSelectPanel: (key: AdminTopTabKey) => void;
+  onSelectSub: (parentKey: AdminTopTabKey, subKey: string) => void;
+}) {
+  return (
+    <nav
+      role="tablist"
+      aria-label="Admin sections"
+      className="w-52 shrink-0 border-r border-wp-stone pr-4"
+    >
+      <ul className="flex flex-col gap-0.5">
+        {entries.map((entry) => {
+          if (entry.kind === "heading") {
+            return (
+              <li
+                key={`heading-${entry.parentKey}`}
+                className="px-3 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wide text-wp-slate first:pt-0"
+              >
+                {entry.label}
+              </li>
+            );
+          }
+
+          if (entry.kind === "sub") {
+            const isActive = activeTop === entry.parentKey && activeSub === entry.subKey;
+            return (
+              <li key={`${entry.parentKey}-${entry.subKey}`}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  id={`admin-nav-${entry.parentKey}-${entry.subKey}`}
+                  tabIndex={isActive ? 0 : -1}
+                  onClick={() => onSelectSub(entry.parentKey, entry.subKey)}
+                  className={
+                    "w-full rounded-md px-3 py-2 text-left text-sm transition " +
+                    (isActive
+                      ? "bg-wp-red/10 font-medium text-wp-ink"
+                      : "text-wp-slate hover:bg-wp-stone/30 hover:text-wp-ink")
+                  }
+                >
+                  {entry.label}
+                </button>
+              </li>
+            );
+          }
+
+          const isActive = activeTop === entry.key;
+          return (
+            <li key={entry.key}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                id={`admin-nav-${entry.key}`}
+                tabIndex={isActive ? 0 : -1}
+                onClick={() => onSelectPanel(entry.key)}
+                className={
+                  "w-full rounded-md px-3 py-2 text-left text-sm transition " +
+                  (isActive
+                    ? "bg-wp-red/10 font-medium text-wp-ink"
+                    : "text-wp-slate hover:bg-wp-stone/30 hover:text-wp-ink")
+                }
+              >
+                {entry.label}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
 
@@ -485,6 +589,7 @@ function AiEstimatorStatusRow() {
 }
 
 function ReminderAdmin() {
+  const { confirm } = useAppDialog();
   const runReminders = useMutation({
     mutationFn: (dryRun: boolean) =>
       api<ReminderRunResult>("/notifications/status-reminders/run", {
@@ -508,8 +613,9 @@ function ReminderAdmin() {
           </h2>
           <p className="mt-1 text-xs text-wp-slate">
             Sends one email per owner listing the status updates they owe this week.
-            Runs automatically every Thursday morning; use these buttons to preview or
-            fire it on demand. Scoped to the group you're currently viewing.
+            Runs automatically at the reminder time on the{" "}
+            <span className="font-medium text-wp-ink">Status schedule</span> tab; use these buttons to
+            preview or fire it on demand. Scoped to the group you're currently viewing.
           </p>
         </div>
       </div>
@@ -530,11 +636,14 @@ function ReminderAdmin() {
           type="button"
           className="btn-primary inline-flex items-center gap-1.5"
           disabled={busy}
-          onClick={() => {
+          onClick={async () => {
             if (
-              !confirm(
-                "Send reminder emails now to every owner in this group who owes a status update this week?\n\nOwners who already got one this week are automatically skipped.",
-              )
+              !(await confirm({
+                title: "Send reminder emails now?",
+                description:
+                  "Every owner in this group who owes a status update this week will get one email.\n\nOwners who already got one this week are automatically skipped.",
+                confirmLabel: "Send now",
+              }))
             ) return;
             runReminders.mutate(false);
           }}
@@ -644,9 +753,32 @@ type DigestRunResult = {
   errors: number;
 };
 
-type DigestRunArgs = { dry_run: boolean; force_resend?: boolean };
+type DigestRunArgs = { dry_run: boolean; force_resend?: boolean; admin_note?: string };
+
+type AddDigestEmailsResult = { added: number; skipped_duplicate: number };
+
+const EMAIL_LIST_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Split comma / semicolon / whitespace separated paste into unique emails. */
+function parseEmailList(raw: string): { valid: string[]; invalid: string[] } {
+  const parts = raw
+    .split(/[\s,;]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const part of parts) {
+    if (seen.has(part)) continue;
+    seen.add(part);
+    if (EMAIL_LIST_RE.test(part)) valid.push(part);
+    else invalid.push(part);
+  }
+  return { valid, invalid };
+}
 
 function DigestAdmin() {
+  const { confirm } = useAppDialog();
   const qc = useQueryClient();
   const recipients = useQuery({
     queryKey: ["digestRecipients"],
@@ -662,11 +794,11 @@ function DigestAdmin() {
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["digestRecipients"] }),
   });
-  const addEmail = useMutation({
-    mutationFn: (email: string) =>
-      api<{ id: string }>("/notifications/digest-recipients/email", {
+  const addEmails = useMutation({
+    mutationFn: (emails: string[]) =>
+      api<AddDigestEmailsResult>("/notifications/digest-recipients/emails", {
         method: "POST",
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ emails }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["digestRecipients"] }),
   });
@@ -687,6 +819,15 @@ function DigestAdmin() {
   const [pickUserId, setPickUserId] = useState<string>("");
   const [emailInput, setEmailInput] = useState("");
   const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
+  const [digestAdminNote, setDigestAdminNote] = useState("");
+
+  const digestNoteTrimmed = digestAdminNote.trim();
+  const digestRunArgs = (dry_run: boolean, force_resend = false): DigestRunArgs => ({
+    dry_run,
+    force_resend,
+    admin_note: digestNoteTrimmed || undefined,
+  });
 
   const recipientEmails = useMemo(
     () => new Set((recipients.data ?? []).map((r) => r.email.toLowerCase())),
@@ -704,11 +845,17 @@ function DigestAdmin() {
       .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
   }, [users.data, recipientEmails]);
 
-  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput.trim());
+  const parsedEmails = useMemo(() => parseEmailList(emailInput), [emailInput]);
+  const newEmailsToAdd = useMemo(
+    () => parsedEmails.valid.filter((e) => !recipientEmails.has(e)),
+    [parsedEmails.valid, recipientEmails],
+  );
+  const emailAddReady = newEmailsToAdd.length > 0;
 
   function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setEmailError(null);
+    setEmailSuccess(null);
     if (mode === "user") {
       if (!pickUserId) return;
       addUser.mutate(pickUserId, {
@@ -716,18 +863,44 @@ function DigestAdmin() {
         onError: (err) => setEmailError(err instanceof Error ? err.message : "failed to add"),
       });
     } else {
-      const email = emailInput.trim();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        setEmailError("Enter a valid email address.");
+      const { valid, invalid } = parsedEmails;
+      if (!valid.length) {
+        setEmailError(
+          invalid.length
+            ? "No valid email addresses found. Use commas, spaces, or new lines between addresses."
+            : "Enter at least one email address.",
+        );
         return;
       }
-      if (recipientEmails.has(email.toLowerCase())) {
-        setEmailError("That email is already on the list.");
+      if (!newEmailsToAdd.length) {
+        setEmailError("Every address you entered is already on the list.");
         return;
       }
-      addEmail.mutate(email, {
-        onSuccess: () => setEmailInput(""),
-        onError: (err) => setEmailError(err instanceof Error ? err.message : "failed to add"),
+      addEmails.mutate(newEmailsToAdd, {
+        onSuccess: (result) => {
+          setEmailInput("");
+          const parts: string[] = [];
+          if (result.added > 0) {
+            parts.push(
+              `Added ${result.added} recipient${result.added === 1 ? "" : "s"}.`,
+            );
+          }
+          const skippedOnList =
+            valid.length - newEmailsToAdd.length + result.skipped_duplicate;
+          if (skippedOnList > 0) {
+            parts.push(
+              `${skippedOnList} skipped (already on the list).`,
+            );
+          }
+          if (invalid.length > 0) {
+            parts.push(
+              `${invalid.length} invalid address${invalid.length === 1 ? "" : "es"} ignored.`,
+            );
+          }
+          setEmailSuccess(parts.join(" "));
+        },
+        onError: (err) =>
+          setEmailError(err instanceof Error ? err.message : "failed to add"),
       });
     }
   }
@@ -747,21 +920,39 @@ function DigestAdmin() {
           </h2>
           <p className="mt-1 text-xs text-wp-slate">
             Rolls up this week's <strong>submitted</strong> status updates and emails the roster below.
-            Saved drafts are excluded until owners click Submit. Runs automatically every Friday at 5:00 PM
-            Central. Skips silently when the group has zero completed updates or zero recipients. Scoped to
-            the group you're currently viewing.
+            Saved drafts are excluded until owners click Submit. Runs automatically at the digest time on the{" "}
+            <span className="font-medium text-wp-ink">Status schedule</span> tab; use these buttons to
+            preview or send on demand. Skips silently when the group has zero completed updates or zero
+            recipients. Scoped to the group you're currently viewing.
           </p>
         </div>
       </div>
 
       <MutationErrorBanner mutation={runDigest} className="mt-4" />
 
+      <div className="mt-4">
+        <label className="block text-xs font-medium text-wp-slate">
+          Optional note for manual sends
+          <textarea
+            className="input mt-1 min-h-[4.5rem] text-sm"
+            value={digestAdminNote}
+            onChange={(e) => setDigestAdminNote(e.target.value)}
+            placeholder="Add a short message that appears at the top of the email when you preview or send manually. Leave blank for no note."
+            maxLength={2000}
+            disabled={busySend}
+          />
+        </label>
+        <p className="mt-1 text-[11px] text-wp-slate">
+          Not included in scheduled sends — only when you use Preview, Send now, or Send again below.
+        </p>
+      </div>
+
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <button
           type="button"
           className="btn-secondary inline-flex items-center gap-1.5"
           disabled={busySend}
-          onClick={() => runDigest.mutate({ dry_run: true })}
+          onClick={() => runDigest.mutate(digestRunArgs(true))}
         >
           <Mail size={13} />
           {busySend && runDigest.variables?.dry_run && !runDigest.variables?.force_resend
@@ -772,13 +963,16 @@ function DigestAdmin() {
           type="button"
           className="btn-primary inline-flex items-center gap-1.5"
           disabled={busySend}
-          onClick={() => {
+          onClick={async () => {
             if (
-              !confirm(
-                "Send the weekly digest email now to every recipient in this group's list?\n\nRecipients who already got one this week are automatically skipped.",
-              )
+              !(await confirm({
+                title: "Send digest now?",
+                description:
+                  "Send the weekly digest to every recipient in this group's list.\n\nRecipients who already got one this week are automatically skipped.",
+                confirmLabel: "Send now",
+              }))
             ) return;
-            runDigest.mutate({ dry_run: false });
+            runDigest.mutate(digestRunArgs(false));
           }}
         >
           <Send size={13} />
@@ -790,13 +984,16 @@ function DigestAdmin() {
           type="button"
           className="btn-secondary inline-flex items-center gap-1.5"
           disabled={busySend}
-          onClick={() => {
+          onClick={async () => {
             if (
-              !confirm(
-                "Send the digest again with the latest submitted updates?\n\nThis clears this week's send log for this group and emails every recipient again, even if they already received a digest earlier this week.",
-              )
+              !(await confirm({
+                title: "Send digest again?",
+                description:
+                  "Send the digest again with the latest submitted updates.\n\nThis clears this week's send log for this group and emails every recipient again, even if they already received a digest earlier this week.",
+                confirmLabel: "Send again",
+              }))
             ) return;
-            runDigest.mutate({ dry_run: false, force_resend: true });
+            runDigest.mutate(digestRunArgs(false, true));
           }}
         >
           <Send size={13} />
@@ -869,7 +1066,7 @@ function DigestAdmin() {
         <h3 className="text-sm font-semibold text-wp-ink">Digest recipients</h3>
         <p className="mt-0.5 text-xs text-wp-slate">
           Add anyone who should receive the Friday email — pick a group member from
-          the dropdown or type an ad-hoc email for someone without a Waypoint account.
+          the dropdown or paste one or more ad-hoc addresses (comma, space, or newline separated).
         </p>
 
         <form onSubmit={handleAdd} className="mt-3 flex flex-wrap items-start gap-2">
@@ -880,7 +1077,7 @@ function DigestAdmin() {
                 "px-2.5 py-1.5 text-xs " +
                 (mode === "user" ? "bg-wp-red text-white" : "bg-white text-wp-ink hover:bg-wp-stone/30")
               }
-              onClick={() => { setMode("user"); setEmailError(null); }}
+              onClick={() => { setMode("user"); setEmailError(null); setEmailSuccess(null); }}
             >
               Add user
             </button>
@@ -890,7 +1087,7 @@ function DigestAdmin() {
                 "px-2.5 py-1.5 text-xs " +
                 (mode === "email" ? "bg-wp-red text-white" : "bg-white text-wp-ink hover:bg-wp-stone/30")
               }
-              onClick={() => { setMode("email"); setEmailError(null); }}
+              onClick={() => { setMode("email"); setEmailError(null); setEmailSuccess(null); }}
             >
               Ad-hoc email
             </button>
@@ -910,13 +1107,17 @@ function DigestAdmin() {
               ))}
             </select>
           ) : (
-            <input
-              className="input h-9 min-w-[240px]"
-              type="email"
-              placeholder="alice@example.com"
+            <textarea
+              className="input min-h-[4.5rem] min-w-[min(100%,20rem)] flex-1 text-sm"
+              placeholder={"alice@example.com, bob@example.com\ncarol@example.com"}
               value={emailInput}
-              onChange={(e) => { setEmailInput(e.target.value); setEmailError(null); }}
+              onChange={(e) => {
+                setEmailInput(e.target.value);
+                setEmailError(null);
+                setEmailSuccess(null);
+              }}
               autoComplete="off"
+              rows={3}
             />
           )}
 
@@ -925,15 +1126,30 @@ function DigestAdmin() {
             className="btn-primary h-9"
             disabled={
               addUser.isPending ||
-              addEmail.isPending ||
-              (mode === "user" ? !pickUserId : !emailValid)
+              addEmails.isPending ||
+              (mode === "user" ? !pickUserId : !emailAddReady)
             }
           >
-            {addUser.isPending || addEmail.isPending ? "Adding…" : "Add"}
+            {addUser.isPending || addEmails.isPending
+              ? "Adding…"
+              : mode === "email" && newEmailsToAdd.length > 1
+                ? `Add ${newEmailsToAdd.length}`
+                : "Add"}
           </button>
         </form>
         {emailError ? (
           <p className="mt-2 text-xs text-red-700">{emailError}</p>
+        ) : null}
+        {emailSuccess ? (
+          <p className="mt-2 text-xs text-emerald-800">{emailSuccess}</p>
+        ) : null}
+        {mode === "email" && parsedEmails.valid.length > 0 ? (
+          <p className="mt-1 text-[11px] text-wp-slate">
+            {newEmailsToAdd.length} new address{newEmailsToAdd.length === 1 ? "" : "es"} ready to add
+            {parsedEmails.invalid.length > 0
+              ? ` · ${parsedEmails.invalid.length} invalid ignored`
+              : ""}
+          </p>
         ) : null}
 
         <MutationErrorBanner mutation={remove} className="mt-3" />
@@ -962,10 +1178,16 @@ function DigestAdmin() {
                     className="inline-flex h-7 w-7 items-center justify-center rounded text-wp-slate hover:bg-red-50 hover:text-red-700"
                     aria-label={`Remove ${r.email}`}
                     disabled={remove.isPending}
-                    onClick={() => {
-                      if (confirm(`Remove ${r.email} from the digest list?`)) {
-                        remove.mutate(r.id);
-                      }
+                    onClick={async () => {
+                      if (
+                        !(await confirm({
+                          title: "Remove recipient?",
+                          description: `Remove ${r.email} from the digest list?`,
+                          confirmLabel: "Remove",
+                          destructive: true,
+                        }))
+                      ) return;
+                      remove.mutate(r.id);
                     }}
                   >
                     <Trash2 size={14} />
@@ -1023,6 +1245,7 @@ function ArchivedProjectsAdmin() {
 }
 
 function SwimLanesAdmin() {
+  const { confirm, alert, prompt } = useAppDialog();
   const lanes = useSwimLanes();
   const projects = useProjects();
   const qc = useQueryClient();
@@ -1071,20 +1294,29 @@ function SwimLanesAdmin() {
     const cardCount = (projects.data ?? []).filter((p) => p.swim_lane_id === lane.id && !p.deleted_at).length;
     const others = (lanes.data ?? []).filter((l) => l.id !== lane.id);
     if (cardCount > 0 && others.length > 0) {
-      const target = prompt(
-        `${cardCount} card(s) live in "${lane.name}".\nReassign to which lane?\n\n${others.map((l, i) => `${i + 1}. ${l.name}`).join("\n")}\n\nEnter the number of the destination lane:`,
-      );
-      if (!target) return;
+      const laneList = others.map((l, i) => `${i + 1}. ${l.name}`).join("\n");
+      const target = await prompt({
+        title: `Reassign cards from "${lane.name}"`,
+        description: `${cardCount} card(s) live in this lane. Enter the number of the destination lane:\n\n${laneList}`,
+        placeholder: "Lane number",
+      });
+      if (target === null) return;
       const idx = Number(target) - 1;
       const dest = others[idx];
-      if (!dest) { alert("Invalid selection."); return; }
+      if (!dest) {
+        await alert({ title: "Invalid selection", description: "Enter a valid lane number from the list." });
+        return;
+      }
       del.mutate({ id: lane.id, reassign_to: dest.id });
     } else {
       if (cardCount > 0 && others.length === 0) {
-        alert(`"${lane.name}" is the only remaining swim lane and still holds ${cardCount} card(s). Create another lane and reassign these cards before deleting.`);
+        await alert({
+          title: "Cannot delete lane",
+          description: `"${lane.name}" is the only remaining swim lane and still holds ${cardCount} card(s). Create another lane and reassign these cards before deleting.`,
+        });
         return;
       }
-      if (!confirm(`Delete "${lane.name}"?`)) return;
+      if (!(await confirm({ title: `Delete "${lane.name}"?`, confirmLabel: "Delete", destructive: true }))) return;
       del.mutate({ id: lane.id, reassign_to: null });
     }
   }
@@ -1283,6 +1515,7 @@ function SortableLaneRow(props: {
 }
 
 function TeamsAdmin() {
+  const { confirm, alert, prompt } = useAppDialog();
   const teams = useTeams();
   const projects = useProjects();
   const qc = useQueryClient();
@@ -1347,17 +1580,23 @@ function TeamsAdmin() {
     const others = (teams.data ?? []).filter((t) => t.id !== team.id);
     let reassign: string | null = null;
     if (count > 0 && others.length > 0) {
-      const target = prompt(
-        `${count} project(s) belong to "${team.name}".\nReassign to which team (blank = drop the membership)?\n\n${others.map((t, i) => `${i + 1}. ${t.name}`).join("\n")}\n\nEnter the number, or leave blank:`,
-      );
+      const teamList = others.map((t, i) => `${i + 1}. ${t.name}`).join("\n");
+      const target = await prompt({
+        title: `Reassign projects from "${team.name}"`,
+        description: `${count} project(s) belong to this team. Enter the number of the destination team, or leave blank to drop the membership:\n\n${teamList}`,
+        placeholder: "Team number (optional)",
+      });
       if (target === null) return;
       if (target.trim()) {
         const idx = Number(target) - 1;
         const dest = others[idx];
-        if (!dest) { alert("Invalid selection."); return; }
+        if (!dest) {
+          await alert({ title: "Invalid selection", description: "Enter a valid team number from the list." });
+          return;
+        }
         reassign = dest.id;
       }
-    } else if (!confirm(`Delete "${team.name}"?`)) {
+    } else if (!(await confirm({ title: `Delete "${team.name}"?`, confirmLabel: "Delete", destructive: true }))) {
       return;
     }
     del.mutate({ id: team.id, reassign_to: reassign });
@@ -1481,6 +1720,7 @@ function SortableTeamRow(props: {
  * the KPIs tab.
  */
 function KpisAdmin() {
+  const { confirm } = useAppDialog();
   const kpis = useKpis();
   const projects = useProjects();
   const qc = useQueryClient();
@@ -1547,15 +1787,20 @@ function KpisAdmin() {
     reorder.mutate(nextIds);
   }
 
-  function handleDelete(k: Kpi) {
-    // Show usage before confirming — KPI deletes are cascade-hard on
-    // the backend (all project_kpis rows removed) so PMs deserve a
-    // heads-up if the KPI is actively used.
+  async function handleDelete(k: Kpi) {
     const count = (projects.data ?? []).filter((p) => p.kpis?.includes(k.id) && !p.deleted_at).length;
-    const msg = count > 0
-      ? `Delete "${k.name}"? ${count} active project${count === 1 ? "" : "s"} will lose this KPI assignment.`
-      : `Delete "${k.name}"?`;
-    if (!confirm(msg)) return;
+    const description =
+      count > 0
+        ? `${count} active project${count === 1 ? "" : "s"} will lose this KPI assignment.`
+        : undefined;
+    if (
+      !(await confirm({
+        title: `Delete "${k.name}"?`,
+        description,
+        confirmLabel: "Delete",
+        destructive: true,
+      }))
+    ) return;
     del.mutate(k.id);
   }
 
@@ -1697,6 +1942,7 @@ function SortableKpiRow(props: {
  * project — just orphans a preset from the picker.
  */
 function TshirtSizesAdmin() {
+  const { confirm } = useAppDialog();
   const sizes = useTshirtSizes();
   const qc = useQueryClient();
   const [label, setLabel] = useState("");
@@ -1820,11 +2066,15 @@ function TshirtSizesAdmin() {
     reorder.mutate(nextIds);
   }
 
-  function handleDelete(s: TshirtSize) {
-    // Same confirm-based prompt style used by lanes / teams / kpis
-    // delete. Sizes have no FK dependents (see docblock) so the copy
-    // is a plain confirm rather than a reassignment prompt.
-    if (!confirm(`Delete size "${s.label}"? It will disappear from the EZEstimates picker.`)) return;
+  async function handleDelete(s: TshirtSize) {
+    if (
+      !(await confirm({
+        title: `Delete size "${s.label}"?`,
+        description: "It will disappear from the EZEstimates picker.",
+        confirmLabel: "Delete",
+        destructive: true,
+      }))
+    ) return;
     del.mutate(s.id);
   }
 
@@ -2013,6 +2263,7 @@ function SortableTshirtSizeRow({
 }
 
 function UsersAdmin() {
+  const { confirm } = useAppDialog();
   const users = useUsers();
   const health = useHealth();
   const me = useMe();
@@ -2041,11 +2292,14 @@ function UsersAdmin() {
       qc.invalidateQueries({ queryKey: ["teams"] });
     },
   });
-  const handleDelete = (u: User) => {
+  const handleDelete = async (u: User) => {
     if (
-      !confirm(
-        `Delete ${u.name} (${u.email})?\n\nThis removes the account and signs them out everywhere. Projects, comments, and history they created are kept but lose their attribution.`,
-      )
+      !(await confirm({
+        title: `Delete ${u.name}?`,
+        description: `This removes the account (${u.email}) and signs them out everywhere. Projects, comments, and history they created are kept but lose their attribution.`,
+        confirmLabel: "Delete account",
+        destructive: true,
+      }))
     ) return;
     delUser.mutate(u.id);
   };
@@ -2803,6 +3057,7 @@ function GroupRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const { confirm } = useAppDialog();
   const qc = useQueryClient();
   const [name, setName] = useState(group.name);
   const [color, setColor] = useState<string>(group.color ?? "#64748B");
@@ -2866,10 +3121,16 @@ function GroupRow({
         />
         <button
           type="button"
-          onClick={() => {
-            if (confirm(`Delete group "${group.name}"? This is only allowed if it has no active projects.`)) {
-              remove.mutate();
-            }
+          onClick={async () => {
+            if (
+              !(await confirm({
+                title: `Delete group "${group.name}"?`,
+                description: "This is only allowed if the group has no active projects.",
+                confirmLabel: "Delete",
+                destructive: true,
+              }))
+            ) return;
+            remove.mutate();
           }}
           className="rounded p-1 text-wp-slate hover:bg-wp-stone/30 hover:text-red-600"
           aria-label={`Delete ${group.name}`}

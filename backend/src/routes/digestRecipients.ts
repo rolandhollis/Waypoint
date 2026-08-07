@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { query } from "../db/pool.js";
+import { query, withTransaction } from "../db/pool.js";
 import { requireAdmin } from "../middleware/auth.js";
 
 /**
@@ -137,6 +137,53 @@ digestRecipientsRouter.post("/email", requireAdmin, async (req, res) => {
     }
     throw e;
   }
+});
+
+const addEmailsSchema = z.object({
+  emails: z
+    .array(
+      z
+        .string()
+        .trim()
+        .toLowerCase()
+        .email("must be a valid email address")
+        .max(254),
+    )
+    .min(1)
+    .max(100),
+});
+
+/**
+ * Batch add ad-hoc digest emails. Duplicates (already on the list or
+ * repeated in the request) are skipped without failing the whole batch.
+ */
+digestRecipientsRouter.post("/emails", requireAdmin, async (req, res) => {
+  const body = addEmailsSchema.parse(req.body ?? {});
+  const unique = [...new Set(body.emails)];
+
+  let added = 0;
+  let skipped_duplicate = 0;
+
+  await withTransaction(async (client) => {
+    for (const email of unique) {
+      try {
+        await client.query(
+          `INSERT INTO status_digest_recipients (group_id, user_id, email, created_by)
+           VALUES ($1, NULL, $2, $3)`,
+          [req.groupId!, email, req.user?.id ?? null],
+        );
+        added += 1;
+      } catch (e) {
+        if ((e as { code?: string }).code === "23505") {
+          skipped_duplicate += 1;
+        } else {
+          throw e;
+        }
+      }
+    }
+  });
+
+  res.status(201).json({ added, skipped_duplicate });
 });
 
 digestRecipientsRouter.delete("/:id", requireAdmin, async (req, res) => {

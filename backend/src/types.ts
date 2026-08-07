@@ -89,6 +89,30 @@ export type GroupRow = {
 export type AppConstants = {
   /** Tenant-visible product name shown in navbar / document title. */
   app_name?: string | null;
+  /** Admin overrides for weekly status cadence (partial — unset keys use defaults). */
+  weekly_status_schedule?: WeeklyStatusScheduleInput | null;
+  /** Resolved schedule after merging overrides with deployment defaults. */
+  weekly_status_schedule_effective?: WeeklyStatusSchedule;
+};
+
+export type WeeklyStatusScheduleInput = {
+  timezone?: string | null;
+  due_day?: number | null;
+  due_time?: string | null;
+  reminder_day?: number | null;
+  reminder_time?: string | null;
+  digest_day?: number | null;
+  digest_time?: string | null;
+};
+
+export type WeeklyStatusSchedule = {
+  timezone: string;
+  due_day: number;
+  due_time: string;
+  reminder_day: number;
+  reminder_time: string;
+  digest_day: number;
+  digest_time: string;
 };
 
 /**

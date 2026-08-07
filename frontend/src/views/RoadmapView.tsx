@@ -13,6 +13,7 @@ import {
   hasAnyRoadmapUrlParam,
 } from "../lib/roadmapUrlState";
 import { computeHeadlineGroups } from "../lib/roadmapHeadline";
+import { useAppDialog } from "../components/AppDialogProvider";
 import { FilterBar } from "../components/FilterBar";
 import { GanttTimeline } from "../components/GanttTimeline";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
@@ -28,6 +29,7 @@ import { RoadmapCompactView } from "../components/RoadmapCompactView";
 
 export function RoadmapView() {
   const projects = useProjects();
+  const { alert } = useAppDialog();
   const lanes = useSwimLanes();
   const teams = useTeams();
   const users = useUsers();
@@ -284,7 +286,10 @@ export function RoadmapView() {
       // mutation state to hang a banner on. Logs the underlying
       // error for support / bug reports.
       console.error("PDF export failed", err);
-      alert("PDF export failed. Check the browser console for details.");
+      await alert({
+        title: "PDF export failed",
+        description: "Check the browser console for details.",
+      });
     } finally {
       setExporting(false);
     }

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { App } from "./App";
+import { AppDialogProvider } from "./components/AppDialogProvider";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 
@@ -21,7 +22,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <Tooltip.Provider delayDuration={150} skipDelayDuration={100}>
-            <App />
+            <AppDialogProvider>
+              <App />
+            </AppDialogProvider>
           </Tooltip.Provider>
         </BrowserRouter>
       </QueryClientProvider>

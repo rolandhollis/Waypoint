@@ -4,6 +4,7 @@ import { query, withTransaction } from "../db/pool.js";
 import { requireSuperUser } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
 import type { AppConstants, GroupRow, Role } from "../types.js";
+import { deriveConstants } from "../lib/groupConstants.js";
 
 /**
  * Groups (tenants) CRUD + membership management.
@@ -23,37 +24,6 @@ const GROUP_COLOR_PALETTE = [
   "#DC2626", "#0EA5E9", "#10B981", "#F59E0B",
   "#8B5CF6", "#EC4899", "#14B8A6", "#F97316",
 ];
-
-/**
- * Normalize whatever's in `groups.constants` (JSONB, freeform) into
- * the narrow `AppConstants` surface every consumer expects. We do
- * this on read so the frontend never has to reason about missing
- * keys, non-string values, or leftover keys from earlier schema
- * ideas.
- *
- * Rules:
- *   * Missing key → the field is omitted (undefined). Consumers
- *     treat undefined as "not set — fall back to built-in default".
- *   * Explicit null → preserved as null. Same practical effect as
- *     undefined for defaults, but distinguishes "admin cleared it"
- *     from "never set" if a future audit surface wants to show that.
- *   * Non-string value → dropped. The zod schema on the PATCH path
- *     stops these from being written today, but tolerating garbage
- *     on read means a pre-existing stray value can't break every
- *     group's `/constants` GET.
- */
-function deriveConstants(raw: unknown): AppConstants {
-  const bag = (raw && typeof raw === "object" && !Array.isArray(raw))
-    ? (raw as Record<string, unknown>)
-    : {};
-  const out: AppConstants = {};
-  if ("app_name" in bag) {
-    const v = bag.app_name;
-    if (v === null) out.app_name = null;
-    else if (typeof v === "string") out.app_name = v;
-  }
-  return out;
-}
 
 /** Wrap a raw `groups` row so `constants` is always the derived
  *  shape (never a raw JSONB blob) before we ship it over the wire. */
@@ -283,9 +253,62 @@ groupsRouter.get("/:id/constants", async (req, res) => {
  *
  * Returns the merged, derived constants — same shape as GET.
  */
-const constantsPatchSchema = z.object({
-  app_name: z.string().trim().min(1).max(60).nullable().optional(),
-}).strict();
+const timeHmSchema = z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/);
+
+const weeklyStatusSchedulePatchSchema = z
+  .object({
+    timezone: z.string().trim().min(1).max(64).nullable().optional(),
+    due_day: z.number().int().min(1).max(7).nullable().optional(),
+    due_time: timeHmSchema.nullable().optional(),
+    reminder_day: z.number().int().min(1).max(7).nullable().optional(),
+    reminder_time: timeHmSchema.nullable().optional(),
+    digest_day: z.number().int().min(1).max(7).nullable().optional(),
+    digest_time: timeHmSchema.nullable().optional(),
+  })
+  .strict();
+
+const constantsPatchSchema = z
+  .object({
+    app_name: z.string().trim().min(1).max(60).nullable().optional(),
+    weekly_status_schedule: weeklyStatusSchedulePatchSchema.nullable().optional(),
+  })
+  .strict();
+
+function mergeConstantsBag(
+  raw: unknown,
+  body: z.infer<typeof constantsPatchSchema>,
+): Record<string, unknown> {
+  const bag =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? { ...(raw as Record<string, unknown>) }
+      : {};
+
+  if (body.app_name !== undefined) {
+    if (body.app_name === null) delete bag.app_name;
+    else bag.app_name = body.app_name;
+  }
+
+  if (body.weekly_status_schedule !== undefined) {
+    if (body.weekly_status_schedule === null) {
+      delete bag.weekly_status_schedule;
+    } else {
+      const cur =
+        bag.weekly_status_schedule &&
+        typeof bag.weekly_status_schedule === "object" &&
+        !Array.isArray(bag.weekly_status_schedule)
+          ? { ...(bag.weekly_status_schedule as Record<string, unknown>) }
+          : {};
+      for (const [k, v] of Object.entries(body.weekly_status_schedule)) {
+        if (v === undefined) continue;
+        if (v === null) delete cur[k];
+        else cur[k] = v;
+      }
+      bag.weekly_status_schedule = cur;
+    }
+  }
+
+  return bag;
+}
 
 groupsRouter.patch("/:id/constants", async (req, res) => {
   const groupId = String(req.params.id);
@@ -303,22 +326,13 @@ groupsRouter.patch("/:id/constants", async (req, res) => {
     );
     if (!existing[0]) throw new HttpError(404, "group not found");
 
-    const current = deriveConstants(existing[0].constants);
-    const next: AppConstants = { ...current };
-    for (const [k, v] of Object.entries(body)) {
-      if (v === undefined) continue;
-      if (v === null) {
-        delete next[k as keyof AppConstants];
-      } else {
-        (next as Record<string, string>)[k] = v;
-      }
-    }
+    const nextBag = mergeConstantsBag(existing[0].constants, body);
 
     await client.query(
       `UPDATE groups SET constants = $1::jsonb, updated_at = NOW() WHERE id = $2`,
-      [JSON.stringify(next), groupId],
+      [JSON.stringify(nextBag), groupId],
     );
-    return next;
+    return deriveConstants(nextBag);
   });
 
   res.json(result);

@@ -1,6 +1,11 @@
 import { addDays, startOfDay } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { config } from "../config.js";
+import {
+  DEFAULT_WEEKLY_STATUS_SCHEDULE,
+  dueAtForWeekFromSchedule,
+  type WeeklyStatusSchedule,
+} from "./weeklyStatusSchedule.js";
 
 /**
  * Return the Monday (00:00 in the reporting timezone) of the calendar week that
@@ -15,22 +20,20 @@ export function weekOfMonday(date: Date, timeZone: string = config.reportingTime
 }
 
 /**
- * Thursday 23:59:59 in reporting timezone for the given `weekOf` (which should
- * itself be a Monday from `weekOfMonday`). Returned as a UTC Date so the
- * DB stores it correctly across DST.
+ * Due instant for the given `weekOf` Monday anchor. Uses the deployment
+ * default schedule unless a per-group `WeeklyStatusSchedule` is passed.
  */
-export function dueAtForWeek(weekOf: Date, timeZone: string = config.reportingTimezone): Date {
-  const dayStr = formatInTimeZone(addDays(weekOf, 3), timeZone, "yyyy-MM-dd");
-  return fromZonedTime(`${dayStr}T23:59:59`, timeZone);
-}
-
-/**
- * Thursday 08:00 in reporting timezone — the moment the reminder banner
- * should start showing for the current week.
- */
-export function reminderStartForWeek(weekOf: Date, timeZone: string = config.reportingTimezone): Date {
-  const dayStr = formatInTimeZone(addDays(weekOf, 3), timeZone, "yyyy-MM-dd");
-  return fromZonedTime(`${dayStr}T08:00:00`, timeZone);
+export function dueAtForWeek(
+  weekOf: Date,
+  timeZoneOrSchedule: string | WeeklyStatusSchedule = config.reportingTimezone,
+): Date {
+  if (typeof timeZoneOrSchedule === "string") {
+    return dueAtForWeekFromSchedule(weekOf, {
+      ...DEFAULT_WEEKLY_STATUS_SCHEDULE,
+      timezone: timeZoneOrSchedule,
+    });
+  }
+  return dueAtForWeekFromSchedule(weekOf, timeZoneOrSchedule);
 }
 
 export function isoDate(d: Date): string {

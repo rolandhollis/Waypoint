@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import { checkPassword, passwordIsValid } from "../lib/password";
+import { useAppDialog } from "./AppDialogProvider";
 import { CopyButton } from "./CopyButton";
 import { cn } from "../lib/cn";
 
@@ -50,6 +51,7 @@ export function PasswordField({
 }) {
   const [visible, setVisible] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const { alert } = useAppDialog();
   const checks = checkPassword(value, email ?? null);
   const anyEntered = value.length > 0;
 
@@ -65,8 +67,11 @@ export function PasswordField({
       onChange(password);
       setVisible(true);
     } catch (err) {
-      // Surface via alert so the admin doesn't get stuck. Very rare.
-      alert(`Password generator failed: ${(err as Error).message ?? "unknown error"}`);
+      // Surface via dialog so the admin doesn't get stuck. Very rare.
+      void alert({
+        title: "Password generator failed",
+        description: (err as Error).message ?? "unknown error",
+      });
     } finally {
       setGenerating(false);
     }

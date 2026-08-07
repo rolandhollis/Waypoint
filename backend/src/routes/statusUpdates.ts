@@ -3,7 +3,9 @@ import { z } from "zod";
 import { query, withTransaction } from "../db/pool.js";
 import { requireWrite } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
+import { loadGroupWeeklyStatusSchedule } from "../lib/groupConstants.js";
 import { dueAtForWeek, weekOfMonday } from "../lib/time.js";
+import { weekOfMondayForSchedule } from "../lib/weeklyStatusSchedule.js";
 import { compareSwimLaneReportOrder } from "../lib/statusReportOrder.js";
 import { addDays } from "date-fns";
 import type { WeeklyStatusUpdateRow } from "../types.js";
@@ -46,13 +48,18 @@ export async function eligibleProjects(
 
 statusUpdatesRouter.get("/pending", async (req, res) => {
   const userId = req.query.user_id === "me" ? req.user!.id : String(req.query.user_id ?? req.user!.id);
-  const week = weekOfMonday(new Date());
+  const schedule = await loadGroupWeeklyStatusSchedule(req.groupId!);
+  const week = weekOfMondayForSchedule(new Date(), schedule);
   const eligible = await eligibleProjects(week, req.groupId!);
   const myEligible = eligible.filter((e) => e.owner_id === userId);
 
   const projectIds = myEligible.map((e) => e.project_id);
   if (!projectIds.length) {
-    res.json({ week_of: week.toISOString().slice(0, 10), due_at: dueAtForWeek(week).toISOString(), pending: [] });
+    res.json({
+      week_of: week.toISOString().slice(0, 10),
+      due_at: dueAtForWeek(week, schedule).toISOString(),
+      pending: [],
+    });
     return;
   }
   const { rows: updates } = await query<WeeklyStatusUpdateRow>(
@@ -71,7 +78,7 @@ statusUpdatesRouter.get("/pending", async (req, res) => {
 
   res.json({
     week_of: week.toISOString().slice(0, 10),
-    due_at: dueAtForWeek(week).toISOString(),
+    due_at: dueAtForWeek(week, schedule).toISOString(),
     pending,
   });
 });
@@ -79,11 +86,14 @@ statusUpdatesRouter.get("/pending", async (req, res) => {
 /** GET /status-updates/report?week_of=YYYY-MM-DD → all eligible projects + their status update for the given week. */
 statusUpdatesRouter.get("/report", async (req, res) => {
   const weekParam = req.query.week_of ? String(req.query.week_of) : null;
-  const week = weekParam ? weekOfMonday(new Date(`${weekParam}T12:00:00Z`)) : weekOfMonday(new Date());
+  const schedule = await loadGroupWeeklyStatusSchedule(req.groupId!);
+  const week = weekParam
+    ? weekOfMonday(new Date(`${weekParam}T12:00:00Z`), schedule.timezone)
+    : weekOfMondayForSchedule(new Date(), schedule);
   const eligible = await eligibleProjects(week, req.groupId!);
   const projectIds = eligible.map((e) => e.project_id);
 
-  const dueAt = dueAtForWeek(week);
+  const dueAt = dueAtForWeek(week, schedule);
   const weekIso = week.toISOString().slice(0, 10);
 
   if (!projectIds.length) {
@@ -196,9 +206,12 @@ const upsertSchema = z.object({
 projectStatusUpdatesRouter.post<ProjectIdParam>("/", requireWrite, async (req, res) => {
   await assertProjectInGroup(req.params.id, req.groupId!);
   const body = upsertSchema.parse(req.body);
-  const week = body.week_of ? weekOfMonday(new Date(`${body.week_of}T12:00:00Z`)) : weekOfMonday(new Date());
+  const schedule = await loadGroupWeeklyStatusSchedule(req.groupId!);
+  const week = body.week_of
+    ? weekOfMonday(new Date(`${body.week_of}T12:00:00Z`), schedule.timezone)
+    : weekOfMondayForSchedule(new Date(), schedule);
   const weekIso = week.toISOString().slice(0, 10);
-  const due = dueAtForWeek(week);
+  const due = dueAtForWeek(week, schedule);
 
   if (body.completed) {
     if (!body.health_flag || body.health_flag === "white") {

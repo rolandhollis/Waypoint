@@ -1,7 +1,12 @@
 import cron from "node-cron";
 import { config } from "../config.js";
 import { pool } from "../db/pool.js";
+import { deriveConstants, weeklyStatusScheduleForConstants } from "../lib/groupConstants.js";
 import { dueAtForWeek, weekOfMonday } from "../lib/time.js";
+import {
+  isWeeklyStatusScheduleSlot,
+  resolveWeeklyStatusSchedule,
+} from "../lib/weeklyStatusSchedule.js";
 import { runStatusReportReminders } from "../notifications/statusReminders.js";
 import { runStatusReportDigest } from "../notifications/statusDigest.js";
 
@@ -14,7 +19,10 @@ import { runStatusReportDigest } from "../notifications/statusDigest.js";
 async function rolloverJob() {
   const week = weekOfMonday(new Date());
   const iso = week.toISOString().slice(0, 10);
-  console.log(`[cron] weekly rollover — new week_of=${iso}, due_at=${dueAtForWeek(week).toISOString()}`);
+  const schedule = resolveWeeklyStatusSchedule();
+  console.log(
+    `[cron] weekly rollover — new week_of=${iso}, due_at=${dueAtForWeek(week, schedule).toISOString()}`,
+  );
 }
 
 /**
@@ -30,38 +38,42 @@ async function overdueJob() {
       WHERE week_of = $1::date AND completed = FALSE`,
     [week.toISOString().slice(0, 10)],
   );
-  console.log(`[cron] overdue check — ${rows[0]?.n ?? 0} update rows still incomplete for week ${week.toISOString().slice(0, 10)}`);
+  console.log(
+    `[cron] overdue check — ${rows[0]?.n ?? 0} update rows still incomplete for week ${week.toISOString().slice(0, 10)}`,
+  );
 }
 
 /**
- * Weekly status-report reminder — Thursday 10:00 in reporting timezone.
- * Fires the morning of the Friday due-date's eve so owners get a
- * "reminder while there's still time" nudge without blasting inboxes
- * days in advance. Runs on the Fly machine's always-on process; the
- * notification_log unique index guarantees we never double-send if
- * the container restarts near the trigger.
+ * Per-minute tick: for each workspace, check whether its configured
+ * reminder or digest slot matches the current local minute and fire
+ * scoped sends. Schedule values live in `groups.constants` (Admin →
+ * Notifications → Weekly status schedule).
  */
-async function reminderJob() {
-  try {
-    await runStatusReportReminders();
-  } catch (err) {
-    console.error("[cron] status reminder job failed:", err);
+async function tickWeeklyStatusJobs() {
+  const now = new Date();
+  const { rows } = await pool.query<{ id: string; constants: unknown }>(
+    `SELECT id, constants FROM groups`,
+  );
+  const reminderGroupIds: string[] = [];
+  const digestGroupIds: string[] = [];
+  for (const row of rows) {
+    const schedule = weeklyStatusScheduleForConstants(deriveConstants(row.constants));
+    if (isWeeklyStatusScheduleSlot(now, schedule, "reminder")) reminderGroupIds.push(row.id);
+    if (isWeeklyStatusScheduleSlot(now, schedule, "digest")) digestGroupIds.push(row.id);
   }
-}
-
-/**
- * Weekly status-report digest — Friday 17:00 in reporting timezone.
- * Rolls up the week's completed updates and mails them to each
- * group's digest recipient list (managed under Admin → Notifications).
- * Fires per-group in a single pass; groups with no recipients or no
- * completed updates for the week are silently skipped so recipients
- * only ever see the digest when it actually has content.
- */
-async function digestJob() {
-  try {
-    await runStatusReportDigest();
-  } catch (err) {
-    console.error("[cron] status digest job failed:", err);
+  if (reminderGroupIds.length) {
+    try {
+      await runStatusReportReminders({ scopeGroupIds: reminderGroupIds });
+    } catch (err) {
+      console.error("[cron] status reminder job failed:", err);
+    }
+  }
+  if (digestGroupIds.length) {
+    try {
+      await runStatusReportDigest({ scopeGroupIds: digestGroupIds });
+    } catch (err) {
+      console.error("[cron] status digest job failed:", err);
+    }
   }
 }
 
@@ -69,7 +81,6 @@ export function startCron() {
   const tz = config.reportingTimezone;
   cron.schedule("5 0 * * 1", () => rolloverJob().catch(console.error), { timezone: tz });
   cron.schedule("5 0 * * 5", () => overdueJob().catch(console.error), { timezone: tz });
-  cron.schedule("0 10 * * 4", () => reminderJob(), { timezone: tz });
-  cron.schedule("0 17 * * 5", () => digestJob(), { timezone: tz });
-  console.log(`[cron] scheduled weekly jobs in ${tz}`);
+  cron.schedule("* * * * *", () => tickWeeklyStatusJobs().catch(console.error));
+  console.log(`[cron] scheduled weekly jobs in ${tz}; status emails use per-group schedule`);
 }

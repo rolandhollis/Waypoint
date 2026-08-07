@@ -1,7 +1,16 @@
 import { config } from "../config.js";
 import { pool, query, withTransaction } from "../db/pool.js";
 import { eligibleProjects } from "../routes/statusUpdates.js";
-import { dueAtForWeek, weekOfMonday } from "../lib/time.js";
+import {
+  loadGroupWeeklyStatusSchedules,
+  type GroupScheduleScope,
+} from "../lib/groupConstants.js";
+import {
+  dueAtForWeekFromSchedule,
+  resolveWeeklyStatusSchedule,
+  weekOfMondayForSchedule,
+  type WeeklyStatusSchedule,
+} from "../lib/weeklyStatusSchedule.js";
 import { sendEmail } from "./email.js";
 import { makeUnsubscribeToken } from "./unsubscribe.js";
 
@@ -31,7 +40,12 @@ type PendingProject = { id: string; title: string };
 
 type PendingByOwner = Map<
   string, // owner user_id
-  { ownerId: string; projects: PendingProject[]; groupNames: Set<string> }
+  {
+    ownerId: string;
+    projects: PendingProject[];
+    groupNames: Set<string>;
+    groupIds: Set<string>;
+  }
 >;
 
 /**
@@ -69,17 +83,23 @@ async function loadCandidates(): Promise<Map<string, { id: string; name: string;
  * passes the caller's current group unless the caller is a
  * super-admin.
  */
-async function collectPending(week: Date, scopeGroupId?: string): Promise<PendingByOwner> {
+async function collectPending(now: Date, scope?: GroupScheduleScope): Promise<PendingByOwner> {
   const { rows: groups } = await query<{ id: string; name: string }>(
-    scopeGroupId
+    scope?.groupId
       ? `SELECT id, name FROM groups WHERE id = $1`
-      : `SELECT id, name FROM groups`,
-    scopeGroupId ? [scopeGroupId] : [],
+      : scope?.groupIds?.length
+        ? `SELECT id, name FROM groups WHERE id = ANY($1::uuid[])`
+        : `SELECT id, name FROM groups`,
+    scope?.groupId ? [scope.groupId] : scope?.groupIds?.length ? [scope.groupIds] : [],
   );
-  const iso = week.toISOString().slice(0, 10);
+  const schedules = await loadGroupWeeklyStatusSchedules(scope);
   const out: PendingByOwner = new Map();
 
   for (const g of groups) {
+    const schedule = schedules.get(g.id);
+    if (!schedule) continue;
+    const week = weekOfMondayForSchedule(now, schedule);
+    const iso = week.toISOString().slice(0, 10);
     const eligible = await eligibleProjects(week, g.id);
     if (!eligible.length) continue;
 
@@ -111,11 +131,13 @@ async function collectPending(week: Date, scopeGroupId?: string): Promise<Pendin
       if (existing) {
         existing.projects.push(project);
         existing.groupNames.add(g.name);
+        existing.groupIds.add(g.id);
       } else {
         out.set(e.owner_id, {
           ownerId: e.owner_id,
           projects: [project],
           groupNames: new Set([g.name]),
+          groupIds: new Set([g.id]),
         });
       }
     }
@@ -138,21 +160,33 @@ function renderReminder(input: {
   groupNames: string[];
   weekOf: Date;
   dueAt: Date;
+  schedule: WeeklyStatusSchedule;
   appUrl: string;
   unsubscribeUrl: string;
 }): { subject: string; text: string; html: string } {
-  const { name, pendingCount, projectTitles, groupNames, weekOf, dueAt, appUrl, unsubscribeUrl } = input;
+  const {
+    name,
+    pendingCount,
+    projectTitles,
+    groupNames,
+    weekOf,
+    dueAt,
+    schedule,
+    appUrl,
+    unsubscribeUrl,
+  } = input;
+  const tz = schedule.timezone;
   const weekLabel = weekOf.toLocaleDateString("en-US", {
     month: "long",
     day: "numeric",
     year: "numeric",
-    timeZone: config.reportingTimezone,
+    timeZone: tz,
   });
   const dueLabel = dueAt.toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",
     day: "numeric",
-    timeZone: config.reportingTimezone,
+    timeZone: tz,
   });
   const itemsLabel = pendingCount === 1 ? "1 status update" : `${pendingCount} status updates`;
   // Format a friendly list — "RetailMeNot", "RetailMeNot and VoucherCodes",
@@ -238,17 +272,45 @@ export type ReminderRunResult = {
   dryRun: boolean;
 };
 
+function ownerDueAt(
+  bucket: { groupIds: Set<string> },
+  week: Date,
+  schedules: Map<string, WeeklyStatusSchedule>,
+): Date {
+  let max = 0;
+  for (const gid of bucket.groupIds) {
+    const schedule = schedules.get(gid);
+    if (!schedule) continue;
+    const due = dueAtForWeekFromSchedule(week, schedule).getTime();
+    if (due > max) max = due;
+  }
+  return new Date(max || Date.now());
+}
+
 export async function runStatusReportReminders({
   dryRun = false,
   scopeGroupId,
-}: { dryRun?: boolean; scopeGroupId?: string } = {}): Promise<ReminderRunResult> {
-  const week = weekOfMonday(new Date());
-  const dueAt = dueAtForWeek(week);
+  scopeGroupIds,
+}: {
+  dryRun?: boolean;
+  scopeGroupId?: string;
+  scopeGroupIds?: string[];
+} = {}): Promise<ReminderRunResult> {
+  const scope: GroupScheduleScope | undefined = scopeGroupIds?.length
+    ? { groupIds: scopeGroupIds }
+    : scopeGroupId
+      ? { groupId: scopeGroupId }
+      : undefined;
+  const schedules = await loadGroupWeeklyStatusSchedules(scope);
+  const anchorSchedule =
+    schedules.values().next().value ?? resolveWeeklyStatusSchedule();
+  const now = new Date();
+  const week = weekOfMondayForSchedule(now, anchorSchedule);
   const weekIso = week.toISOString().slice(0, 10);
   const appUrl = config.publicAppUrl.replace(/\/$/, "");
 
   const candidates = await loadCandidates();
-  const pending = await collectPending(week, scopeGroupId);
+  const pending = await collectPending(now, scope);
 
   let sent = 0;
   let skipped = 0;
@@ -289,7 +351,8 @@ export async function runStatusReportReminders({
         projectTitles: bucket.projects.map((p) => p.title).sort((a, b) => a.localeCompare(b)),
         groupNames: Array.from(bucket.groupNames),
         weekOf: week,
-        dueAt,
+        dueAt: ownerDueAt(bucket, week, schedules),
+        schedule: anchorSchedule,
         appUrl,
         unsubscribeUrl: unsubUrl,
       });
@@ -343,7 +406,7 @@ export async function runStatusReportReminders({
   }
 
   console.log(
-    `[reminders] status_report_reminder scope=${scopeGroupId ?? "global"} dryRun=${dryRun} candidates=${candidates.size} pendingOwners=${pending.size} sent=${sent} alreadySent=${skipped} errors=${errors}`,
+    `[reminders] status_report_reminder scope=${scopeGroupIds?.length ? scopeGroupIds.join(",") : scopeGroupId ?? "global"} dryRun=${dryRun} candidates=${candidates.size} pendingOwners=${pending.size} sent=${sent} alreadySent=${skipped} errors=${errors}`,
   );
   return {
     candidates: candidates.size,

@@ -7,6 +7,7 @@ import { useCanWrite, useProjects, useSwimLanes } from "../lib/queries";
 import { computeDependencyStatuses, type DependencyStatus } from "../lib/dependencies";
 import type { Project, ProjectDependency, SwimLane } from "../lib/types";
 import { ProjectPicker } from "./ProjectPicker";
+import { useAppDialog } from "./AppDialogProvider";
 
 /**
  * Dependencies section of the project detail panel.
@@ -26,6 +27,7 @@ export function ProjectDependencies({ project }: { project: Project }) {
   const lanes = useSwimLanes();
   const projects = useProjects();
   const canWrite = useCanWrite();
+  const { confirm } = useAppDialog();
   const qc = useQueryClient();
 
   // At most one dep in "edit" mode at a time; same pattern as
@@ -91,8 +93,16 @@ export function ProjectDependencies({ project }: { project: Project }) {
                 status={s}
                 canWrite={canWrite}
                 onEdit={canWrite ? () => setEditingId(s.dep.id) : undefined}
-                onDelete={() => {
-                  if (confirm("Remove this dependency?")) del.mutate(s.dep.id);
+                onDelete={async () => {
+                  if (
+                    await confirm({
+                      title: "Remove this dependency?",
+                      confirmLabel: "Remove",
+                      destructive: true,
+                    })
+                  ) {
+                    del.mutate(s.dep.id);
+                  }
                 }}
               />
             ),

@@ -14,6 +14,7 @@ import type { MentionableUser } from "../lib/queries";
 import type { ProjectComment, User } from "../lib/types";
 import { MentionText } from "./MentionText";
 import { MentionTextarea } from "./MentionTextarea";
+import { useAppDialog } from "./AppDialogProvider";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 
 /**
@@ -137,6 +138,7 @@ function CommentRow({
   currentUserRole: "admin" | "owner" | "viewer";
 }) {
   const qc = useQueryClient();
+  const { confirm } = useAppDialog();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(comment.body);
 
@@ -218,8 +220,16 @@ function CommentRow({
             <button
               type="button"
               className="rounded p-1 text-wp-slate hover:bg-red-50 hover:text-wp-red disabled:opacity-50"
-              onClick={() => {
-                if (confirm("Delete this comment?")) del.mutate();
+              onClick={async () => {
+                if (
+                  await confirm({
+                    title: "Delete this comment?",
+                    confirmLabel: "Delete",
+                    destructive: true,
+                  })
+                ) {
+                  del.mutate();
+                }
               }}
               disabled={del.isPending}
               aria-label="Delete comment"
