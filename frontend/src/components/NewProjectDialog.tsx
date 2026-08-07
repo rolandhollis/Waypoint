@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { format, parseISO } from "date-fns";
 import { X } from "lucide-react";
 import { api } from "../lib/api";
-import { useIsAdmin, useMe, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { useIsAdmin, useMe, useMentionableUsers, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import {
   effectiveDates,
   emptyPhaseDates,
@@ -39,7 +39,8 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
   const me = useMe();
   const lanes = useSwimLanes();
   const isAdmin = useIsAdmin();
-  const users = useUsers();
+  const users = useUsers(isAdmin);
+  const assignableUsers = useMentionableUsers();
   const teams = useTeams();
   const projects = useProjects();
   const qc = useQueryClient();
@@ -308,7 +309,7 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
               <label className="col-span-2 block text-xs font-medium text-wp-slate">Owner
                 <select className="input mt-1" value={ownerId ?? ""} onChange={(e) => setOwnerId(e.target.value || null)}>
                   <option value="">— None —</option>
-                  {users.data?.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                  {assignableUsers.data?.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
                 </select>
               </label>
               <label className="col-span-2 block text-xs font-medium text-wp-slate">

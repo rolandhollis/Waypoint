@@ -7,7 +7,7 @@ import { ChevronLeft, ChevronRight, Lock, LockOpen, Star, X } from "lucide-react
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
 import { AuditEventBody, auditActorLabel, timelineEntryToRenderEntry } from "../lib/auditRender";
-import { useCanWrite, useCurrentGroupRole, useKpis, useMe, useMentionableUsers, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useTshirtSizes, useUsers } from "../lib/queries";
+import { useCanWrite, useCurrentGroupRole, useIsAdmin, useKpis, useMe, useMentionableUsers, useProjectHistory, useProjects, useProjectStatusUpdates, useSwimLanes, useTeams, useTshirtSizes, useUsers } from "../lib/queries";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { effectiveDates, fillMissingPhaseDates } from "../lib/phaseDates";
@@ -133,12 +133,13 @@ export function ProjectDetailBody({
   // who's owner in RMN but viewer in VC sees the read-only version
   // of the panel while browsing VC's cards, and vice versa.
   const canWrite = useCanWrite();
+  const isAdmin = useIsAdmin();
   const currentRole = useCurrentGroupRole();
   const lanes = useSwimLanes();
-  const users = useUsers();
-  // Group-scoped roster for the @mention picker on the description
-  // field below. Available to viewers too (unlike `useUsers` which is
-  // admin-only) so the picker works regardless of the caller's role.
+  // Admin roster carries capacity metadata for the inline warning;
+  // the owner picker uses `mentionable` so non-admin writers can
+  // assign owners too (GET /users is admin-only).
+  const users = useUsers(isAdmin);
   const mentionable = useMentionableUsers();
   const teams = useTeams();
   const kpis = useKpis();
@@ -502,6 +503,25 @@ export function ProjectDetailBody({
     return s;
   }, [maybeMerged?.id, kids]);
 
+  const ownerPickerOptions = useMemo(() => {
+    const roster = mentionable.data ?? [];
+    const ownerId = maybeMerged?.owner_id;
+    if (!ownerId || roster.some((u) => u.id === ownerId)) return roster;
+    const fromAdmin = users.data?.find((u) => u.id === ownerId);
+    if (fromAdmin) {
+      return [
+        ...roster,
+        {
+          id: fromAdmin.id,
+          name: fromAdmin.name,
+          email: fromAdmin.email,
+          color: fromAdmin.color,
+        },
+      ];
+    }
+    return roster;
+  }, [mentionable.data, maybeMerged?.owner_id, users.data]);
+
   // Capacity check runs on every draft edit — cheap enough (~sub-ms
   // even with 100 projects) that we don't debounce. Feeds the inline
   // CapacityWarning below the form.
@@ -752,7 +772,7 @@ export function ProjectDetailBody({
 
   const phases = computePhases(merged);
   const eff = effectiveDates(merged);
-  const owner = users.data?.find((u) => u.id === merged.owner_id);
+  const owner = ownerPickerOptions.find((u) => u.id === merged.owner_id);
   // Header chip preview follows the same team ranking as every other
   // renderer: iterate `merged.teams` (the ordered list) and hydrate
   // via the catalog map so the primary team always leads.
@@ -1034,7 +1054,7 @@ export function ProjectDetailBody({
           <Field label="Owner">
             <select className="input" disabled={!canWrite} value={merged.owner_id ?? ""} onChange={(e) => setDraft((d) => ({ ...d, owner_id: e.target.value || null }))}>
               <option value="">— Unassigned —</option>
-              {users.data?.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              {ownerPickerOptions.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
           </Field>
           <Field
