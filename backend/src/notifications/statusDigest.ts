@@ -47,6 +47,7 @@ type UpdateRow = {
   swim_lane_id: string;
   swim_lane_name: string;
   swim_lane_order: number;
+  global_priority: number;
   health_flag: "white" | "green" | "yellow" | "red";
   executive_summary: string;
   detailed_update: unknown;
@@ -145,6 +146,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
                 s.id AS swim_lane_id,
                 s.name AS swim_lane_name,
                 s."order" AS swim_lane_order,
+                p.global_priority,
                 w.health_flag,
                 w.executive_summary,
                 w.detailed_update,
@@ -159,7 +161,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
             AND w.completed = TRUE
             AND p.group_id = $2
             AND p.deleted_at IS NULL
-          ORDER BY s."order" DESC NULLS LAST, s.name, p.title`
+          ORDER BY s."order" DESC NULLS LAST, s.name, p.global_priority ASC, p.title`
       : scope?.groupIds?.length
         ? `SELECT p.group_id,
                   p.id AS project_id,
@@ -167,6 +169,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
                   s.id AS swim_lane_id,
                   s.name AS swim_lane_name,
                   s."order" AS swim_lane_order,
+                  p.global_priority,
                   w.health_flag,
                   w.executive_summary,
                   w.detailed_update,
@@ -181,13 +184,14 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
               AND w.completed = TRUE
               AND p.group_id = ANY($2::uuid[])
               AND p.deleted_at IS NULL
-            ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.title`
+            ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.global_priority ASC, p.title`
         : `SELECT p.group_id,
                   p.id AS project_id,
                   p.title AS project_title,
                   s.id AS swim_lane_id,
                   s.name AS swim_lane_name,
                   s."order" AS swim_lane_order,
+                  p.global_priority,
                   w.health_flag,
                   w.executive_summary,
                   w.detailed_update,
@@ -201,7 +205,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
             WHERE w.week_of = $1::date
               AND w.completed = TRUE
               AND p.deleted_at IS NULL
-            ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.title`,
+            ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.global_priority ASC, p.title`,
     scope?.groupId
       ? [weekIso, scope.groupId]
       : scope?.groupIds?.length
@@ -353,6 +357,14 @@ function bullets(raw: unknown): string[] {
     .filter((s) => s.trim().length > 0);
 }
 
+function compareWithinLanePriority(a: UpdateRow, b: UpdateRow): number {
+  // global_priority 0 = unranked; sink those after explicitly ranked items.
+  const gpA = a.global_priority === 0 ? Number.POSITIVE_INFINITY : a.global_priority;
+  const gpB = b.global_priority === 0 ? Number.POSITIVE_INFINITY : b.global_priority;
+  if (gpA !== gpB) return gpA - gpB;
+  return a.project_title.localeCompare(b.project_title);
+}
+
 function laneGroupsForReport(updates: UpdateRow[]): Array<{ laneName: string; laneOrder: number | null; items: UpdateRow[] }> {
   const byLane = new Map<string, { laneName: string; laneOrder: number | null; items: UpdateRow[] }>();
   for (const u of updates) {
@@ -374,38 +386,16 @@ function laneGroupsForReport(updates: UpdateRow[]): Array<{ laneName: string; la
     )
     .map((g) => ({
       ...g,
-      items: g.items.slice().sort((a, b) => a.project_title.localeCompare(b.project_title)),
+      items: g.items.slice().sort(compareWithinLanePriority),
     }));
 }
 
-function compareDigestUpdates(a: UpdateRow, b: UpdateRow): number {
-  const laneCmp = compareSwimLaneReportOrder(
-    a.swim_lane_order,
-    b.swim_lane_order,
-    a.swim_lane_name ?? "(no lane)",
-    b.swim_lane_name ?? "(no lane)",
-  );
-  if (laneCmp !== 0) return laneCmp;
-  return a.project_title.localeCompare(b.project_title);
-}
-
-/** At-risk (yellow) items first, then the remainder grouped by swim lane. */
-function splitDigestUpdates(updates: UpdateRow[]): {
-  atRisk: UpdateRow[];
-  laneGroups: Array<{ laneName: string; laneOrder: number | null; items: UpdateRow[] }>;
-} {
-  const atRisk = updates.filter((u) => u.health_flag === "yellow").sort(compareDigestUpdates);
-  const rest = updates.filter((u) => u.health_flag !== "yellow");
-  return { atRisk, laneGroups: laneGroupsForReport(rest) };
-}
-
-function formatUpdateTextLines(u: UpdateRow, appUrl: string, showLane = false): string[] {
+function formatUpdateTextLines(u: UpdateRow, appUrl: string): string[] {
   const projectUrl = `${appUrl}/projects/${u.project_id}`;
   const lines: string[] = [
     `• ${u.project_title} [${healthLabel(u.health_flag)}]`,
     `   ${projectUrl}`,
   ];
-  if (showLane && u.swim_lane_name) lines.push(`   Lane: ${u.swim_lane_name}`);
   if (u.owner_name) lines.push(`   Owner: ${u.owner_name}`);
   if (u.submitted_by_name) lines.push(`   Submitted by: ${u.submitted_by_name}`);
   if (u.executive_summary?.trim()) lines.push(`   ${u.executive_summary.trim()}`);
@@ -415,7 +405,7 @@ function formatUpdateTextLines(u: UpdateRow, appUrl: string, showLane = false): 
   return lines;
 }
 
-function renderUpdateArticleHtml(u: UpdateRow, appUrl: string, showLane = false): string {
+function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
   const projectUrl = `${appUrl}/projects/${u.project_id}`;
   const bs = bullets(u.detailed_update);
   const bulletsHtml = bs.length
@@ -426,10 +416,6 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string, showLane = false)
   const summaryHtml = u.executive_summary?.trim()
     ? `<p style="margin:6px 0 0;color:#334155;">${escapeHtml(u.executive_summary.trim())}</p>`
     : "";
-  const laneHtml =
-    showLane && u.swim_lane_name
-      ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Lane: ${escapeHtml(u.swim_lane_name)}</div>`
-      : "";
   const ownerHtml = u.owner_name
     ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Owner: ${escapeHtml(u.owner_name)}</div>`
     : "";
@@ -448,7 +434,6 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string, showLane = false)
               </td>
             </tr>
           </table>
-          ${laneHtml}
           ${ownerHtml}
           ${submitterHtml}
           ${summaryHtml}
@@ -539,7 +524,7 @@ function renderDigest(input: {
   });
   const subject = `${groupName} weekly update — ${weekLabel}`;
 
-  const { atRisk, laneGroups } = splitDigestUpdates(updates);
+  const laneGroups = laneGroupsForReport(updates);
   const laneCount = laneGroups.length;
   const missingCount = missingUpdateCount(missingByOwner);
 
@@ -555,12 +540,6 @@ function renderDigest(input: {
   }
   textLines.push(`${groupName} status updates for the week of ${weekLabel}:`);
   textLines.push("");
-  if (atRisk.length) {
-    textLines.push("--- At risk ---");
-    for (const u of atRisk) {
-      textLines.push(...formatUpdateTextLines(u, appUrl, true));
-    }
-  }
   for (const { laneName, items } of laneGroups) {
     textLines.push(`--- ${laneName} ---`);
     for (const u of items) {
@@ -575,21 +554,11 @@ function renderDigest(input: {
   const text = textLines.join("\n");
 
   const preheader =
-    `${updates.length} update${updates.length === 1 ? "" : "s"}` +
-    (atRisk.length > 0 ? ` · ${atRisk.length} at risk` : "") +
-    (laneCount > 0 ? ` across ${laneCount} lane${laneCount === 1 ? "" : "s"}` : "") +
+    `${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} lane${laneCount === 1 ? "" : "s"}` +
     (missingCount > 0
       ? ` · ${missingCount} item${missingCount === 1 ? "" : "s"} without an update`
       : "") +
     ` for ${groupName}.`;
-
-  const atRiskHtml = atRisk.length
-    ? `
-    <section style="margin-top:22px;">
-      <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#334155;margin:0 0 8px;">At risk</h2>
-      ${atRisk.map((u) => renderUpdateArticleHtml(u, appUrl, true)).join("")}
-    </section>`
-    : "";
 
   const laneHtml = laneGroups
     .map(
@@ -607,20 +576,16 @@ function renderDigest(input: {
 
   const missingHtml = renderMissingSectionHtml(missingByOwner, appUrl);
   const summaryExtra =
-    (atRisk.length > 0
-      ? ` · <strong>${atRisk.length}</strong> at risk`
-      : "") +
-    (missingCount > 0
+    missingCount > 0
       ? ` · <strong>${missingCount}</strong> eligible item${missingCount === 1 ? "" : "s"} without a submitted update`
-      : "");
+      : "";
 
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;max-width:640px;">
       <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}</span>
       <p>${escapeHtml(greeting)}</p>
       ${noteHtml}
-      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"}${laneCount > 0 ? ` across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}` : ""}${summaryExtra}.</p>
-      ${atRiskHtml}
+      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}${summaryExtra}.</p>
       ${laneHtml}
       ${missingHtml}
       <p style="margin-top:24px;">
