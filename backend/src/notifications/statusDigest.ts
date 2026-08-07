@@ -5,6 +5,7 @@ import {
   type GroupScheduleScope,
 } from "../lib/groupConstants.js";
 import { compareSwimLaneReportOrder } from "../lib/statusReportOrder.js";
+import { eligibleProjects } from "../routes/statusUpdates.js";
 import {
   resolveWeeklyStatusSchedule,
   weekOfMondayForSchedule,
@@ -65,6 +66,15 @@ type GroupBundle = {
   groupName: string;
   updates: UpdateRow[];
   recipients: DigestRecipient[];
+  /** Eligible projects with no completed update this week, by owner. */
+  missingByOwner: OwnerMissingGroup[];
+};
+
+type MissingProject = { project_id: string; project_title: string };
+
+type OwnerMissingGroup = {
+  ownerName: string;
+  projects: MissingProject[];
 };
 
 async function loadRecipientsBatch(scope?: GroupScheduleScope): Promise<Map<string, DigestRecipient[]>> {
@@ -209,7 +219,69 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
   return out;
 }
 
-async function collectByGroup(weekIso: string, scope?: GroupScheduleScope): Promise<GroupBundle[]> {
+/**
+ * Projects eligible for a weekly status update this week that have no
+ * completed submission yet — grouped by owner, owners sorted by count.
+ */
+async function loadMissingForGroup(groupId: string, week: Date): Promise<OwnerMissingGroup[]> {
+  const weekIso = week.toISOString().slice(0, 10);
+  const eligible = await eligibleProjects(week, groupId);
+  if (!eligible.length) return [];
+
+  const projectIds = eligible.map((e) => e.project_id);
+  const { rows: projectRows } = await query<{
+    id: string;
+    title: string;
+    owner_id: string | null;
+    owner_name: string | null;
+  }>(
+    `SELECT p.id, p.title, p.owner_id, owner.name AS owner_name
+       FROM projects p
+       LEFT JOIN users owner ON owner.id = p.owner_id
+      WHERE p.id = ANY($1::uuid[])`,
+    [projectIds],
+  );
+
+  const { rows: updates } = await query<{ project_id: string; completed: boolean }>(
+    `SELECT project_id, completed
+       FROM weekly_status_updates
+      WHERE week_of = $1::date AND project_id = ANY($2::uuid[])`,
+    [weekIso, projectIds],
+  );
+  const completedIds = new Set(
+    updates.filter((u) => u.completed).map((u) => u.project_id),
+  );
+
+  const byOwner = new Map<string, OwnerMissingGroup>();
+  for (const p of projectRows) {
+    if (completedIds.has(p.id)) continue;
+    const ownerKey = p.owner_id ?? "__unassigned__";
+    const ownerName = p.owner_name?.trim() || "Unassigned";
+    const project: MissingProject = { project_id: p.id, project_title: p.title };
+    const existing = byOwner.get(ownerKey);
+    if (existing) {
+      existing.projects.push(project);
+    } else {
+      byOwner.set(ownerKey, { ownerName, projects: [project] });
+    }
+  }
+
+  return Array.from(byOwner.values())
+    .sort((a, b) => {
+      const byCount = b.projects.length - a.projects.length;
+      if (byCount !== 0) return byCount;
+      return a.ownerName.localeCompare(b.ownerName);
+    })
+    .map((g) => ({
+      ownerName: g.ownerName,
+      projects: g.projects
+        .slice()
+        .sort((a, b) => a.project_title.localeCompare(b.project_title)),
+    }));
+}
+
+async function collectByGroup(week: Date, scope?: GroupScheduleScope): Promise<GroupBundle[]> {
+  const weekIso = week.toISOString().slice(0, 10);
   const { rows: groups } = await query<{ id: string; name: string }>(
     scope?.groupId
       ? `SELECT id, name FROM groups WHERE id = $1`
@@ -222,12 +294,17 @@ async function collectByGroup(weekIso: string, scope?: GroupScheduleScope): Prom
   const updatesByGroup = await loadUpdatesBatch(weekIso, scope);
   const recipientsByGroup = await loadRecipientsBatch(scope);
 
-  return groups.map((g) => ({
-    groupId: g.id,
-    groupName: g.name,
-    updates: updatesByGroup.get(g.id) ?? [],
-    recipients: recipientsByGroup.get(g.id) ?? [],
-  }));
+  const bundles: GroupBundle[] = [];
+  for (const g of groups) {
+    bundles.push({
+      groupId: g.id,
+      groupName: g.name,
+      updates: updatesByGroup.get(g.id) ?? [],
+      recipients: recipientsByGroup.get(g.id) ?? [],
+      missingByOwner: await loadMissingForGroup(g.id, week),
+    });
+  }
+  return bundles;
 }
 
 function healthLabel(flag: UpdateRow["health_flag"]): string {
@@ -296,10 +373,63 @@ function laneGroupsForReport(updates: UpdateRow[]): Array<{ laneName: string; la
   );
 }
 
+function missingUpdateCount(missingByOwner: OwnerMissingGroup[]): number {
+  return missingByOwner.reduce((n, g) => n + g.projects.length, 0);
+}
+
+function renderMissingSectionText(
+  missingByOwner: OwnerMissingGroup[],
+  appUrl: string,
+): string[] {
+  const lines: string[] = [];
+  if (!missingByOwner.length) return lines;
+  lines.push("--- No update this week ---");
+  for (const { ownerName, projects } of missingByOwner) {
+    lines.push(`${ownerName} (${projects.length}):`);
+    for (const p of projects) {
+      lines.push(`• ${p.project_title}`);
+      lines.push(`   ${appUrl}/projects/${p.project_id}`);
+    }
+    lines.push("");
+  }
+  return lines;
+}
+
+function renderMissingSectionHtml(
+  missingByOwner: OwnerMissingGroup[],
+  appUrl: string,
+): string {
+  if (!missingByOwner.length) return "";
+  const ownerBlocks = missingByOwner
+    .map(({ ownerName, projects }) => {
+      const items = projects
+        .map((p) => {
+          const projectUrl = `${appUrl}/projects/${p.project_id}`;
+          return `<li style="margin:2px 0;"><a href="${projectUrl}" style="color:#0f172a;text-decoration:none;">${escapeHtml(p.project_title)}</a></li>`;
+        })
+        .join("");
+      return `
+      <div style="margin-top:12px;">
+        <h3 style="font-size:13px;font-weight:600;color:#0f172a;margin:0;">
+          ${escapeHtml(ownerName)}
+          <span style="font-weight:500;color:#64748b;">(${projects.length})</span>
+        </h3>
+        <ul style="margin:6px 0 0;padding-left:18px;color:#334155;">${items}</ul>
+      </div>`;
+    })
+    .join("");
+  return `
+    <section style="margin-top:28px;border-top:1px solid #e2e8f0;padding-top:20px;">
+      <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#334155;margin:0 0 8px;">No update this week</h2>
+      ${ownerBlocks}
+    </section>`;
+}
+
 function renderDigest(input: {
   groupName: string;
   weekOf: Date;
   updates: UpdateRow[];
+  missingByOwner: OwnerMissingGroup[];
   appUrl: string;
   recipientName?: string;
   unsubscribeUrl: string;
@@ -311,6 +441,7 @@ function renderDigest(input: {
     groupName,
     weekOf,
     updates,
+    missingByOwner,
     appUrl,
     recipientName,
     unsubscribeUrl,
@@ -327,6 +458,7 @@ function renderDigest(input: {
 
   const laneGroups = laneGroupsForReport(updates);
   const laneCount = laneGroups.length;
+  const missingCount = missingUpdateCount(missingByOwner);
 
   const greeting = recipientName ? `Hi ${recipientName.split(/\s+/)[0] ?? recipientName},` : "Hello,";
   const noteText = adminNote?.trim() ?? "";
@@ -356,6 +488,7 @@ function renderDigest(input: {
       textLines.push("");
     }
   }
+  textLines.push(...renderMissingSectionText(missingByOwner, appUrl));
   textLines.push(`Open status report: ${appUrl}/status-report`);
   textLines.push("");
   textLines.push("Unsubscribe from digest emails:");
@@ -364,7 +497,12 @@ function renderDigest(input: {
   textLines.push("— Waypoint");
   const text = textLines.join("\n");
 
-  const preheader = `${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} lane${laneCount === 1 ? "" : "s"} for ${groupName}.`;
+  const preheader =
+    `${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} lane${laneCount === 1 ? "" : "s"}` +
+    (missingCount > 0
+      ? ` · ${missingCount} item${missingCount === 1 ? "" : "s"} without an update`
+      : "") +
+    ` for ${groupName}.`;
   const laneHtml = laneGroups
     .map(
       ({ laneName, items }) => `
@@ -415,13 +553,20 @@ function renderDigest(input: {
     ? `<div style="margin:16px 0;padding:12px 14px;border-left:3px solid #DC2626;background:#fef2f2;border-radius:0 8px 8px 0;color:#334155;">${escapeHtml(noteText).replace(/\n/g, "<br>")}</div>`
     : "";
 
+  const missingHtml = renderMissingSectionHtml(missingByOwner, appUrl);
+  const summaryExtra =
+    missingCount > 0
+      ? ` · <strong>${missingCount}</strong> eligible item${missingCount === 1 ? "" : "s"} without a submitted update`
+      : "";
+
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;max-width:640px;">
       <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}</span>
       <p>${escapeHtml(greeting)}</p>
       ${noteHtml}
-      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}.</p>
+      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}${summaryExtra}.</p>
       ${laneHtml}
+      ${missingHtml}
       <p style="margin-top:24px;">
         <a href="${appUrl}/status-report" style="display:inline-block;background:#DC2626;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;">Open status report</a>
       </p>
@@ -515,7 +660,7 @@ export async function runStatusReportDigest({
     );
   }
 
-  const bundles = await collectByGroup(weekIso, scope);
+  const bundles = await collectByGroup(week, scope);
 
   let recipients = 0;
   let updatesIncluded = 0;
@@ -579,6 +724,7 @@ export async function runStatusReportDigest({
           groupName: bundle.groupName,
           weekOf: week,
           updates: bundle.updates,
+          missingByOwner: bundle.missingByOwner,
           appUrl,
           recipientName: r.user_name ?? undefined,
           unsubscribeUrl: unsubUrl,
