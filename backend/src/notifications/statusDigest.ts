@@ -258,6 +258,11 @@ function healthColor(flag: UpdateRow["health_flag"]): string {
   }
 }
 
+/** Email-safe status badge — no flexbox / full pill radius (breaks in mobile clients). */
+function healthBadgeHtml(flag: UpdateRow["health_flag"]): string {
+  return `<span style="display:inline-block;font-size:11px;font-weight:600;line-height:1.3;padding:3px 10px;border-radius:12px;background:${healthColor(flag)};color:#fff;white-space:nowrap;mso-line-height-rule:exactly;">${escapeHtml(healthLabel(flag))}</span>`;
+}
+
 function bullets(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -385,10 +390,16 @@ function renderDigest(input: {
             : "";
           return `
         <article style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:8px;">
-          <div style="display:flex;align-items:baseline;justify-content:space-between;">
-            <a href="${projectUrl}" style="font-weight:600;color:#0f172a;text-decoration:none;margin-right:12px;">${escapeHtml(u.project_title)}</a>
-            <span style="display:inline-block;font-size:11px;padding:2px 8px;border-radius:9999px;margin-left:8px;background:${healthColor(u.health_flag)};color:#fff;flex-shrink:0;">${escapeHtml(healthLabel(u.health_flag))}</span>
-          </div>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+            <tr>
+              <td style="vertical-align:top;padding-right:12px;">
+                <a href="${projectUrl}" style="font-weight:600;color:#0f172a;text-decoration:none;">${escapeHtml(u.project_title)}</a>
+              </td>
+              <td align="right" style="vertical-align:top;white-space:nowrap;width:1%;">
+                ${healthBadgeHtml(u.health_flag)}
+              </td>
+            </tr>
+          </table>
           ${ownerHtml}
           ${submitterHtml}
           ${summaryHtml}
