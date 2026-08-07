@@ -53,6 +53,7 @@ type UpdateRow = {
   detailed_update: unknown;
   owner_name: string | null;
   submitted_by_name: string | null;
+  team_names: string[];
 };
 
 type DigestRecipient = {
@@ -151,7 +152,14 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
                 w.executive_summary,
                 w.detailed_update,
                 owner.name AS owner_name,
-                submitter.name AS submitted_by_name
+                submitter.name AS submitted_by_name,
+                COALESCE(
+                  (SELECT array_agg(t.name ORDER BY pt.position ASC)
+                     FROM project_teams pt
+                     JOIN teams t ON t.id = pt.team_id
+                    WHERE pt.project_id = p.id),
+                  ARRAY[]::TEXT[]
+                ) AS team_names
            FROM weekly_status_updates w
            JOIN projects p ON p.id = w.project_id
            LEFT JOIN swim_lanes s ON s.id = p.swim_lane_id
@@ -174,7 +182,14 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
                   w.executive_summary,
                   w.detailed_update,
                   owner.name AS owner_name,
-                  submitter.name AS submitted_by_name
+                  submitter.name AS submitted_by_name,
+                  COALESCE(
+                    (SELECT array_agg(t.name ORDER BY pt.position ASC)
+                       FROM project_teams pt
+                       JOIN teams t ON t.id = pt.team_id
+                      WHERE pt.project_id = p.id),
+                    ARRAY[]::TEXT[]
+                  ) AS team_names
              FROM weekly_status_updates w
              JOIN projects p ON p.id = w.project_id
              LEFT JOIN swim_lanes s ON s.id = p.swim_lane_id
@@ -196,7 +211,14 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
                   w.executive_summary,
                   w.detailed_update,
                   owner.name AS owner_name,
-                  submitter.name AS submitted_by_name
+                  submitter.name AS submitted_by_name,
+                  COALESCE(
+                    (SELECT array_agg(t.name ORDER BY pt.position ASC)
+                       FROM project_teams pt
+                       JOIN teams t ON t.id = pt.team_id
+                      WHERE pt.project_id = p.id),
+                    ARRAY[]::TEXT[]
+                  ) AS team_names
              FROM weekly_status_updates w
              JOIN projects p ON p.id = w.project_id
              LEFT JOIN swim_lanes s ON s.id = p.swim_lane_id
@@ -397,6 +419,7 @@ function formatUpdateTextLines(u: UpdateRow, appUrl: string): string[] {
     `   ${projectUrl}`,
   ];
   if (u.owner_name) lines.push(`   Owner: ${u.owner_name}`);
+  if (u.team_names.length) lines.push(`   Teams: ${u.team_names.join(", ")}`);
   if (u.submitted_by_name) lines.push(`   Submitted by: ${u.submitted_by_name}`);
   if (u.executive_summary?.trim()) lines.push(`   ${u.executive_summary.trim()}`);
   const bs = bullets(u.detailed_update);
@@ -419,6 +442,9 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
   const ownerHtml = u.owner_name
     ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Owner: ${escapeHtml(u.owner_name)}</div>`
     : "";
+  const teamsHtml = u.team_names.length
+    ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Teams: ${escapeHtml(u.team_names.join(", "))}</div>`
+    : "";
   const submitterHtml = u.submitted_by_name
     ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Submitted by: ${escapeHtml(u.submitted_by_name)}</div>`
     : "";
@@ -435,6 +461,7 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
             </tr>
           </table>
           ${ownerHtml}
+          ${teamsHtml}
           ${submitterHtml}
           ${summaryHtml}
           ${bulletsHtml}
