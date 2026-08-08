@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { query } from "../db/pool.js";
 import type { AppConstants } from "../types.js";
+import { isTabLabelKey, type TabLabels } from "./navTabs.js";
 import {
   resolveWeeklyStatusSchedule,
   type WeeklyStatusSchedule,
@@ -26,6 +27,19 @@ export function deriveConstants(raw: unknown): AppConstants {
     const v = bag.email_title;
     if (v === null) out.email_title = null;
     else if (typeof v === "string") out.email_title = v;
+  }
+  if ("tab_labels" in bag) {
+    const v = bag.tab_labels;
+    if (v === null) out.tab_labels = null;
+    else if (v && typeof v === "object" && !Array.isArray(v)) {
+      const labels: TabLabels = {};
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        if (!isTabLabelKey(k)) continue;
+        if (val === null) labels[k] = null;
+        else if (typeof val === "string") labels[k] = val;
+      }
+      out.tab_labels = labels;
+    }
   }
   if ("weekly_status_schedule" in bag) {
     const v = bag.weekly_status_schedule;
@@ -68,7 +82,16 @@ export function deriveConstants(raw: unknown): AppConstants {
   out.weekly_status_schedule_effective = resolveWeeklyStatusSchedule(
     out.weekly_status_schedule ?? undefined,
   );
+  if ("prediction_game_regenerate_enabled" in bag) {
+    const v = bag.prediction_game_regenerate_enabled;
+    if (typeof v === "boolean") out.prediction_game_regenerate_enabled = v;
+  }
   return out;
+}
+
+/** Manual generate/regenerate on the Game tab is opt-in per workspace. */
+export function predictionGameRegenerateEnabled(constants: AppConstants): boolean {
+  return constants.prediction_game_regenerate_enabled === true;
 }
 
 export function weeklyStatusScheduleForConstants(

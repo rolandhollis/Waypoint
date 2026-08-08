@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
 import { api } from "../lib/api";
+import {
+  DEFAULT_TAB_LABELS,
+  TAB_LABEL_KEYS,
+  tabLabelOverridesToDraft,
+  type TabLabelKey,
+  type TabLabels,
+} from "../lib/navTabs";
 import { DEFAULT_APP_NAME, DEFAULT_EMAIL_TITLE, useCurrentGroup, useGroupConstants, useMe } from "../lib/queries";
 import type { AppConstants } from "../lib/types";
 import { useAppDialog } from "./AppDialogProvider";
@@ -63,6 +70,8 @@ export function AdminConstants() {
       <div className="mt-4 space-y-6">
         <AppNameField groupId={groupId} />
         <EmailTitleField groupId={groupId} />
+        <TabLabelsField groupId={groupId} />
+        <PredictionGameRegenerateField groupId={groupId} />
       </div>
     </section>
   );
@@ -249,6 +258,177 @@ function EmailTitleField({ groupId }: { groupId: string }) {
         workspace. Max 80 characters. Reset to use the platform default (
         <span className="font-mono">{DEFAULT_EMAIL_TITLE}</span>).
       </p>
+    </div>
+  );
+}
+
+function TabLabelsField({ groupId }: { groupId: string }) {
+  const qc = useQueryClient();
+  const { confirm } = useAppDialog();
+  const constantsQ = useGroupConstants(groupId);
+  const persistedOverrides = constantsQ.data?.tab_labels ?? {};
+
+  const [draft, setDraft] = useState<Record<TabLabelKey, string>>(() =>
+    tabLabelOverridesToDraft(persistedOverrides),
+  );
+
+  useEffect(() => {
+    setDraft(tabLabelOverridesToDraft(persistedOverrides));
+  }, [constantsQ.data?.tab_labels]);
+
+  const patch = useMutation({
+    mutationFn: (body: Pick<AppConstants, "tab_labels">) =>
+      api<AppConstants>(`/groups/${groupId}/constants`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["groups"] });
+      qc.invalidateQueries({ queryKey: ["groupConstants", groupId] });
+    },
+  });
+
+  const persistedDraft = tabLabelOverridesToDraft(persistedOverrides);
+  const isDirty = TAB_LABEL_KEYS.some(
+    (key) => draft[key].trim() !== persistedDraft[key].trim(),
+  );
+
+  const hasOverrides = TAB_LABEL_KEYS.some((key) => {
+    const v = persistedOverrides[key];
+    return typeof v === "string" && v.trim().length > 0;
+  });
+
+  function buildPatch(): TabLabels {
+    const out: TabLabels = {};
+    for (const key of TAB_LABEL_KEYS) {
+      const d = draft[key].trim();
+      const p = persistedDraft[key].trim();
+      if (d !== p) {
+        out[key] = d.length > 0 ? d : null;
+      }
+    }
+    return out;
+  }
+
+  function canSaveKey(key: TabLabelKey): boolean {
+    const trimmed = draft[key].trim();
+    return trimmed.length === 0 || (trimmed.length >= 1 && trimmed.length <= 40);
+  }
+
+  const canSave =
+    isDirty &&
+    TAB_LABEL_KEYS.every((key) => canSaveKey(key)) &&
+    !patch.isPending;
+
+  return (
+    <div className="space-y-3">
+      <MutationErrorBanner mutation={patch} />
+      <div>
+        <h3 className="text-xs font-medium text-wp-slate">Navigation tab names</h3>
+        <p className="mt-1 text-[11px] text-wp-slate/80">
+          Labels shown in the top navigation bar for this workspace. Leave a field
+          blank and save to restore the built-in default for that tab. Max 40
+          characters per tab.
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {TAB_LABEL_KEYS.map((key) => (
+          <label key={key} className="block text-xs font-medium text-wp-slate">
+            {DEFAULT_TAB_LABELS[key]}
+            <input
+              className="input mt-1 w-full"
+              value={draft[key]}
+              onChange={(e) =>
+                setDraft((prev) => ({ ...prev, [key]: e.target.value }))
+              }
+              placeholder={DEFAULT_TAB_LABELS[key]}
+              maxLength={40}
+              disabled={constantsQ.isLoading || patch.isPending}
+            />
+          </label>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={!canSave}
+          onClick={() => patch.mutate({ tab_labels: buildPatch() })}
+        >
+          {patch.isPending && patch.variables?.tab_labels !== null ? "Saving…" : "Save tab names"}
+        </button>
+        <button
+          type="button"
+          className="btn-secondary inline-flex items-center gap-1.5"
+          disabled={!hasOverrides || patch.isPending}
+          title={
+            hasOverrides
+              ? "Clear all custom tab names"
+              : "Already using built-in defaults"
+          }
+          onClick={async () => {
+            if (
+              !(await confirm({
+                title: "Reset all tab names?",
+                description: "Restore every navigation tab to its built-in default label?",
+              }))
+            ) {
+              return;
+            }
+            patch.mutate({ tab_labels: null });
+          }}
+        >
+          <RotateCcw size={13} />
+          {patch.isPending && patch.variables?.tab_labels === null
+            ? "Resetting…"
+            : "Reset all to defaults"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PredictionGameRegenerateField({ groupId }: { groupId: string }) {
+  const qc = useQueryClient();
+  const constantsQ = useGroupConstants(groupId);
+  const enabled = constantsQ.data?.prediction_game_regenerate_enabled === true;
+
+  const patch = useMutation({
+    mutationFn: (prediction_game_regenerate_enabled: boolean) =>
+      api<AppConstants>(`/groups/${groupId}/constants`, {
+        method: "PATCH",
+        body: JSON.stringify({ prediction_game_regenerate_enabled }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["groups"] });
+      qc.invalidateQueries({ queryKey: ["groupConstants", groupId] });
+    },
+  });
+
+  return (
+    <div className="space-y-2 rounded-md border border-wp-stone/80 bg-wp-stone/5 p-4">
+      <div>
+        <h3 className="text-sm font-semibold text-wp-ink">Prediction game</h3>
+        <p className="mt-1 text-xs text-wp-slate">
+          Controls whether admins can manually generate or regenerate the daily
+          yes/no question on the Game tab. The morning cron job still runs
+          regardless.
+        </p>
+      </div>
+      <label className="flex items-start gap-2 text-sm text-wp-ink">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={enabled}
+          disabled={patch.isPending || constantsQ.isLoading}
+          onChange={(e) => patch.mutate(e.target.checked)}
+        />
+        <span>
+          Allow admins to regenerate the daily question
+          {patch.isPending ? <span className="text-wp-slate"> (saving…)</span> : null}
+        </span>
+      </label>
+      <MutationErrorBanner mutation={patch} />
     </div>
   );
 }

@@ -41,6 +41,7 @@ import {
   type PrioritizationRow,
 } from "../lib/queries";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
+import { ViewPageHeader } from "../components/ViewPageHeader";
 import {
   FINDER_PREFIX,
   PrioritizationFinderPanel,
@@ -503,19 +504,14 @@ export function PrioritizationView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <header className="border-b border-wp-stone bg-white/80 px-5 py-3">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-lg font-semibold text-wp-ink">Prioritization</h1>
-            <p className="mt-0.5 text-xs text-wp-slate">
-              Drag to reorder. Changes cascade to Board swim-lane order and Roadmap Priority sort.
-            </p>
-          </div>
-          <div className="text-xs text-wp-slate">
+      <ViewPageHeader
+        tabKey="prioritization"
+        actions={
+          <span className="text-xs text-wp-slate">
             {localOrder.length} eligible initiative{localOrder.length === 1 ? "" : "s"}
-          </div>
-        </div>
-      </header>
+          </span>
+        }
+      />
 
       {localOrder.length === 0 ? (
         <div className="min-h-0 flex-1 overflow-y-auto">

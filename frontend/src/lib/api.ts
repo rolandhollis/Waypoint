@@ -47,10 +47,17 @@ export async function api<T = unknown>(
   const text = await res.text();
   const body = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    const message =
-      body && typeof body === "object" && "error" in body
-        ? String((body as { error: unknown }).error)
-        : res.statusText || "request failed";
+  const message =
+    body && typeof body === "object" && "error" in body
+      ? (() => {
+          const base = String((body as { error: unknown }).error);
+          const detail =
+            "detail" in body && (body as { detail?: unknown }).detail != null
+              ? String((body as { detail: unknown }).detail)
+              : "";
+          return detail && detail !== base ? `${base}: ${detail}` : base;
+        })()
+      : res.statusText || "request failed";
     // 401 is special: fire the global handler so the shell can bounce
     // to /login. Ignore for the health check + explicit login/logout
     // requests (they surface their own error state).

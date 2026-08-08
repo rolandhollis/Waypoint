@@ -1,5 +1,5 @@
 import { config } from "../config.js";
-import { pool, query, withTransaction } from "../db/pool.js";
+import { pool, query } from "../db/pool.js";
 import { eligibleProjects } from "../routes/statusUpdates.js";
 import {
   loadGroupConstants,
@@ -23,16 +23,11 @@ import { makeUnsubscribeToken } from "./unsubscribe.js";
  *      eligible for a status update this week (reuses the query
  *      the /status-updates/pending endpoint already runs).
  *   2. Group the pending projects by owner.
- *   3. For each owner who (a) is opted in, (b) has an email on
- *      file, and (c) hasn't already received the reminder for
- *      this week, send them one aggregated email listing their
- *      pending items.
- *   4. Record the send in notification_log inside the same
- *      transaction so a retry / restart never double-sends.
- *
- * A single email per (owner, week) matters — the previous approach
- * would have hit an owner who spans multiple projects with N
- * separate emails, which is annoying and looks broken.
+ *   3. For each owner who is opted in and has an email on file,
+ *      send one aggregated email listing their pending items.
+ *   4. Record the send in notification_log for observability. Every
+ *      run emails all pending owners — prior sends for the same week
+ *      do not skip recipients.
  */
 
 const KIND = "status_report_reminder";
@@ -253,19 +248,12 @@ function escapeHtml(s: string): string {
 }
 
 /**
- * Run the send pass. Safe to call more than once per week — the
- * INSERT into notification_log races against the (kind, user_id,
- * week_of) unique index and short-circuits duplicates.
- *
- * `dryRun` mode is exposed so the cron entrypoint can run
- * without side-effects during local testing (backend logs the
- * would-be sends but skips the provider call and the log row).
+ * Run the send pass. `dryRun` skips the provider call and log rows.
  */
 export type ReminderRunResult = {
   candidates: number;
   pendingOwners: number;
   sent: number;
-  skippedAlreadySent: number;
   errors: number;
   weekOf: string;
   dryRun: boolean;
@@ -312,9 +300,7 @@ export async function runStatusReportReminders({
   const candidates = await loadCandidates();
   const pending = await collectPending(now, scope);
 
-  // Admin manual sends (scopeGroupId) email every pending owner in the
-  // group; scheduled cron (scopeGroupIds) keeps per-week idempotency.
-  if (!dryRun && scopeGroupId && pending.size > 0) {
+  if (!dryRun && pending.size > 0) {
     const ownerIds = Array.from(pending.keys());
     const deleted = await query(
       `DELETE FROM notification_log
@@ -322,52 +308,17 @@ export async function runStatusReportReminders({
       [KIND, weekIso, ownerIds],
     );
     console.log(
-      `[reminders] manual scope cleared ${deleted.rowCount ?? 0} notification_log row(s)`,
+      `[reminders] cleared ${deleted.rowCount ?? 0} notification_log row(s) before send`,
     );
   }
 
   let sent = 0;
-  let skipped = 0;
   let errors = 0;
 
   for (const [ownerId, bucket] of pending) {
     const user = candidates.get(ownerId);
     if (!user) continue; // owner isn't opted in or has no email
     try {
-      const { rows: prior } = await query<{ provider_message_id: string | null }>(
-        `SELECT provider_message_id FROM notification_log
-          WHERE user_id = $1 AND kind = $2 AND week_of = $3::date`,
-        [ownerId, KIND, weekIso],
-      );
-      if (prior[0]?.provider_message_id) {
-        skipped += 1;
-        continue;
-      }
-
-      if (!prior[0]) {
-        try {
-          await query(
-            `INSERT INTO notification_log (user_id, kind, week_of, provider_message_id)
-             VALUES ($1, $2, $3::date, NULL)`,
-            [ownerId, KIND, weekIso],
-          );
-        } catch (e) {
-          if ((e as { code?: string }).code === "23505") {
-            const { rows: raced } = await query<{ provider_message_id: string | null }>(
-              `SELECT provider_message_id FROM notification_log
-                WHERE user_id = $1 AND kind = $2 AND week_of = $3::date`,
-              [ownerId, KIND, weekIso],
-            );
-            if (raced[0]?.provider_message_id) {
-              skipped += 1;
-              continue;
-            }
-          } else {
-            throw e;
-          }
-        }
-      }
-
       const unsubUrl = `${appUrl}/api/notifications/unsubscribe?token=${encodeURIComponent(
         makeUnsubscribeToken(ownerId, KIND),
       )}`;
@@ -386,14 +337,14 @@ export async function runStatusReportReminders({
       if (dryRun) {
         console.log(`[reminders] DRY RUN — would send to ${user.email}: ${msg.subject}`);
         sent += 1;
-        // Roll back the log row so a real run can send later. We
-        // used a separate transaction above so this delete is safe.
-        await query(
-          `DELETE FROM notification_log WHERE user_id = $1 AND kind = $2 AND week_of = $3::date`,
-          [ownerId, KIND, weekIso],
-        );
         continue;
       }
+
+      await query(
+        `INSERT INTO notification_log (user_id, kind, week_of, provider_message_id)
+         VALUES ($1, $2, $3::date, NULL)`,
+        [ownerId, KIND, weekIso],
+      );
 
       const reminderFromGroupId = scope?.groupId
         ? scope.groupId
@@ -439,13 +390,12 @@ export async function runStatusReportReminders({
   }
 
   console.log(
-    `[reminders] status_report_reminder scope=${scopeGroupIds?.length ? scopeGroupIds.join(",") : scopeGroupId ?? "global"} dryRun=${dryRun} candidates=${candidates.size} pendingOwners=${pending.size} sent=${sent} alreadySent=${skipped} errors=${errors}`,
+    `[reminders] status_report_reminder scope=${scopeGroupIds?.length ? scopeGroupIds.join(",") : scopeGroupId ?? "global"} dryRun=${dryRun} candidates=${candidates.size} pendingOwners=${pending.size} sent=${sent} errors=${errors}`,
   );
   return {
     candidates: candidates.size,
     pendingOwners: pending.size,
     sent,
-    skippedAlreadySent: skipped,
     errors,
     weekOf: weekIso,
     dryRun,

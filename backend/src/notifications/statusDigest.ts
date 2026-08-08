@@ -6,6 +6,10 @@ import {
   type GroupScheduleScope,
 } from "../lib/groupConstants.js";
 import { compareSwimLaneReportOrder } from "../lib/statusReportOrder.js";
+import {
+  parseSubtaskStatusUpdates,
+  type SubtaskStatusUpdateDisplay,
+} from "../lib/subtaskStatusUpdates.js";
 import { eligibleProjects } from "../routes/statusUpdates.js";
 import {
   resolveWeeklyStatusSchedule,
@@ -27,9 +31,9 @@ import { makeUnsubscribeToken } from "./unsubscribe.js";
  *      group (all recipients see the same weekly rollup) but each
  *      recipient gets their own message so unsubscribe / delivery
  *      state is independent.
- *   4. notification_log gets a row per send with kind='status_report_digest'
- *      so the same (group, email, week) combination can never
- *      double-send — the unique partial index does the enforcement.
+ *   4. notification_log records each send for observability. Every
+ *      run emails the full roster — prior sends for the same week do
+ *      not skip recipients.
  *
  * If a group has zero recipients OR zero completed updates for the
  * current week, we skip it silently rather than sending a "nothing
@@ -52,6 +56,8 @@ type UpdateRow = {
   health_flag: "white" | "green" | "yellow" | "red";
   executive_summary: string;
   detailed_update: unknown;
+  subtask_updates: unknown;
+  subtask_entries?: SubtaskStatusUpdateDisplay[];
   owner_name: string | null;
   submitted_by_name: string | null;
   team_names: string[];
@@ -152,6 +158,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
                 w.health_flag,
                 w.executive_summary,
                 w.detailed_update,
+                w.subtask_updates,
                 owner.name AS owner_name,
                 submitter.name AS submitted_by_name,
                 COALESCE(
@@ -170,6 +177,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
             AND w.completed = TRUE
             AND p.group_id = $2
             AND p.deleted_at IS NULL
+            AND p.type = 'epic'
           ORDER BY s."order" DESC NULLS LAST, s.name, p.global_priority ASC, p.title`
       : scope?.groupIds?.length
         ? `SELECT p.group_id,
@@ -182,6 +190,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
                   w.health_flag,
                   w.executive_summary,
                   w.detailed_update,
+                  w.subtask_updates,
                   owner.name AS owner_name,
                   submitter.name AS submitted_by_name,
                   COALESCE(
@@ -200,6 +209,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
               AND w.completed = TRUE
               AND p.group_id = ANY($2::uuid[])
               AND p.deleted_at IS NULL
+            AND p.type = 'epic'
             ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.global_priority ASC, p.title`
         : `SELECT p.group_id,
                   p.id AS project_id,
@@ -211,6 +221,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
                   w.health_flag,
                   w.executive_summary,
                   w.detailed_update,
+                  w.subtask_updates,
                   owner.name AS owner_name,
                   submitter.name AS submitted_by_name,
                   COALESCE(
@@ -228,6 +239,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
             WHERE w.week_of = $1::date
               AND w.completed = TRUE
               AND p.deleted_at IS NULL
+            AND p.type = 'epic'
             ORDER BY p.group_id, s."order" DESC NULLS LAST, s.name, p.global_priority ASC, p.title`,
     scope?.groupId
       ? [weekIso, scope.groupId]
@@ -243,7 +255,36 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
     list.push(update);
     out.set(group_id, list);
   }
+
+  const allUpdates = [...out.values()].flat();
+  await enrichSubtaskUpdateTitles(allUpdates);
+
   return out;
+}
+
+async function enrichSubtaskUpdateTitles(updates: UpdateRow[]): Promise<void> {
+  const subtaskIds = new Set<string>();
+  for (const u of updates) {
+    for (const entry of parseSubtaskStatusUpdates(u.subtask_updates)) {
+      subtaskIds.add(entry.project_id);
+    }
+  }
+  if (!subtaskIds.size) return;
+
+  const { rows: titleRows } = await query<{ id: string; title: string }>(
+    `SELECT id, title FROM projects WHERE id = ANY($1::uuid[])`,
+    [[...subtaskIds]],
+  );
+  const titleById = new Map(titleRows.map((r) => [r.id, r.title]));
+
+  for (const u of updates) {
+    const entries = parseSubtaskStatusUpdates(u.subtask_updates);
+    if (!entries.length) continue;
+    u.subtask_entries = entries.map((entry) => ({
+      ...entry,
+      project_title: titleById.get(entry.project_id) ?? "Subtask",
+    }));
+  }
 }
 
 /**
@@ -413,6 +454,28 @@ function laneGroupsForReport(updates: UpdateRow[]): Array<{ laneName: string; la
     }));
 }
 
+function formatSubtaskUpdateLines(entries: SubtaskStatusUpdateDisplay[]): string[] {
+  const lines: string[] = [];
+  for (const entry of entries) {
+    lines.push(`   ↳ ${entry.project_title}`);
+    lines.push(`      ${entry.update_text}`);
+  }
+  return lines;
+}
+
+function renderSubtaskUpdatesHtml(entries: SubtaskStatusUpdateDisplay[]): string {
+  if (!entries.length) return "";
+  return entries
+    .map(
+      (entry) =>
+        `<div style="margin-top:8px;padding-left:12px;border-left:2px solid #e2e8f0;">
+          <div style="font-size:12px;font-weight:600;color:#475569;">${escapeHtml(entry.project_title)}</div>
+          <div style="font-size:12px;color:#334155;margin-top:2px;">${escapeHtml(entry.update_text)}</div>
+        </div>`,
+    )
+    .join("");
+}
+
 function formatUpdateTextLines(u: UpdateRow, appUrl: string): string[] {
   const projectUrl = `${appUrl}/projects/${u.project_id}`;
   const lines: string[] = [
@@ -425,6 +488,7 @@ function formatUpdateTextLines(u: UpdateRow, appUrl: string): string[] {
   if (u.executive_summary?.trim()) lines.push(`   ${u.executive_summary.trim()}`);
   const bs = bullets(u.detailed_update);
   for (const b of bs) lines.push(`   - ${b}`);
+  for (const line of formatSubtaskUpdateLines(u.subtask_entries ?? [])) lines.push(line);
   lines.push("");
   return lines;
 }
@@ -437,6 +501,7 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
         .map((b) => `<li style="margin:2px 0;">${escapeHtml(b)}</li>`)
         .join("")}</ul>`
     : "";
+  const subtaskHtml = renderSubtaskUpdatesHtml(u.subtask_entries ?? []);
   const summaryHtml = u.executive_summary?.trim()
     ? `<p style="margin:6px 0 0;color:#334155;">${escapeHtml(u.executive_summary.trim())}</p>`
     : "";
@@ -466,6 +531,7 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
           ${submitterHtml}
           ${summaryHtml}
           ${bulletsHtml}
+          ${subtaskHtml}
         </article>`;
 }
 
@@ -640,12 +706,10 @@ function escapeHtml(s: string): string {
 export type DigestRunResult = {
   weekOf: string;
   dryRun: boolean;
-  forceResend: boolean;
   groups: number;
   recipients: number;
   updatesIncluded: number;
   sent: number;
-  skippedAlreadySent: number;
   skippedEmptyGroups: number;
   errors: number;
 };
@@ -658,15 +722,35 @@ export async function removeDigestRecipient(recipientId: string): Promise<{ emai
   return rows[0] ?? null;
 }
 
+async function clearDigestLogForScope(
+  weekIso: string,
+  scope?: GroupScheduleScope,
+): Promise<number> {
+  const deleted = await query(
+    scope?.groupId
+      ? `DELETE FROM notification_log
+            WHERE kind = $1 AND week_of = $2::date AND group_id = $3`
+      : scope?.groupIds?.length
+        ? `DELETE FROM notification_log
+              WHERE kind = $1 AND week_of = $2::date AND group_id = ANY($3::uuid[])`
+        : `DELETE FROM notification_log
+              WHERE kind = $1 AND week_of = $2::date`,
+    scope?.groupId
+      ? [KIND, weekIso, scope.groupId]
+      : scope?.groupIds?.length
+        ? [KIND, weekIso, scope.groupIds]
+        : [KIND, weekIso],
+  );
+  return deleted.rowCount ?? 0;
+}
+
 export async function runStatusReportDigest({
   dryRun = false,
-  forceResend = false,
   scopeGroupId,
   scopeGroupIds,
   adminNote,
 }: {
   dryRun?: boolean;
-  forceResend?: boolean;
   scopeGroupId?: string;
   scopeGroupIds?: string[];
   /** Optional preamble included when an admin triggers send manually. */
@@ -687,35 +771,16 @@ export async function runStatusReportDigest({
   const weekIso = week.toISOString().slice(0, 10);
   const appUrl = config.publicAppUrl.replace(/\/$/, "");
 
-  // Admin manual sends (scopeGroupId) always email the full roster;
-  // scheduled cron (scopeGroupIds) keeps per-week idempotency.
-  if (!dryRun && (forceResend || scopeGroupId)) {
-    const deleted = await query(
-      scope?.groupId
-        ? `DELETE FROM notification_log
-            WHERE kind = $1 AND week_of = $2::date AND group_id = $3`
-        : scope?.groupIds?.length
-          ? `DELETE FROM notification_log
-              WHERE kind = $1 AND week_of = $2::date AND group_id = ANY($3::uuid[])`
-          : `DELETE FROM notification_log
-              WHERE kind = $1 AND week_of = $2::date`,
-      scope?.groupId
-        ? [KIND, weekIso, scope.groupId]
-        : scope?.groupIds?.length
-          ? [KIND, weekIso, scope.groupIds]
-          : [KIND, weekIso],
-    );
-    console.log(
-      `[digest] cleared ${deleted.rowCount ?? 0} notification_log row(s) before manual send`,
-    );
-  }
-
   const bundles = await collectByGroup(week, scope);
+
+  if (!dryRun) {
+    const cleared = await clearDigestLogForScope(weekIso, scope);
+    console.log(`[digest] cleared ${cleared} notification_log row(s) before send`);
+  }
 
   let recipients = 0;
   let updatesIncluded = 0;
   let sent = 0;
-  let skipped = 0;
   let skippedEmpty = 0;
   let errors = 0;
 
@@ -731,41 +796,6 @@ export async function runStatusReportDigest({
 
     for (const r of list) {
       try {
-        const { rows: prior } = await query<{ provider_message_id: string | null }>(
-          `SELECT provider_message_id FROM notification_log
-            WHERE kind = $1 AND group_id = $2 AND LOWER(recipient_email) = LOWER($3) AND week_of = $4::date`,
-          [KIND, bundle.groupId, r.email, weekIso],
-        );
-        if (prior[0]?.provider_message_id) {
-          skipped += 1;
-          continue;
-        }
-
-        if (!prior[0]) {
-          try {
-            await query(
-              `INSERT INTO notification_log
-                 (user_id, group_id, kind, week_of, recipient_email, provider_message_id)
-               VALUES ($1, $2, $3, $4::date, $5, NULL)`,
-              [r.user_id, bundle.groupId, KIND, weekIso, r.email],
-            );
-          } catch (e) {
-            if ((e as { code?: string }).code === "23505") {
-              const { rows: raced } = await query<{ provider_message_id: string | null }>(
-                `SELECT provider_message_id FROM notification_log
-                  WHERE kind = $1 AND group_id = $2 AND LOWER(recipient_email) = LOWER($3) AND week_of = $4::date`,
-                [KIND, bundle.groupId, r.email, weekIso],
-              );
-              if (raced[0]?.provider_message_id) {
-                skipped += 1;
-                continue;
-              }
-            } else {
-              throw e;
-            }
-          }
-        }
-
         const unsubUrl = `${appUrl}/api/notifications/unsubscribe?token=${encodeURIComponent(
           makeUnsubscribeToken(r.id, DIGEST_UNSUB_KIND),
         )}`;
@@ -785,13 +815,15 @@ export async function runStatusReportDigest({
         if (dryRun) {
           console.log(`[digest] DRY RUN — would send to ${r.email}: ${msg.subject}`);
           sent += 1;
-          await query(
-            `DELETE FROM notification_log
-              WHERE kind = $1 AND group_id = $2 AND LOWER(recipient_email) = LOWER($3) AND week_of = $4::date`,
-            [KIND, bundle.groupId, r.email, weekIso],
-          );
           continue;
         }
+
+        await query(
+          `INSERT INTO notification_log
+             (user_id, group_id, kind, week_of, recipient_email, provider_message_id)
+           VALUES ($1, $2, $3, $4::date, $5, NULL)`,
+          [r.user_id, bundle.groupId, KIND, weekIso, r.email],
+        );
 
         const result = await sendEmail({
           to: r.email,
@@ -831,18 +863,16 @@ export async function runStatusReportDigest({
   }
 
   console.log(
-    `[digest] status_report_digest scope=${scopeGroupIds?.length ? scopeGroupIds.join(",") : scopeGroupId ?? "global"} dryRun=${dryRun} forceResend=${forceResend} groups=${bundles.length} recipients=${recipients} updates=${updatesIncluded} sent=${sent} alreadySent=${skipped} skippedEmptyGroups=${skippedEmpty} errors=${errors}`,
+    `[digest] status_report_digest scope=${scopeGroupIds?.length ? scopeGroupIds.join(",") : scopeGroupId ?? "global"} dryRun=${dryRun} groups=${bundles.length} recipients=${recipients} updates=${updatesIncluded} sent=${sent} skippedEmptyGroups=${skippedEmpty} errors=${errors}`,
   );
 
   return {
     weekOf: weekIso,
     dryRun,
-    forceResend,
     groups: bundles.length,
     recipients,
     updatesIncluded,
     sent,
-    skippedAlreadySent: skipped,
     skippedEmptyGroups: skippedEmpty,
     errors,
   };

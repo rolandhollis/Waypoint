@@ -1,3 +1,5 @@
+import type { TabLabels } from "./navTabs";
+
 export type Role = "admin" | "owner" | "viewer";
 
 export type User = {
@@ -105,9 +107,13 @@ export type AppConstants = {
   app_name?: string | null;
   /** Sender display name on outbound emails for this tenant. */
   email_title?: string | null;
+  /** Per-nav-tab label overrides for this tenant's top bar. */
+  tab_labels?: TabLabels | null;
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */
   weekly_status_schedule_effective?: WeeklyStatusSchedule;
+  /** When true, admins can manually generate/regenerate the daily prediction game question. */
+  prediction_game_regenerate_enabled?: boolean;
 };
 
 /**
@@ -157,6 +163,8 @@ export type SwimLane = {
    * even though they can't see the lane.
    */
   is_archive: boolean;
+  /** Moving a roadmap item into this lane adds it to the design queue. */
+  add_to_design_queue: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -657,6 +665,11 @@ export type RoadmapHeadlineCacheEntry = {
 
 export type HealthFlag = "white" | "green" | "yellow" | "red";
 
+export type SubtaskStatusUpdateEntry = {
+  project_id: string;
+  update_text: string;
+};
+
 export type WeeklyStatusUpdate = {
   id: string;
   project_id: string;
@@ -666,6 +679,7 @@ export type WeeklyStatusUpdate = {
   health_flag: HealthFlag;
   executive_summary: string;
   detailed_update: string[];
+  subtask_updates: SubtaskStatusUpdateEntry[];
   completed: boolean;
   due_at: string;
   submitted_at: string | null;
@@ -698,4 +712,83 @@ export type StatusReportResponse = {
   week_of: string;
   due_at: string;
   rows: StatusReportRow[];
+};
+
+export type SimpleFeatureStatus = "next_up" | "in_development" | "completed" | "deleted";
+
+export type SimpleFeature = {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string;
+  team_id: string | null;
+  needs_design: boolean;
+  status: SimpleFeatureStatus;
+  position: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  deleted_at: string | null;
+  creator_name: string;
+  team_name: string | null;
+  team_color: string | null;
+};
+
+export type DesignItemStatus = "next_up" | "in_design" | "completed" | "deleted";
+
+export type DesignItem = {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string;
+  team_id: string | null;
+  source: string;
+  status: DesignItemStatus;
+  position: number;
+  assigned_to: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  deleted_at: string | null;
+  project_id: string | null;
+  simple_feature_id: string | null;
+  creator_name: string;
+  team_name: string | null;
+  team_color: string | null;
+  assignee_name: string | null;
+};
+
+export type PredictionQuestion = {
+  id: string;
+  group_id: string;
+  game_date: string;
+  question_text: string;
+  event_summary: string;
+  event_time_hint: string | null;
+  vote_yes_hint: string;
+  vote_no_hint: string;
+  cutoff_at: string;
+  outcome: boolean | null;
+  outcome_note: string | null;
+  resolved_at: string | null;
+  llm_model: string | null;
+  generated_at: string;
+  kalshi_market_ticker: string | null;
+  kalshi_yes_price: number | null;
+};
+
+export type PredictionTodayResponse = {
+  game_date: string;
+  question: PredictionQuestion | null;
+  voting_open: boolean;
+  opens_at: string | null;
+  cutoff_at: string | null;
+  my_vote: { prediction: boolean; voted_at: string } | null;
+  vote_counts: { will_happen: number; will_not_happen: number };
+};
+
+export type PredictionHistoryEntry = PredictionQuestion & {
+  vote_counts: { will_happen: number; will_not_happen: number };
 };

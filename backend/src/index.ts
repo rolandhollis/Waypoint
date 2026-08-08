@@ -8,6 +8,7 @@ import { authenticate, groupScope } from "./middleware/auth.js";
 import { csrfGuard } from "./middleware/csrf.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 import { bootstrapSuperAdmin } from "./auth/bootstrap.js";
+import { runMigrations } from "./db/migrate.js";
 import { authRouter } from "./routes/auth.js";
 import { usersRouter } from "./routes/users.js";
 import { groupsRouter } from "./routes/groups.js";
@@ -30,7 +31,11 @@ import { notificationsRouter } from "./routes/notifications.js";
 import { mentionsRouter } from "./routes/mentions.js";
 import { digestRecipientsRouter } from "./routes/digestRecipients.js";
 import { auditRouter } from "./routes/audit.js";
+import { designItemsRouter } from "./routes/designItems.js";
+import { simpleFeaturesRouter } from "./routes/simpleFeatures.js";
+import { predictionGameRouter } from "./routes/predictionGame.js";
 import { startCron } from "./jobs/weeklyStatus.js";
+import { startPredictionGameCron } from "./jobs/predictionGame.js";
 
 const app = express();
 
@@ -110,6 +115,9 @@ app.use("/api/mentions", authenticate, groupScope, mentionsRouter);
 // verb; group scoping is handled here so req.groupId is set.
 app.use("/api/notifications/digest-recipients", authenticate, groupScope, digestRecipientsRouter);
 app.use("/api/audit", authenticate, groupScope, auditRouter);
+app.use("/api/simple-features", authenticate, groupScope, simpleFeaturesRouter);
+app.use("/api/design-items", authenticate, groupScope, designItemsRouter);
+app.use("/api/prediction-game", authenticate, groupScope, predictionGameRouter);
 
 // Notifications router carries both public (unsubscribe) and admin
 // (ad-hoc reminder/digest triggers) endpoints. Public endpoints
@@ -137,8 +145,16 @@ if (config.staticDir) {
 app.use(notFound);
 app.use(errorHandler);
 
-app.listen(config.port, () => {
-  console.log(`[api] listening on http://localhost:${config.port} (auth=${config.authMode})`);
-  startCron();
-  bootstrapSuperAdmin().catch((err) => console.error("[auth] super-admin bootstrap failed", err));
-});
+runMigrations()
+  .then(() => {
+    app.listen(config.port, () => {
+      console.log(`[api] listening on http://localhost:${config.port} (auth=${config.authMode})`);
+      startCron();
+      startPredictionGameCron();
+      bootstrapSuperAdmin().catch((err) => console.error("[auth] super-admin bootstrap failed", err));
+    });
+  })
+  .catch((err) => {
+    console.error("[migrate] failed", err);
+    process.exit(1);
+  });

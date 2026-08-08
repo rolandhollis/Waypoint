@@ -1,5 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { api } from "./api";
+import {
+  resolveTabLabels,
+  type TabLabelKey,
+} from "./navTabs";
 import type {
   AiEstimatorHealth,
   AiReferenceEstimate,
@@ -15,6 +19,10 @@ import type {
   ProjectTimelineEntry,
   RecentAuditEventsResponse,
   Role,
+  SimpleFeature,
+  DesignItem,
+  PredictionHistoryEntry,
+  PredictionTodayResponse,
   StatusReportResponse,
   SwimLane,
   Team,
@@ -185,6 +193,39 @@ export function useTeams() {
     queryKey: ["teams"],
     queryFn: () => api<Team[]>("/teams"),
     refetchInterval: POLL_MS,
+  });
+}
+
+export function useSimpleFeatures() {
+  return useQuery({
+    queryKey: ["simpleFeatures"],
+    queryFn: () => api<SimpleFeature[]>("/simple-features"),
+    refetchInterval: POLL_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useDesignItems() {
+  return useQuery({
+    queryKey: ["designItems"],
+    queryFn: () => api<DesignItem[]>("/design-items"),
+    refetchInterval: POLL_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function usePredictionGameToday() {
+  return useQuery({
+    queryKey: ["predictionGameToday"],
+    queryFn: () => api<PredictionTodayResponse>("/prediction-game/today"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+export function usePredictionGameHistory() {
+  return useQuery({
+    queryKey: ["predictionGameHistory"],
+    queryFn: () => api<PredictionHistoryEntry[]>("/prediction-game/history"),
   });
 }
 
@@ -566,6 +607,12 @@ export function useAppName(): string {
   const raw = group?.constants?.app_name;
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   return trimmed || DEFAULT_APP_NAME;
+}
+
+/** Effective nav tab labels for the current tenant. */
+export function useTabLabels(): Record<TabLabelKey, string> {
+  const group = useCurrentGroup();
+  return resolveTabLabels(group?.constants?.tab_labels);
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
+import type { DatabaseError } from "pg";
 
 export class HttpError extends Error {
   status: number;
@@ -7,6 +8,10 @@ export class HttpError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+function isDatabaseError(err: unknown): err is DatabaseError {
+  return typeof err === "object" && err !== null && "code" in err;
 }
 
 export function notFound(req: Request, res: Response) {
@@ -24,6 +29,13 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
   }
   if (err instanceof HttpError) {
     res.status(err.status).json({ error: err.message });
+    return;
+  }
+  if (isDatabaseError(err) && (err.code === "42P01" || err.code === "42703")) {
+    console.error(err);
+    res.status(503).json({
+      error: "database schema out of date — run backend migrations (npm run migrate) and restart the API",
+    });
     return;
   }
   console.error(err);

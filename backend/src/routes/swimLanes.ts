@@ -39,6 +39,7 @@ const createSchema = z.object({
   is_default_new: z.boolean().optional(),
   is_admin_only: z.boolean().optional(),
   is_archive: z.boolean().optional(),
+  add_to_design_queue: z.boolean().optional(),
   phase_date_key: z.enum(PHASE_DATE_KEYS).nullable().optional(),
 });
 
@@ -66,8 +67,8 @@ swimLanesRouter.post("/", requireAdmin, async (req, res) => {
     const { rows } = await client.query<SwimLaneRow>(
       `INSERT INTO swim_lanes
          (group_id, name, description, "order", color, is_terminal, requires_weekly_status,
-          is_default_new, is_admin_only, is_archive, phase_date_key, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+          is_default_new, is_admin_only, is_archive, add_to_design_queue, phase_date_key, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
       [
         groupId,
         body.name, body.description ?? "", nextOrder, body.color ?? null,
@@ -75,6 +76,7 @@ swimLanesRouter.post("/", requireAdmin, async (req, res) => {
         body.is_default_new ?? false,
         body.is_admin_only ?? false,
         body.is_archive ?? false,
+        body.add_to_design_queue ?? false,
         body.phase_date_key ?? null,
         req.user!.id,
       ],
@@ -93,6 +95,7 @@ const patchSchema = z.object({
   is_default_new: z.boolean().optional(),
   is_admin_only: z.boolean().optional(),
   is_archive: z.boolean().optional(),
+  add_to_design_queue: z.boolean().optional(),
   phase_date_key: z.enum(PHASE_DATE_KEYS).nullable().optional(),
 });
 

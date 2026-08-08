@@ -5,6 +5,7 @@ import { pillTextColor, tint } from "../lib/colors";
 import { computePhases } from "../lib/phaseCompute";
 import type { Project, SwimLane, Team } from "../lib/types";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
+import { ViewPageHeader } from "../components/ViewPageHeader";
 
 /**
  * KPI report: one section per admin-defined KPI, showing every
@@ -75,16 +76,10 @@ export function KpiReportView() {
   const laneList = lanes.data ?? [];
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-6xl p-6">
-        <header className="mb-4">
-          <h1 className="text-xl font-semibold text-wp-ink">KPIs</h1>
-          <p className="mt-1 text-sm text-wp-slate">
-            Every KPI and the roadmap-visible projects contributing to it, sorted by upcoming end date.
-            Projects can appear under more than one KPI.
-          </p>
-        </header>
-
+    <div className="flex h-full flex-col overflow-hidden">
+      <ViewPageHeader tabKey="kpis" />
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-6xl p-6">
         {kpiList.length === 0 ? (
           <div className="card-surface p-6 text-sm text-wp-slate">
             No KPIs defined yet. Admins can create them under <span className="font-medium text-wp-ink">Admin → KPIs</span>.
@@ -110,6 +105,7 @@ export function KpiReportView() {
             })}
           </div>
         )}
+        </div>
       </div>
 
       {selectedId ? (

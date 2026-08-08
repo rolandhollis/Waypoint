@@ -26,6 +26,7 @@ import { ColorLegend } from "../components/ColorLegend";
 import { RoadmapHelper } from "../components/RoadmapHelper";
 import { RoadmapQuartersView } from "../components/RoadmapQuartersView";
 import { RoadmapCompactView } from "../components/RoadmapCompactView";
+import { ViewPageHeader } from "../components/ViewPageHeader";
 
 export function RoadmapView() {
   const projects = useProjects();
@@ -470,6 +471,7 @@ export function RoadmapView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      <ViewPageHeader tabKey="roadmap" />
       <FilterBar
         view="roadmap"
         showGrouping

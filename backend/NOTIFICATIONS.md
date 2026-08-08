@@ -77,7 +77,10 @@ the log insert.
 
 ## Observability
 
-Every send inserts a row in `notification_log`:
+Every send inserts a row in `notification_log`. Each job run clears
+prior rows for the same week and scope, then emails the full roster
+(or every pending owner for reminders) — prior sends never skip
+recipients.
 
 ```sql
 SELECT kind, week_of, sent_at, provider_message_id
@@ -86,18 +89,12 @@ SELECT kind, week_of, sent_at, provider_message_id
  LIMIT 20;
 ```
 
-Two partial-unique indexes guarantee no double-send even if the
-job runs twice or the container restarts:
-
-  * `(kind, user_id, week_of)` for the reminder (one row per
-    user per week).
-  * `(kind, group_id, LOWER(recipient_email), week_of)` for the
-    digest (one row per group + email combo per week — the
-    lowercase email is the tie-breaker because addresses are
-    case-insensitive).
+Partial-unique indexes on `(kind, user_id, week_of)` and
+`(kind, group_id, LOWER(recipient_email), week_of)` still exist for
+data integrity; the send jobs clear matching rows before each run.
 
 Cleanup rows (for failed sends where the provider errored) drop
-themselves so the next scheduled run gets a fresh shot.
+themselves so a retry can insert a fresh log row.
 
 ## Opt-out surface
 

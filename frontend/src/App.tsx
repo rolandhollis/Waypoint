@@ -1,10 +1,9 @@
 import { useEffect } from "react";
-import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { useAppName, useHealth, useIsAdmin, useMe, useMockRoster } from "./lib/queries";
+import { useAppName, useHealth, useMe, useMockRoster } from "./lib/queries";
 import { useMockUserStore } from "./lib/mockUser";
 import { setUnauthorizedHandler } from "./lib/api";
-import { cn } from "./lib/cn";
 import { BoardView } from "./views/BoardView";
 import { PrioritizationView } from "./views/PrioritizationView";
 import { RoadmapView } from "./views/RoadmapView";
@@ -13,11 +12,15 @@ import { KpiReportView } from "./views/KpiReportView";
 import { EZEstimatesView } from "./views/EZEstimatesView";
 import { AdminSettingsView } from "./views/AdminSettingsView";
 import { PhasesView } from "./views/PhasesView";
+import { SimpleFeaturesView } from "./views/SimpleFeaturesView";
+import { DesignView } from "./views/DesignView";
+import { GameView } from "./views/GameView";
 import { ProjectDetailPage } from "./views/ProjectDetailPage";
 import { LoginView } from "./views/LoginView";
 import { ForgotPasswordView } from "./views/ForgotPasswordView";
 import { ResetPasswordView } from "./views/ResetPasswordView";
 import { ReminderBanner } from "./components/ReminderBanner";
+import { TopNav } from "./components/TopNav";
 import { UserSwitcher } from "./components/UserSwitcher";
 import { GroupSwitcher } from "./components/GroupSwitcher";
 import {
@@ -155,6 +158,9 @@ export function App() {
           <Route path="/ezestimates" element={<EZEstimatesView />} />
           <Route path="/kpis" element={<KpiReportView />} />
           <Route path="/phases" element={<PhasesView />} />
+          <Route path="/simple-features" element={<SimpleFeaturesView />} />
+          <Route path="/design" element={<DesignView />} />
+          <Route path="/game" element={<GameView />} />
           <Route path="/admin" element={<AdminSettingsView />} />
           {/* Standalone `/projects/:id` — bookmarkable / shareable
               item detail page. Renders the same shared body the
@@ -254,14 +260,6 @@ function MockLoginScreen() {
 }
 
 function TopBar() {
-  const location = useLocation();
-  // Admin nav item follows PER-GROUP role: a user who's admin in
-  // RMN but only owner in VC sees the Admin tab appear/disappear
-  // as they switch tenants via the group dropdown.
-  const isAdmin = useIsAdmin();
-  // Per-tenant app name — an admin can rebrand their group via
-  // Admin → Constants without a redeploy. Falls back to the built-in
-  // default ("Waypoint") when no override is set.
   const appName = useAppName();
   return (
     <header className="flex items-center justify-between border-b border-wp-stone bg-white px-5 py-2.5">
@@ -269,38 +267,13 @@ function TopBar() {
         <div className="flex items-baseline gap-2">
           <span className="text-lg font-bold text-wp-red">{appName}</span>
         </div>
-        <nav className="flex items-center gap-1">
-          <NavItem to="/board" active={location.pathname.startsWith("/board")}>Board</NavItem>
-          <NavItem to="/prioritization" active={location.pathname.startsWith("/prioritization")}>Prioritization</NavItem>
-          <NavItem to="/roadmap" active={location.pathname.startsWith("/roadmap")}>Roadmap</NavItem>
-          <NavItem to="/status-report" active={location.pathname.startsWith("/status-report")}>Status Report</NavItem>
-          <NavItem to="/ezestimates" active={location.pathname.startsWith("/ezestimates")}>EZEstimates</NavItem>
-          <NavItem to="/kpis" active={location.pathname.startsWith("/kpis")}>KPIs</NavItem>
-          <NavItem to="/phases" active={location.pathname.startsWith("/phases")}>Phases</NavItem>
-          {isAdmin ? (
-            <NavItem to="/admin" active={location.pathname.startsWith("/admin")}>Admin</NavItem>
-          ) : null}
-        </nav>
+        <TopNav />
       </div>
       <div className="flex items-center gap-3">
         <GroupSwitcher />
         <UserSwitcher />
       </div>
     </header>
-  );
-}
-
-function NavItem({ to, active, children }: { to: string; active: boolean; children: React.ReactNode }) {
-  return (
-    <NavLink
-      to={to}
-      className={cn(
-        "rounded-md px-3 py-1.5 text-sm font-medium transition",
-        active ? "bg-wp-red text-white" : "text-wp-slate hover:bg-wp-stone/40 hover:text-wp-ink",
-      )}
-    >
-      {children}
-    </NavLink>
   );
 }
 

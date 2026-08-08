@@ -36,6 +36,7 @@ import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
 import { MultiSelect } from "../components/MultiSelect";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
+import { ViewPageHeader } from "../components/ViewPageHeader";
 import { PasswordField } from "../components/PasswordField";
 import { passwordIsValid } from "../lib/password";
 import { GROUP_PALETTE, KPI_PALETTE, SWIM_LANE_PALETTE, TEAM_PALETTE, USER_PALETTE } from "../lib/colors";
@@ -285,10 +286,11 @@ export function AdminSettingsView() {
   }, [tabs]);
 
   return (
-    <div className="mx-auto max-w-6xl p-6">
-      <h1 className="text-xl font-semibold text-wp-ink">Admin Settings</h1>
-
-      <div className="mt-6 flex gap-8">
+    <div className="flex h-full flex-col overflow-hidden">
+      <ViewPageHeader tabKey="admin" />
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-6xl p-6">
+      <div className="flex gap-8">
         <AdminSidebarNav
           entries={navEntries}
           activeTop={activeTop}
@@ -332,6 +334,8 @@ export function AdminSettingsView() {
               {activeTopDef.render ? activeTopDef.render() : null}
             </div>
           )}
+        </div>
+      </div>
         </div>
       </div>
     </div>
@@ -484,13 +488,8 @@ function AdminSidebarNav({
 //     click any number of times; useful for confirming the
 //     roster before pulling the trigger.
 //
-//   Send now — actually sends. Uses the same notification_log
-//     idempotency guard as the Thursday cron, so clicking it after
-//     the cron has already fired (or clicking it twice in quick
-//     succession) is a no-op for anyone who already got their
-//     email this week. Recipients are scoped to the caller's
-//     currently-selected group so a super-admin doesn't spam
-//     other tenants by accident.
+//   Send now — actually sends to every pending owner, including anyone
+//     who already received a reminder this week.
 //
 // Result panel keeps the last run visible so an admin can see
 // what happened without hunting through logs.
@@ -500,7 +499,6 @@ type ReminderRunResult = {
   candidates: number;
   pendingOwners: number;
   sent: number;
-  skippedAlreadySent: number;
   errors: number;
   weekOf: string;
   dryRun: boolean;
@@ -510,7 +508,6 @@ function notificationRunBannerClass(
   errors: number,
   sent: number,
   dryRun: boolean,
-  skippedAlreadySent: number,
 ): string {
   if (errors > 0 && sent === 0) return "border-red-200 bg-red-50 text-red-900";
   if (errors > 0) return "border-amber-200 bg-amber-50 text-amber-900";
@@ -527,10 +524,7 @@ function reminderRunTitle(last: ReminderRunResult): string {
     return "Reminders sent with errors — some owners may not have received email.";
   }
   if (last.dryRun) {
-    return "Preview complete — no emails sent; log rows rolled back after preview.";
-  }
-  if (last.sent === 0 && last.skippedAlreadySent > 0) {
-    return "No new emails sent — scheduled sends skip owners who already received a reminder this week.";
+    return "Preview complete — no emails sent.";
   }
   if (last.sent === 0 && last.pendingOwners === 0) {
     return "No owners owe a status update this week — nothing to send.";
@@ -691,7 +685,7 @@ function ReminderAdmin() {
         <div
           className={
             "mt-4 rounded-md border px-3 py-2 text-xs " +
-            notificationRunBannerClass(last.errors, last.sent, last.dryRun, last.skippedAlreadySent)
+            notificationRunBannerClass(last.errors, last.sent, last.dryRun)
           }
           role="status"
           aria-live="polite"
@@ -716,12 +710,6 @@ function ReminderAdmin() {
               </span>
               <span className="ml-1 font-mono">{last.sent}</span>
             </li>
-            {last.skippedAlreadySent > 0 ? (
-              <li className="col-span-2">
-                <span className="text-wp-slate">Skipped (already sent this week)</span>
-                <span className="ml-1 font-mono">{last.skippedAlreadySent}</span>
-              </li>
-            ) : null}
             {last.errors > 0 ? (
               <li className="col-span-2 text-red-700">
                 <span>Errors</span>
@@ -763,12 +751,10 @@ type DigestRecipient = {
 type DigestRunResult = {
   weekOf: string;
   dryRun: boolean;
-  forceResend: boolean;
   groups: number;
   recipients: number;
   updatesIncluded: number;
   sent: number;
-  skippedAlreadySent: number;
   skippedEmptyGroups: number;
   errors: number;
 };
@@ -781,10 +767,7 @@ function digestRunTitle(last: DigestRunResult): string {
     return "Digests sent with errors — some recipients may not have received email.";
   }
   if (last.dryRun) {
-    return "Preview complete — no emails sent; log rows rolled back after preview.";
-  }
-  if (last.sent === 0 && last.skippedAlreadySent > 0) {
-    return "No new emails sent — scheduled sends skip recipients who already got this week's digest.";
+    return "Preview complete — no emails sent.";
   }
   if (last.sent === 0 && last.recipients === 0) {
     return "No digest recipients configured.";
@@ -792,14 +775,11 @@ function digestRunTitle(last: DigestRunResult): string {
   if (last.sent === 0 && last.updatesIncluded === 0) {
     return "No submitted updates to include this week.";
   }
-  if (last.forceResend) {
-    return `Digest resent to ${last.sent} recipient${last.sent === 1 ? "" : "s"}.`;
-  }
   if (last.sent === 0) return "No digest emails sent.";
   return `Digest sent to ${last.sent} recipient${last.sent === 1 ? "" : "s"}.`;
 }
 
-type DigestRunArgs = { dry_run: boolean; force_resend?: boolean; admin_note?: string };
+type DigestRunArgs = { dry_run: boolean; admin_note?: string };
 
 type AddDigestEmailsResult = { added: number; skipped_duplicate: number };
 
@@ -875,9 +855,8 @@ function DigestAdmin() {
   const [digestAdminNote, setDigestAdminNote] = useState("");
 
   const digestNoteTrimmed = digestAdminNote.trim();
-  const digestRunArgs = (dry_run: boolean, force_resend = false): DigestRunArgs => ({
+  const digestRunArgs = (dry_run: boolean): DigestRunArgs => ({
     dry_run,
-    force_resend,
     admin_note: digestNoteTrimmed || undefined,
   });
 
@@ -1023,7 +1002,7 @@ function DigestAdmin() {
           />
         </label>
         <p className="mt-1 text-[11px] text-wp-slate">
-          Not included in scheduled sends — only when you use Preview, Send now, or Send again below.
+          Not included in scheduled sends — only when you use Preview or Send now below.
         </p>
       </div>
 
@@ -1035,9 +1014,7 @@ function DigestAdmin() {
           onClick={() => runDigest.mutate(digestRunArgs(true))}
         >
           <Mail size={13} />
-          {busySend && runDigest.variables?.dry_run && !runDigest.variables?.force_resend
-            ? "Previewing…"
-            : "Preview (dry run)"}
+          {busySend && runDigest.variables?.dry_run ? "Previewing…" : "Preview (dry run)"}
         </button>
         <button
           type="button"
@@ -1056,28 +1033,7 @@ function DigestAdmin() {
           }}
         >
           <Send size={13} />
-          {busySend && runDigest.variables?.dry_run === false && !runDigest.variables?.force_resend
-            ? "Sending…"
-            : "Send now"}
-        </button>
-        <button
-          type="button"
-          className="btn-secondary inline-flex items-center gap-1.5"
-          disabled={busySend}
-          onClick={async () => {
-            if (
-              !(await confirm({
-                title: "Send digest again?",
-                description:
-                  "Send the digest again with the latest submitted updates.\n\nThis clears this week's send log for this group and emails every recipient again, even if they already received a digest earlier this week.",
-                confirmLabel: "Send again",
-              }))
-            ) return;
-            runDigest.mutate(digestRunArgs(false, true));
-          }}
-        >
-          <Send size={13} />
-          {busySend && runDigest.variables?.force_resend ? "Sending…" : "Send again (latest)"}
+          {busySend && runDigest.variables?.dry_run === false ? "Sending…" : "Send now"}
         </button>
       </div>
 
@@ -1085,12 +1041,7 @@ function DigestAdmin() {
         <div
           className={
             "mt-4 rounded-md border px-3 py-2 text-xs " +
-            notificationRunBannerClass(
-              lastRun.errors,
-              lastRun.sent,
-              lastRun.dryRun,
-              lastRun.skippedAlreadySent,
-            )
+            notificationRunBannerClass(lastRun.errors, lastRun.sent, lastRun.dryRun)
           }
           role="status"
           aria-live="polite"
@@ -1115,12 +1066,6 @@ function DigestAdmin() {
               </span>
               <span className="ml-1 font-mono">{lastRun.sent}</span>
             </li>
-            {lastRun.skippedAlreadySent > 0 ? (
-              <li className="col-span-2">
-                <span className="text-wp-slate">Skipped (already sent this week)</span>
-                <span className="ml-1 font-mono">{lastRun.skippedAlreadySent}</span>
-              </li>
-            ) : null}
             {lastRun.errors > 0 ? (
               <li className="col-span-2 text-red-700">
                 <span>Errors</span>
@@ -1432,6 +1377,7 @@ function SwimLanesAdmin() {
                 onToggleStatus={(v) => patch.mutate({ id: lane.id, body: { requires_weekly_status: v } })}
                 onSetDefault={() => patch.mutate({ id: lane.id, body: { is_default_new: true } })}
                 onToggleAdminOnly={(v) => patch.mutate({ id: lane.id, body: { is_admin_only: v } })}
+                onToggleDesignQueue={(v) => patch.mutate({ id: lane.id, body: { add_to_design_queue: v } })}
                 onSetArchive={() => patch.mutate({ id: lane.id, body: { is_archive: true } })}
                 onSetPhaseDateKey={(v) => patch.mutate({ id: lane.id, body: { phase_date_key: v } })}
                 onRename={(v) => patch.mutate({ id: lane.id, body: { name: v } })}
@@ -1465,6 +1411,7 @@ function SortableLaneRow(props: {
   onToggleStatus: (v: boolean) => void;
   onSetDefault: () => void;
   onToggleAdminOnly: (v: boolean) => void;
+  onToggleDesignQueue: (v: boolean) => void;
   onSetArchive: () => void;
   onSetPhaseDateKey: (v: PhaseDateKey | null) => void;
   onRename: (v: string) => void;
@@ -1474,7 +1421,7 @@ function SortableLaneRow(props: {
 }) {
   const {
     lane, onToggleTerminal, onToggleStatus, onSetDefault, onToggleAdminOnly,
-    onSetArchive, onSetPhaseDateKey, onRename, onRecolor, onDescribe, onDelete,
+    onToggleDesignQueue, onSetArchive, onSetPhaseDateKey, onRename, onRecolor, onDescribe, onDelete,
   } = props;
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: lane.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
@@ -1515,6 +1462,17 @@ function SortableLaneRow(props: {
         <label className="flex items-center gap-1 text-xs text-wp-slate">
           <input type="checkbox" checked={lane.is_terminal} onChange={(e) => onToggleTerminal(e.target.checked)} />
           terminal
+        </label>
+        <label
+          className="flex items-center gap-1 text-xs text-wp-slate"
+          title="Moving a roadmap item into this lane adds it to the Design tab queue."
+        >
+          <input
+            type="checkbox"
+            checked={lane.add_to_design_queue}
+            onChange={(e) => onToggleDesignQueue(e.target.checked)}
+          />
+          design queue
         </label>
         <label
           className="flex items-center gap-1 text-xs text-wp-slate"

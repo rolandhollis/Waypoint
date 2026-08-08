@@ -1,3 +1,5 @@
+import type { TabLabels } from "./lib/navTabs.js";
+
 export type Role = "admin" | "owner" | "viewer";
 
 export type UserRow = {
@@ -91,10 +93,14 @@ export type AppConstants = {
   app_name?: string | null;
   /** Sender display name on outbound emails for this tenant. */
   email_title?: string | null;
+  /** Per-nav-tab label overrides for this tenant's top bar. */
+  tab_labels?: TabLabels | null;
   /** Admin overrides for weekly status cadence (partial — unset keys use defaults). */
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */
   weekly_status_schedule_effective?: WeeklyStatusSchedule;
+  /** When true, admins can manually generate/regenerate the daily prediction game question. */
+  prediction_game_regenerate_enabled?: boolean;
 };
 
 export type WeeklyStatusScheduleInput = {
@@ -184,6 +190,11 @@ export type SwimLaneRow = {
    * non-admins can archive without ever holding the lane's id.
    */
   is_archive: boolean;
+  /**
+   * When true, moving a roadmap item into this lane adds it to the
+   * design queue (bottom of Next Up). See migration 044.
+   */
+  add_to_design_queue: boolean;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;
@@ -584,7 +595,72 @@ export type RecentAuditEventRow = {
   in_archive: boolean;
 };
 
+export type SimpleFeatureStatus = "next_up" | "in_development" | "completed" | "deleted";
+
+export type SimpleFeatureRow = {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string;
+  team_id: string | null;
+  needs_design: boolean;
+  status: SimpleFeatureStatus;
+  position: number;
+  created_by: string;
+  created_at: Date;
+  updated_at: Date;
+  completed_at: Date | null;
+  deleted_at: Date | null;
+};
+
+export type DesignItemStatus = "next_up" | "in_design" | "completed" | "deleted";
+
+export type DesignItemRow = {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string;
+  team_id: string | null;
+  source: string;
+  status: DesignItemStatus;
+  position: number;
+  assigned_to: string | null;
+  created_by: string;
+  created_at: Date;
+  updated_at: Date;
+  completed_at: Date | null;
+  deleted_at: Date | null;
+  project_id: string | null;
+  simple_feature_id: string | null;
+};
+
+export type PredictionQuestionRow = {
+  id: string;
+  group_id: string;
+  game_date: Date | string;
+  question_text: string;
+  event_summary: string;
+  event_time_hint: string | null;
+  vote_yes_hint: string;
+  vote_no_hint: string;
+  cutoff_at: Date;
+  outcome: boolean | null;
+  outcome_note: string | null;
+  resolved_at: Date | null;
+  resolved_by: string | null;
+  llm_model: string | null;
+  generated_at: Date;
+  generated_by: string | null;
+  kalshi_market_ticker: string | null;
+  kalshi_yes_price: string | number | null;
+};
+
 export type HealthFlag = "white" | "green" | "yellow" | "red";
+
+export type SubtaskStatusUpdateEntry = {
+  project_id: string;
+  update_text: string;
+};
 
 export type WeeklyStatusUpdateRow = {
   id: string;
@@ -595,6 +671,7 @@ export type WeeklyStatusUpdateRow = {
   health_flag: HealthFlag;
   executive_summary: string;
   detailed_update: string[];
+  subtask_updates: SubtaskStatusUpdateEntry[];
   completed: boolean;
   due_at: Date;
   submitted_at: Date | null;

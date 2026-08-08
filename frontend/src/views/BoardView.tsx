@@ -23,6 +23,7 @@ import { NewProjectDialog } from "../components/NewProjectDialog";
 import { PhaseDatePromptModal } from "../components/PhaseDatePromptModal";
 import { SortLaneModal } from "../components/SortLaneModal";
 import { InfoTooltip } from "../components/InfoTooltip";
+import { ViewPageHeader } from "../components/ViewPageHeader";
 
 export function BoardView() {
   // Both admin-only nav ("Go to Admin Settings" cta) and write
@@ -533,6 +534,7 @@ export function BoardView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      <ViewPageHeader tabKey="board" />
       <FilterBar view="board" showSwimLaneFilter={false} />
       {canWrite ? (
         <div className="flex items-center justify-between border-b border-wp-stone bg-white/60 px-4 py-2">

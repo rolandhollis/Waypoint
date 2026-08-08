@@ -28,6 +28,7 @@ import { ProjectLinks } from "./ProjectLinks";
 import { ProjectPicker } from "./ProjectPicker";
 import { StatusPill } from "./StatusPill";
 import { StatusUpdateForm } from "./StatusUpdateForm";
+import { SubtaskStatusUpdatesDisplay } from "./EpicSubtaskStatusUpdates";
 import { TagPicker } from "./TagPicker";
 import { TeamMultiSelect } from "./TeamMultiSelect";
 
@@ -781,7 +782,7 @@ export function ProjectDetailBody({
     .map((tid) => teamsById.get(tid))
     .filter((t): t is Team => !!t);
   const lane = lanes.data?.find((l) => l.id === merged.swim_lane_id);
-  const requiresStatus = !!lane?.requires_weekly_status;
+  const requiresStatus = !!lane?.requires_weekly_status && merged.type === "epic";
   const myChildren = kids.get(merged.id) ?? [];
   // Show the archive button whenever the card isn't already in an
   // archive lane. Non-admins never see admin-only lanes in
@@ -1469,7 +1470,13 @@ export function ProjectDetailBody({
           <h3 className="text-sm font-semibold text-wp-ink">Weekly status history</h3>
           {statusUpdates.data && statusUpdates.data.length ? (
             <ul className="mt-2 space-y-3">
-              {statusUpdates.data.map((u) => <StatusHistoryRow key={u.id} u={u} />)}
+              {statusUpdates.data.map((u) => (
+                <StatusHistoryRow
+                  key={u.id}
+                  u={u}
+                  projectTitleById={new Map(projectList.map((p) => [p.id, p.title]))}
+                />
+              ))}
             </ul>
           ) : (
             <p className="mt-1.5 text-xs text-wp-slate">No status updates yet for this project.</p>
@@ -1641,7 +1648,7 @@ function cascadeClear(next: Draft, base: Project): Draft {
   return next;
 }
 
-function StatusHistoryRow({ u }: { u: WeeklyStatusUpdate }) {
+function StatusHistoryRow({ u, projectTitleById }: { u: WeeklyStatusUpdate; projectTitleById?: Map<string, string> }) {
   return (
     <li className="rounded border border-wp-stone bg-white p-2 text-xs">
       <div className="flex items-center justify-between">
@@ -1656,6 +1663,10 @@ function StatusHistoryRow({ u }: { u: WeeklyStatusUpdate }) {
           {u.detailed_update.map((b, i) => <li key={i}>{b}</li>)}
         </ul>
       ) : null}
+      <SubtaskStatusUpdatesDisplay
+        subtaskUpdates={u.subtask_updates ?? []}
+        projectTitleById={projectTitleById}
+      />
     </li>
   );
 }

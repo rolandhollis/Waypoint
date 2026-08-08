@@ -5,18 +5,23 @@ import { useEffect, useState } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import { api } from "../lib/api";
 import { usePendingStatus, useProjectStatusUpdates, useProjects } from "../lib/queries";
-import type { HealthFlag, WeeklyStatusUpdate } from "../lib/types";
+import type { HealthFlag, SubtaskStatusUpdateEntry, WeeklyStatusUpdate } from "../lib/types";
 import { StatusPill } from "./StatusPill";
 import { HealthFlagSelect } from "./HealthFlagSelect";
 import { MutationErrorBanner } from "./MutationErrorBanner";
+import { EpicSubtaskStatusUpdates, parseSubtaskStatusUpdatesForForm } from "./EpicSubtaskStatusUpdates";
 
 const SOFT_SUMMARY_LIMIT = 400;
 
+function cleanSubtaskUpdates(entries: SubtaskStatusUpdateEntry[]): SubtaskStatusUpdateEntry[] {
+  return entries
+    .map((e) => ({ ...e, update_text: e.update_text.trim() }))
+    .filter((e) => e.update_text.length > 0);
+}
+
 /**
  * Focused single-purpose modal for entering this week's status update from
- * the Status Report view. Shows only the fields the PRD lists (health,
- * executive summary, optional detail bullets) and a single Save button that
- * submits and closes on success.
+ * the Status Report view.
  */
 export function StatusUpdateModal({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const pending = usePendingStatus();
@@ -25,6 +30,7 @@ export function StatusUpdateModal({ projectId, onClose }: { projectId: string; o
   const qc = useQueryClient();
 
   const project = projects.data?.find((p) => p.id === projectId);
+  const isEpic = project?.type === "epic";
   const currentWeek = pending.data?.week_of ?? new Date().toISOString().slice(0, 10);
   const dueAt = pending.data?.due_at ?? null;
   const existing =
@@ -39,16 +45,19 @@ export function StatusUpdateModal({ projectId, onClose }: { projectId: string; o
   const [bullets, setBullets] = useState<string[]>(
     existing?.detailed_update?.length ? existing.detailed_update : [],
   );
+  const [subtaskUpdates, setSubtaskUpdates] = useState<SubtaskStatusUpdateEntry[]>(
+    parseSubtaskStatusUpdatesForForm(existing?.subtask_updates),
+  );
 
-  // Reset local state whenever the underlying update loads/changes (e.g. after
-  // navigation between rows).
   useEffect(() => {
     setFlag(existing && existing.health_flag !== "white" ? existing.health_flag : "");
     setSummary(existing?.executive_summary ?? "");
     setBullets(existing?.detailed_update?.length ? existing.detailed_update : []);
+    setSubtaskUpdates(parseSubtaskStatusUpdatesForForm(existing?.subtask_updates));
   }, [existing?.id, projectId]);
 
   const cleanBullets = bullets.map((b) => b.trim()).filter(Boolean);
+  const cleanSubtasks = cleanSubtaskUpdates(subtaskUpdates);
   const canSubmit = !!flag && cleanBullets.length <= 10;
   const overdue = dueAt ? new Date(dueAt) < new Date() && !existing?.completed : false;
 
@@ -60,6 +69,7 @@ export function StatusUpdateModal({ projectId, onClose }: { projectId: string; o
         health_flag: flag || undefined,
         executive_summary: summary,
         detailed_update: cleanBullets,
+        subtask_updates: cleanSubtasks,
         completed: true,
       }),
     }),
@@ -152,6 +162,21 @@ export function StatusUpdateModal({ projectId, onClose }: { projectId: string; o
                 </button>
               </div>
             </div>
+
+            {isEpic ? (
+              <div>
+                <span className="text-xs font-medium text-wp-slate">
+                  Subtask updates <span className="text-wp-slate/70">(optional)</span>
+                </span>
+                <div className="mt-1">
+                  <EpicSubtaskStatusUpdates
+                    epicId={projectId}
+                    subtaskUpdates={subtaskUpdates}
+                    onChange={setSubtaskUpdates}
+                  />
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <MutationErrorBanner mutation={save} className="mt-4" />

@@ -13,6 +13,7 @@ import { MutationErrorBanner } from "../components/MutationErrorBanner";
 import { PhaseSizePicker } from "../components/PhaseSizePicker";
 import { ViolationChip } from "../components/ViolationChip";
 import { ViolationToast } from "../components/ViolationToast";
+import { ViewPageHeader } from "../components/ViewPageHeader";
 import { api } from "../lib/api";
 import { cn } from "../lib/cn";
 import { applyFilters } from "../lib/filtering";
@@ -404,6 +405,7 @@ export function EZEstimatesView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      <ViewPageHeader tabKey="ezestimates" />
       <FilterBar view="ezestimates" />
       {/* EZEstimates-only extra filter row. Kept separate from the
           shared FilterBar so we don't couple its API to a single

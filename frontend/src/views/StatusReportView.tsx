@@ -22,11 +22,13 @@ import {
   type ProjectGroupInfo,
 } from "../lib/roadmapGrouping";
 import { Collapsible } from "../components/Collapsible";
+import { SubtaskStatusUpdatesDisplay } from "../components/EpicSubtaskStatusUpdates";
 import { FilterBar } from "../components/FilterBar";
 import { StatusPill } from "../components/StatusPill";
 import type { StatusReportRow } from "../lib/types";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
 import { StatusUpdateModal } from "../components/StatusUpdateModal";
+import { ViewPageHeader } from "../components/ViewPageHeader";
 
 type CompletionFilter = "all" | "needs_update" | "submitted";
 
@@ -53,14 +55,16 @@ function hasUnsubmittedDraftContent(row: StatusReportRow): boolean {
   if (row.health_flag && row.health_flag !== "white") return true;
   if (row.executive_summary?.trim()) return true;
   const raw = row.detailed_update;
-  if (!Array.isArray(raw)) return false;
-  return raw.some((b) => {
+  if (Array.isArray(raw) && raw.some((b) => {
     if (typeof b === "string") return b.trim().length > 0;
     if (b && typeof b === "object" && "text" in b && typeof (b as { text: string }).text === "string") {
       return (b as { text: string }).text.trim().length > 0;
     }
     return false;
-  });
+  })) {
+    return true;
+  }
+  return (row.subtask_updates ?? []).length > 0;
 }
 
 function sortRowsWithinSection(rows: StatusReportRow[]): StatusReportRow[] {
@@ -214,12 +218,12 @@ export function StatusReportView() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      <ViewPageHeader tabKey="status_report" />
       <FilterBar view="board" />
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-wp-stone bg-white/60 px-4 py-2">
-        <div className="text-sm">
-          <span className="font-semibold text-wp-ink">Weekly Status Report</span>
-          <span className="ml-2 text-xs text-wp-slate">
+        <div className="text-sm text-wp-slate">
+          <span>
             Week of {report.data?.week_of ?? "…"}
             {stats.total > 0 ? (
               <>
@@ -494,6 +498,12 @@ export function StatusReportView() {
                                 No detailed bullets submitted for this week.
                               </span>
                             )}
+                            <SubtaskStatusUpdatesDisplay
+                              subtaskUpdates={r.subtask_updates ?? []}
+                              projectTitleById={
+                                new Map((projects.data ?? []).map((p) => [p.id, p.title]))
+                              }
+                            />
                           </div>
                         </Collapsible>
                       </td>

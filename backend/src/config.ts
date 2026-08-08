@@ -109,4 +109,9 @@ export const config = {
     apiKey: process.env.ANTHROPIC_API_KEY ?? "",
     model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-5-20250929",
   },
+  /** Public Kalshi Trade API — no key required for market listings. */
+  kalshi: {
+    apiBaseUrl:
+      process.env.KALSHI_API_BASE_URL ?? "https://external-api.kalshi.com/trade-api/v2",
+  },
 };

@@ -18,6 +18,9 @@ import {
   type TshirtBucket,
 } from "../ai/estimator.js";
 import { newlyAddedMentionIds } from "../lib/mentions.js";
+import {
+  syncDesignQueueAfterProjectLaneChange,
+} from "../lib/designQueue.js";
 import { fireMentionEmail } from "../notifications/mentionEmail.js";
 
 /** Ordered phase-date fields, earliest → latest. Used by both the
@@ -873,6 +876,15 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
       }
     }
 
+    if (laneId) {
+      await syncDesignQueueAfterProjectLaneChange(client, {
+        groupId,
+        projectId,
+        toLaneId: laneId,
+        userId: req.user!.id,
+      });
+    }
+
     const { rows: finalRows } = await client.query<ProjectRow>(
       `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
       [projectId],
@@ -1293,6 +1305,13 @@ async function moveProjectImpl(
       field: "swim_lane_id",
       from,
       to,
+    });
+
+    await syncDesignQueueAfterProjectLaneChange(client, {
+      groupId: args.groupId,
+      projectId: existing.id,
+      toLaneId: to,
+      userId: args.userId,
     });
   }
 

@@ -1,9 +1,11 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { pool } from "./pool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const isCliEntry =
+  process.argv[1] != null && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 
 async function ensureMigrationsTable() {
   await pool.query(`
@@ -21,7 +23,8 @@ async function appliedMigrations(): Promise<Set<string>> {
   return new Set(rows.map((r) => r.name));
 }
 
-async function main() {
+/** Apply pending SQL migrations. Safe to call on every API boot (Docker CMD does this). */
+export async function runMigrations(): Promise<void> {
   const dir = path.join(__dirname, "migrations");
   const files = (await readdir(dir)).filter((f) => f.endsWith(".sql")).sort();
 
@@ -50,10 +53,16 @@ async function main() {
   }
 
   console.log("Migrations complete.");
+}
+
+async function main() {
+  await runMigrations();
   await pool.end();
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (isCliEntry) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

@@ -5,6 +5,7 @@ import { requireSuperUser } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
 import type { AppConstants, GroupRow, Role } from "../types.js";
 import { deriveConstants } from "../lib/groupConstants.js";
+import { isTabLabelKey } from "../lib/navTabs.js";
 
 /**
  * Groups (tenants) CRUD + membership management.
@@ -267,11 +268,30 @@ const weeklyStatusSchedulePatchSchema = z
   })
   .strict();
 
+const tabLabelValueSchema = z.string().trim().min(1).max(40).nullable();
+
+const tabLabelsPatchSchema = z
+  .object({
+    board: tabLabelValueSchema.optional(),
+    prioritization: tabLabelValueSchema.optional(),
+    roadmap: tabLabelValueSchema.optional(),
+    status_report: tabLabelValueSchema.optional(),
+    ezestimates: tabLabelValueSchema.optional(),
+    kpis: tabLabelValueSchema.optional(),
+    phases: tabLabelValueSchema.optional(),
+    simple_features: tabLabelValueSchema.optional(),
+    design: tabLabelValueSchema.optional(),
+    admin: tabLabelValueSchema.optional(),
+  })
+  .strict();
+
 const constantsPatchSchema = z
   .object({
     app_name: z.string().trim().min(1).max(60).nullable().optional(),
     email_title: z.string().trim().min(1).max(80).nullable().optional(),
+    tab_labels: tabLabelsPatchSchema.nullable().optional(),
     weekly_status_schedule: weeklyStatusSchedulePatchSchema.nullable().optional(),
+    prediction_game_regenerate_enabled: z.boolean().optional(),
   })
   .strict();
 
@@ -294,6 +314,27 @@ function mergeConstantsBag(
     else bag.email_title = body.email_title;
   }
 
+  if (body.tab_labels !== undefined) {
+    if (body.tab_labels === null) {
+      delete bag.tab_labels;
+    } else {
+      const cur =
+        bag.tab_labels &&
+        typeof bag.tab_labels === "object" &&
+        !Array.isArray(bag.tab_labels)
+          ? { ...(bag.tab_labels as Record<string, unknown>) }
+          : {};
+      for (const [k, v] of Object.entries(body.tab_labels)) {
+        if (!isTabLabelKey(k)) continue;
+        if (v === undefined) continue;
+        if (v === null) delete cur[k];
+        else cur[k] = v;
+      }
+      if (Object.keys(cur).length === 0) delete bag.tab_labels;
+      else bag.tab_labels = cur;
+    }
+  }
+
   if (body.weekly_status_schedule !== undefined) {
     if (body.weekly_status_schedule === null) {
       delete bag.weekly_status_schedule;
@@ -311,6 +352,10 @@ function mergeConstantsBag(
       }
       bag.weekly_status_schedule = cur;
     }
+  }
+
+  if (body.prediction_game_regenerate_enabled !== undefined) {
+    bag.prediction_game_regenerate_enabled = body.prediction_game_regenerate_enabled;
   }
 
   return bag;

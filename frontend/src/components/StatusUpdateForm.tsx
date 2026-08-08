@@ -2,19 +2,28 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
-import { usePendingStatus, useProjectStatusUpdates } from "../lib/queries";
-import type { HealthFlag, WeeklyStatusUpdate } from "../lib/types";
+import { usePendingStatus, useProjectStatusUpdates, useProjects } from "../lib/queries";
+import type { HealthFlag, SubtaskStatusUpdateEntry, WeeklyStatusUpdate } from "../lib/types";
 import { StatusPill } from "./StatusPill";
 import { HealthFlagSelect } from "./HealthFlagSelect";
 import { MutationErrorBanner } from "./MutationErrorBanner";
+import { EpicSubtaskStatusUpdates, parseSubtaskStatusUpdatesForForm } from "./EpicSubtaskStatusUpdates";
 import { format } from "date-fns";
 
 const SOFT_SUMMARY_LIMIT = 400;
 
+function cleanSubtaskUpdates(entries: SubtaskStatusUpdateEntry[]): SubtaskStatusUpdateEntry[] {
+  return entries
+    .map((e) => ({ ...e, update_text: e.update_text.trim() }))
+    .filter((e) => e.update_text.length > 0);
+}
+
 export function StatusUpdateForm({ projectId }: { projectId: string }) {
   const pending = usePendingStatus();
   const updates = useProjectStatusUpdates(projectId);
+  const projects = useProjects();
   const qc = useQueryClient();
+  const isEpic = projects.data?.find((p) => p.id === projectId)?.type === "epic";
 
   const currentWeek = pending.data?.week_of ?? new Date().toISOString().slice(0, 10);
   const dueAt = pending.data?.due_at ?? null;
@@ -26,14 +35,19 @@ export function StatusUpdateForm({ projectId }: { projectId: string }) {
   const [flag, setFlag] = useState<HealthFlag | "">((existing?.health_flag as HealthFlag | undefined) === "white" ? "" : (existing?.health_flag ?? ""));
   const [summary, setSummary] = useState(existing?.executive_summary ?? "");
   const [bullets, setBullets] = useState<string[]>(existing?.detailed_update?.length ? existing.detailed_update : []);
+  const [subtaskUpdates, setSubtaskUpdates] = useState<SubtaskStatusUpdateEntry[]>(
+    parseSubtaskStatusUpdatesForForm(existing?.subtask_updates),
+  );
 
   useEffect(() => {
     setFlag((existing?.health_flag as HealthFlag | undefined) === "white" ? "" : (existing?.health_flag ?? ""));
     setSummary(existing?.executive_summary ?? "");
     setBullets(existing?.detailed_update?.length ? existing.detailed_update : []);
+    setSubtaskUpdates(parseSubtaskStatusUpdatesForForm(existing?.subtask_updates));
   }, [existing?.id, projectId]);
 
   const cleanBullets = bullets.map((b) => b.trim()).filter(Boolean);
+  const cleanSubtasks = cleanSubtaskUpdates(subtaskUpdates);
   const canSubmit = !!flag;
   const overdue = dueAt ? new Date(dueAt) < new Date() && !existing?.completed : false;
 
@@ -45,6 +59,7 @@ export function StatusUpdateForm({ projectId }: { projectId: string }) {
         health_flag: flag || undefined,
         executive_summary: summary,
         detailed_update: cleanBullets,
+        subtask_updates: v.completed ? cleanSubtasks : subtaskUpdates,
         completed: v.completed,
       }),
     }),
@@ -115,6 +130,21 @@ export function StatusUpdateForm({ projectId }: { projectId: string }) {
           </button>
         </div>
       </div>
+
+      {isEpic ? (
+        <div>
+          <label className="text-xs font-medium text-wp-slate">
+            Subtask updates <span className="text-wp-slate/70">(optional)</span>
+          </label>
+          <div className="mt-1">
+            <EpicSubtaskStatusUpdates
+              epicId={projectId}
+              subtaskUpdates={subtaskUpdates}
+              onChange={setSubtaskUpdates}
+            />
+          </div>
+        </div>
+      ) : null}
 
       <MutationErrorBanner mutation={mutation} />
 

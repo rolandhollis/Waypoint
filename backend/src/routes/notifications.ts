@@ -102,11 +102,9 @@ notificationsRouter.post("/unsubscribe", async (req, res) => {
  *   - `dry_run: true` — no emails, no notification_log rows,
  *     returns "who would be nagged." Safe to click any number of
  *     times, useful for preview.
- *   - Real run — sends immediately. Uses the same idempotency
- *     guard as the cron path (notification_log unique index on
- *     kind + user_id + week_of), so clicking it after the Monday
- *     cron has already fired is a no-op for anyone who already
- *     got their email.
+ *   - Real run — sends immediately to every pending owner in the
+ *     caller's group, even if they already received a reminder this
+ *     week.
  *
  * Scope: always the caller's current group. A super-admin sitting
  * in RetailMeNot who clicks "Send" won't accidentally spam
@@ -120,7 +118,6 @@ const runReminderJobSchema = z.object({
 
 const runDigestJobSchema = z.object({
   dry_run: z.boolean().optional().default(false),
-  force_resend: z.boolean().optional().default(false),
   admin_note: z.string().trim().max(2000).optional(),
 });
 
@@ -155,7 +152,6 @@ notificationsRouter.post(
     const body = runDigestJobSchema.parse(req.body ?? {});
     const result = await runStatusReportDigest({
       dryRun: body.dry_run,
-      forceResend: body.force_resend,
       scopeGroupId: req.groupId!,
       adminNote: body.admin_note,
     });
