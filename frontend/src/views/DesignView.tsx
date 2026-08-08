@@ -888,7 +888,6 @@ function ItemRowSummary({
             </span>
           ) : null}
         </div>
-        <p className="mt-0.5 text-xs text-wp-slate">{item.creator_name}</p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
         {canWrite && showComplete ? (
