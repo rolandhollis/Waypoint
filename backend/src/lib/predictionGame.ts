@@ -7,6 +7,7 @@ import {
 import { config } from "../config.js";
 import {
   formatKalshiCloseHint,
+  fetchKalshiMarketSettlement,
   pickKalshiMarketForGame,
 } from "./kalshiMarkets.js";
 import {
@@ -14,6 +15,7 @@ import {
   isPredictionVotingOpen,
   predictionGameDate,
   predictionGameDateLabel,
+  previousPredictionGameDate,
   predictionVoteCutoffAt,
   predictionVoteOpenAt,
 } from "./predictionGameTime.js";
@@ -159,6 +161,12 @@ export async function generateQuestionForGroup(
     throw new Error("ANTHROPIC_API_KEY not configured");
   }
 
+  try {
+    await autoResolvePreviousDayQuestion(groupId, gameDate);
+  } catch (err) {
+    console.error(`[prediction-game] auto-resolve failed group=${groupId}:`, err);
+  }
+
   const tenantName = await loadGroupName(groupId);
 
   let draft;
@@ -275,7 +283,7 @@ export async function castPredictionVote(
 export async function resolvePredictionQuestion(
   groupId: string,
   questionId: string,
-  resolverId: string,
+  resolverId: string | null,
   outcome: boolean,
   note?: string,
 ): Promise<PredictionQuestionDto> {
@@ -293,6 +301,52 @@ export async function resolvePredictionQuestion(
   const row = rows[0];
   if (!row) throw new PredictionGameError("not_found", "Question not found.");
   return mapQuestion(row);
+}
+
+/**
+ * Resolve yesterday's unanswered question from Kalshi settlement when
+ * the cron (or manual generate) publishes a new daily question.
+ */
+export async function autoResolvePreviousDayQuestion(
+  groupId: string,
+  gameDate = predictionGameDate(),
+): Promise<PredictionQuestionDto | null> {
+  const prevDate = previousPredictionGameDate(gameDate);
+  const question = await loadQuestionByDate(groupId, prevDate);
+  if (!question) return null;
+  if (question.outcome !== null) return null;
+
+  const ticker = question.kalshi_market_ticker?.trim();
+  if (!ticker) {
+    console.log(
+      `[prediction-game] skip auto-resolve group=${groupId} date=${prevDate} (no Kalshi ticker — resolve manually)`,
+    );
+    return null;
+  }
+
+  const settlement = await fetchKalshiMarketSettlement(ticker);
+  if (!settlement || settlement.outcome === null) {
+    console.log(
+      `[prediction-game] Kalshi not settled yet ticker=${ticker} status=${settlement?.status ?? "unknown"} date=${prevDate}`,
+    );
+    return null;
+  }
+
+  const voteCounts = await loadVoteCounts(question.id);
+  const winners = settlement.outcome ? voteCounts.will_happen : voteCounts.will_not_happen;
+  const note = `Auto-resolved from Kalshi (${ticker} → ${settlement.outcome ? "yes" : "no"}). ${winners} voter(s) guessed correctly.`;
+
+  const resolved = await resolvePredictionQuestion(
+    groupId,
+    question.id,
+    null,
+    settlement.outcome,
+    note,
+  );
+  console.log(
+    `[prediction-game] auto-resolved group=${groupId} date=${prevDate} outcome=${settlement.outcome ? "yes" : "no"} winners=${winners}`,
+  );
+  return resolved;
 }
 
 export type PredictionHistoryRow = PredictionQuestionDto & {

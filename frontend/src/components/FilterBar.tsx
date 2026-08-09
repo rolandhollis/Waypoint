@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import { Star, X } from "lucide-react";
 import { cn } from "../lib/cn";
 import { useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
-import { countActiveFilters } from "../lib/filtering";
+import { countActiveFilters, FILTER_UNASSIGNED_OWNER, FILTER_UNASSIGNED_TEAM, filterOwnerChipLabel, filterTeamChipLabel } from "../lib/filtering";
 import { emptyFilters, useViewStore, type ColorBy, type GroupBy, type ViewKey } from "../lib/viewState";
 import { MultiSelect } from "./MultiSelect";
 
@@ -111,13 +111,19 @@ export function FilterBar({
         />
         <MultiSelect
           label="Owner"
-          options={(users.data ?? []).map((u) => ({ id: u.id, label: u.name }))}
+          options={[
+            { id: FILTER_UNASSIGNED_OWNER, label: "Unassigned" },
+            ...(users.data ?? []).map((u) => ({ id: u.id, label: u.name })),
+          ]}
           value={filters.ownerIds}
           onChange={(v) => setFilters(view, { ...filters, ownerIds: v })}
         />
         <MultiSelect
           label="Team"
-          options={(teams.data ?? []).map((t) => ({ id: t.id, label: t.name }))}
+          options={[
+            { id: FILTER_UNASSIGNED_TEAM, label: "Unassigned" },
+            ...(teams.data ?? []).map((t) => ({ id: t.id, label: t.name })),
+          ]}
           value={filters.teamIds}
           onChange={(v) => setFilters(view, { ...filters, teamIds: v })}
         />
@@ -255,12 +261,10 @@ function renderChips(
   );
 
   for (const id of filters.ownerIds) {
-    const u = users.find((x) => x.id === id);
-    chips.push(chip(`o-${id}`, `Owner: ${u?.name ?? id}`, () => patch({ ownerIds: filters.ownerIds.filter((x) => x !== id) })));
+    chips.push(chip(`o-${id}`, `Owner: ${filterOwnerChipLabel(id, users)}`, () => patch({ ownerIds: filters.ownerIds.filter((x) => x !== id) })));
   }
   for (const id of filters.teamIds) {
-    const t = teams.find((x) => x.id === id);
-    chips.push(chip(`t-${id}`, `Team: ${t?.name ?? id}`, () => patch({ teamIds: filters.teamIds.filter((x) => x !== id) })));
+    chips.push(chip(`t-${id}`, `Team: ${filterTeamChipLabel(id, teams)}`, () => patch({ teamIds: filters.teamIds.filter((x) => x !== id) })));
   }
   for (const id of filters.swimLaneIds) {
     const l = lanes.find((x) => x.id === id);

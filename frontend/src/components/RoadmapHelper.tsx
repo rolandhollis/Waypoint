@@ -33,6 +33,12 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import {
+  FILTER_UNASSIGNED_OWNER,
+  FILTER_UNASSIGNED_TEAM,
+  matchesOwnerFilter,
+  matchesTeamFilter,
+} from "../lib/filtering";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import {
   isSchedulable,
@@ -156,18 +162,22 @@ export function RoadmapHelper({
   const [teamFilter, setTeamFilter] = useState<Set<string>>(() => {
     if (!initialTeamIds?.length) return new Set();
     const validIds = new Set(teams.map((t) => t.id));
-    return new Set(initialTeamIds.filter((id) => validIds.has(id)));
+    return new Set(
+      initialTeamIds.filter((id) => validIds.has(id) || id === FILTER_UNASSIGNED_TEAM),
+    );
   });
   const [ownerFilter, setOwnerFilter] = useState<Set<string>>(() => {
     if (!initialOwnerIds?.length) return new Set();
     const validIds = new Set(users.map((u) => u.id));
-    return new Set(initialOwnerIds.filter((id) => validIds.has(id)));
+    return new Set(
+      initialOwnerIds.filter((id) => validIds.has(id) || id === FILTER_UNASSIGNED_OWNER),
+    );
   });
 
   const filtered = useMemo(() => {
     return eligible.filter((p) => {
-      if (teamFilter.size && !p.teams.some((t) => teamFilter.has(t))) return false;
-      if (ownerFilter.size && (!p.owner_id || !ownerFilter.has(p.owner_id))) return false;
+      if (teamFilter.size && !matchesTeamFilter(p.teams, Array.from(teamFilter))) return false;
+      if (ownerFilter.size && !matchesOwnerFilter(p.owner_id, Array.from(ownerFilter))) return false;
       return true;
     });
   }, [eligible, teamFilter, ownerFilter]);
@@ -510,14 +520,20 @@ function PickPhase(props: {
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <FilterChips
             label="Teams"
-            options={teams.map((t) => ({ id: t.id, label: t.name, color: t.color }))}
+            options={[
+              { id: FILTER_UNASSIGNED_TEAM, label: "Unassigned", color: null },
+              ...teams.map((t) => ({ id: t.id, label: t.name, color: t.color })),
+            ]}
             selected={teamFilter}
             onToggle={toggleTeam}
             onClear={() => setTeamFilter(new Set())}
           />
           <FilterChips
             label="Owners"
-            options={users.map((u) => ({ id: u.id, label: u.name, color: u.color }))}
+            options={[
+              { id: FILTER_UNASSIGNED_OWNER, label: "Unassigned", color: null },
+              ...users.map((u) => ({ id: u.id, label: u.name, color: u.color ?? null })),
+            ]}
             selected={ownerFilter}
             onToggle={toggleOwner}
             onClear={() => setOwnerFilter(new Set())}

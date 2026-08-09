@@ -86,6 +86,8 @@ type KalshiMarketRaw = {
   yes_ask_dollars?: string;
   volume_24h_fp?: string;
   open_interest_fp?: string;
+  result?: string;
+  status?: string;
 };
 
 type KalshiEventRaw = {
@@ -578,6 +580,37 @@ export async function pickEventForToday(gameDate: string): Promise<KalshiPickRes
 export async function pickKalshiMarketForGame(gameDate: string): Promise<KalshiMarketCandidate | null> {
   const result = await pickEventForToday(gameDate);
   return result?.pick ?? null;
+}
+
+type KalshiSingleMarketResponse = {
+  market?: KalshiMarketRaw;
+};
+
+export type KalshiMarketSettlement = {
+  ticker: string;
+  status: string;
+  /** true = yes, false = no; null when unsettled or non-binary. */
+  outcome: boolean | null;
+};
+
+/** Look up a settled Kalshi market outcome for auto-resolving prediction questions. */
+export async function fetchKalshiMarketSettlement(ticker: string): Promise<KalshiMarketSettlement | null> {
+  try {
+    const data = await kalshiGet<KalshiSingleMarketResponse>(
+      `markets/${encodeURIComponent(ticker)}`,
+      new URLSearchParams(),
+    );
+    const m = data.market;
+    if (!m?.ticker) return null;
+    const result = String(m.result ?? "").trim().toLowerCase();
+    const status = String(m.status ?? "").trim().toLowerCase();
+    if (result === "yes") return { ticker: m.ticker, status, outcome: true };
+    if (result === "no") return { ticker: m.ticker, status, outcome: false };
+    return { ticker: m.ticker, status, outcome: null };
+  } catch (err) {
+    console.warn(`[kalshi] settlement lookup failed for ${ticker}:`, err);
+    return null;
+  }
 }
 
 export function formatKalshiCloseHint(closeTimeIso: string): string {

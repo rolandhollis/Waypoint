@@ -6,6 +6,7 @@ import {
   predictionGameRegenerateEnabled,
 } from "../lib/groupConstants.js";
 import {
+  autoResolvePreviousDayQuestion,
   buildTodayPayload,
   castPredictionVote,
   generateQuestionForGroup,
@@ -14,6 +15,7 @@ import {
   PredictionQuestionParseError,
   resolvePredictionQuestion,
 } from "../lib/predictionGame.js";
+import { predictionGameDate } from "../lib/predictionGameTime.js";
 import { requireAdmin } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
 
@@ -113,6 +115,22 @@ predictionGameRouter.post("/:id/resolve", requireAdmin, async (req, res) => {
     throw err;
   }
 });
+
+/** Cron entry: resolve yesterday's question from Kalshi when settled. */
+export async function autoResolveDailyPredictionQuestions(): Promise<void> {
+  const gameDate = predictionGameDate();
+  const { rows } = await query<{ id: string; name: string }>(`SELECT id, name FROM groups`);
+  for (const group of rows) {
+    try {
+      const resolved = await autoResolvePreviousDayQuestion(group.id, gameDate);
+      if (resolved) {
+        console.log(`[prediction-game] auto-resolved previous day for group=${group.name}`);
+      }
+    } catch (err) {
+      console.error(`[prediction-game] auto-resolve failed for group=${group.id}:`, err);
+    }
+  }
+}
 
 /** Cron entry: generate today's question for every group. */
 export async function generateDailyPredictionQuestions(): Promise<void> {

@@ -14,6 +14,12 @@ import { format } from "date-fns";
 import { cn } from "../lib/cn";
 import { pillTextColor, tint } from "../lib/colors";
 import {
+  FILTER_UNASSIGNED_OWNER,
+  FILTER_UNASSIGNED_TEAM,
+  matchesOwnerFilter,
+  matchesTeamFilter,
+} from "../lib/filtering";
+import {
   useProjects,
   useSwimLanes,
   useUsers,
@@ -135,14 +141,18 @@ export function PrioritizationFinderPanel({
   // rows. Sorted alphabetically to match the FilterBar convention.
   const teamOptions = useMemo(() => {
     const seen = new Map<string, string>();
+    let hasUnassigned = false;
     for (const r of rows) {
+      if (!r.team_ids.length) hasUnassigned = true;
       r.team_ids.forEach((id, i) => {
         if (!seen.has(id)) seen.set(id, r.team_names[i] ?? id);
       });
     }
-    return Array.from(seen.entries())
+    const opts = Array.from(seen.entries())
       .map(([id, label]) => ({ id, label }))
       .sort((a, b) => a.label.localeCompare(b.label));
+    if (hasUnassigned) opts.unshift({ id: FILTER_UNASSIGNED_TEAM, label: "Unassigned" });
+    return opts;
   }, [rows]);
 
   const laneOptions = useMemo(() => {
@@ -155,20 +165,22 @@ export function PrioritizationFinderPanel({
 
   const ownerOptions = useMemo(() => {
     const seen = new Set<string>();
+    let hasUnassigned = false;
     for (const r of rows) {
       const ownerId = ownerIdByProject.get(r.id) ?? null;
-      if (ownerId) seen.add(ownerId);
+      if (!ownerId) hasUnassigned = true;
+      else seen.add(ownerId);
     }
-    return Array.from(seen)
+    const opts = Array.from(seen)
       .map((id) => ({ id, label: userNameById.get(id) ?? id }))
       .sort((a, b) => a.label.localeCompare(b.label));
+    if (hasUnassigned) opts.unshift({ id: FILTER_UNASSIGNED_OWNER, label: "Unassigned" });
+    return opts;
   }, [rows, ownerIdByProject, userNameById]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const teamSet = teamFilter.length ? new Set(teamFilter) : null;
     const laneSet = laneFilter.length ? new Set(laneFilter) : null;
-    const ownerSet = ownerFilter.length ? new Set(ownerFilter) : null;
 
     const matches = rows.filter((r) => {
       if (q) {
@@ -179,12 +191,10 @@ export function PrioritizationFinderPanel({
         const inDesc = !inTitle && r.description.toLowerCase().includes(q);
         if (!inTitle && !inDesc) return false;
       }
-      if (teamSet && !r.team_ids.some((id) => teamSet.has(id))) return false;
+      if (!matchesTeamFilter(r.team_ids, teamFilter)) return false;
       if (laneSet && (!r.swim_lane_id || !laneSet.has(r.swim_lane_id))) return false;
-      if (ownerSet) {
-        const ownerId = ownerIdByProject.get(r.id) ?? null;
-        if (!ownerId || !ownerSet.has(ownerId)) return false;
-      }
+      const ownerId = ownerIdByProject.get(r.id) ?? null;
+      if (!matchesOwnerFilter(ownerId, ownerFilter)) return false;
       return true;
     });
 

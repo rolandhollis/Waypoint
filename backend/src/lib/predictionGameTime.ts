@@ -1,3 +1,4 @@
+import { subDays } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { config } from "../config.js";
 
@@ -16,6 +17,12 @@ export const PREDICTION_SETTLEMENT_COMPLETE_BUFFER_MINUTES = 60;
 /** Calendar date (yyyy-MM-dd) for the prediction game in reporting TZ. */
 export function predictionGameDate(now: Date = new Date()): string {
   return formatInTimeZone(now, PREDICTION_GAME_TIMEZONE, "yyyy-MM-dd");
+}
+
+/** Calendar date for the prediction game immediately before `gameDate`. */
+export function previousPredictionGameDate(gameDate: string): string {
+  const anchor = fromZonedTime(`${gameDate}T12:00:00`, PREDICTION_GAME_TIMEZONE);
+  return formatInTimeZone(subDays(anchor, 1), PREDICTION_GAME_TIMEZONE, "yyyy-MM-dd");
 }
 
 /** Human-readable long date for prompts and UI. */

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { ClipboardCopy, FileDown, Link2, Loader2, Wand2, X } from "lucide-react";
 import { useCanWrite, useKpis, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
-import { applyFilters } from "../lib/filtering";
+import { applyFilters, FILTER_UNASSIGNED_TEAM } from "../lib/filtering";
 import { useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { indexById } from "../lib/hierarchy";
@@ -448,9 +448,11 @@ export function RoadmapView() {
   // be an inert no-op but gating here keeps the intent obvious at
   // the call site. Both Rows and Compact consume the same pinned
   // list so a style flip doesn't reshuffle section order.
-  const pinnedGroupKeys = groupBy === "team" && filters.teamIds.length > 0
-    ? filters.teamIds
-    : undefined;
+  const pinnedTeamIds =
+    groupBy === "team" && filters.teamIds.length > 0
+      ? filters.teamIds.filter((id) => id !== FILTER_UNASSIGNED_TEAM)
+      : [];
+  const pinnedGroupKeys = pinnedTeamIds.length > 0 ? pinnedTeamIds : undefined;
 
   // Pre-compute the AI Roadmap Headline inputs from the SAME
   // scheduled-in-viewport set the Gantt renders. Only scheduled
