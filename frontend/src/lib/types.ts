@@ -275,7 +275,7 @@ export type ProjectDependency = {
  * catalog table. The link-label picker sources its suggestions
  * from `GET /links/label-suggestions` (DISTINCT labels across the
  * caller's group) unioned with the built-in defaults
- * (`Jira`, `Confluence`) — see `useLinkLabelSuggestions`.
+ * (`Jira`, `PRD`, `Confluence`, `Figma`, `Other`) — see `useLinkLabelSuggestions`.
  *
  * `position` is present so a future drag-reorder UI can land as a
  * full-replace without a migration; no reorder affordance ships yet.

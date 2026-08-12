@@ -14,11 +14,10 @@ import { useLinkLabelSuggestions } from "../lib/queries";
  *
  * Order is deliberate — tickets first (most common quick-jump),
  * then doc-like artifacts (PRD, Confluence) grouped together, then
- * design (Figma) at the end. New link-shaped artifacts should slot
- * in with their kind rather than at the tail so users see related
- * options adjacent in the dropdown.
+ * design (Figma), then a catch-all "Other" at the end for anything
+ * that doesn't fit the named types.
  */
-export const BUILT_IN_LABELS = ["Jira", "PRD", "Confluence", "Figma"] as const;
+export const BUILT_IN_LABELS = ["Jira", "PRD", "Confluence", "Figma", "Other"] as const;
 
 /** Default label the parent form should preseed on a fresh link. */
 export const DEFAULT_NEW_LABEL = "Jira";
@@ -28,7 +27,7 @@ export const DEFAULT_NEW_LABEL = "Jira";
  *   * the server-side DISTINCT list (per-group, via
  *     useLinkLabelSuggestions),
  *   * the built-in defaults (see BUILT_IN_LABELS above — currently
- *     Jira, PRD, Confluence, Figma),
+ *     Jira, PRD, Confluence, Figma, Other),
  *   * anything already typed into the input that doesn't match
  *     — surfaced as a "Create '<typed>'" row so a brand-new label
  *     can be coined inline without leaving the form.
@@ -84,7 +83,8 @@ export function LinkLabelPicker({
   //   1. Built-in defaults (BUILT_IN_LABELS) — first, so they
   //      surface even when the server list is empty. Order within
   //      the built-in list is preserved (tickets, then docs, then
-  //      design), NOT alphabetized, so related types stay adjacent.
+  //      design, then Other), NOT alphabetized, so related types
+  //      stay adjacent.
   //   2. Server-side DISTINCT labels, alphabetical (server already
   //      sorts by lower(label) but we resort defensively so a
   //      case-quirk in the DB doesn't leak here).

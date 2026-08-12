@@ -35,7 +35,17 @@ function formatIsoDateShort(iso: string): string {
  * flagged `is_default_new`). Users can override the pick before
  * submit; the chosen lane id ships in the create POST body.
  */
-export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: string | null; onClose: () => void }) {
+export function NewProjectDialog({
+  defaultLaneId,
+  onClose,
+  onCreated,
+}: {
+  defaultLaneId: string | null;
+  onClose: () => void;
+  /** Fires after a successful create with the new project row, so
+   *  the Board can offer a "open & edit" toast without re-querying. */
+  onCreated?: (project: Project) => void;
+}) {
   const me = useMe();
   const lanes = useSwimLanes();
   const isAdmin = useIsAdmin();
@@ -130,8 +140,9 @@ export function NewProjectDialog({ defaultLaneId, onClose }: { defaultLaneId: st
         }),
       });
     },
-    onSuccess: () => {
+    onSuccess: (project) => {
       qc.invalidateQueries({ queryKey: ["projects"] });
+      onCreated?.(project);
       onClose();
     },
   });

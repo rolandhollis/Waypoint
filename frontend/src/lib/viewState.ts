@@ -308,6 +308,20 @@ type Store = {
    */
   setShowConflicts: (v: boolean) => void;
   /**
+   * Board swim-lane column visibility. Ids listed here are hidden
+   * from the Board's column strip until the user restores them via
+   * the "Hidden lanes" chips. Persisted per-browser so a returning
+   * PM keeps their decluttered layout. Does not affect filters,
+   * card data, or drag destinations for still-visible columns.
+   */
+  boardHiddenSwimLaneIds: string[];
+  /** Hide a Board swim-lane column (idempotent). */
+  hideBoardSwimLane: (laneId: string) => void;
+  /** Restore a previously hidden Board swim-lane column. */
+  showBoardSwimLane: (laneId: string) => void;
+  /** Restore every hidden Board swim-lane column in one click. */
+  showAllBoardSwimLanes: () => void;
+  /**
    * Set the persisted Roadmap timeframe. Accepts any `Zoom` value
    * (including `"quarters"`), which is what lets the same setter
    * back the whole segmented control including the Quarters swap-
@@ -452,6 +466,10 @@ export const useViewStore = create<Store>()(
       // roadmap has always rendered. Users who prefer the clean-
       // presentation mode opt in explicitly via the checkbox.
       showConflicts: true,
+      // No Board columns hidden on first visit — every swim lane
+      // renders. Users opt in to declutter via the per-column hide
+      // control; the pick persists across reloads.
+      boardHiddenSwimLaneIds: [],
       // Historical local-state default was `"6mo"` — kept here so a
       // first-time visit lands on the exact same six-month Gantt
       // returning users had before the pick started persisting.
@@ -545,6 +563,17 @@ export const useViewStore = create<Store>()(
       clearRoadmapOverrides: () =>
         set((s) => ({ ...s, roadmapOverrideByGroup: {} })),
       setShowConflicts: (v) => set(() => ({ showConflicts: v })),
+      hideBoardSwimLane: (laneId) =>
+        set((s) =>
+          s.boardHiddenSwimLaneIds.includes(laneId)
+            ? s
+            : { boardHiddenSwimLaneIds: [...s.boardHiddenSwimLaneIds, laneId] },
+        ),
+      showBoardSwimLane: (laneId) =>
+        set((s) => ({
+          boardHiddenSwimLaneIds: s.boardHiddenSwimLaneIds.filter((id) => id !== laneId),
+        })),
+      showAllBoardSwimLanes: () => set(() => ({ boardHiddenSwimLaneIds: [] })),
       setRoadmapTimeframe: (zoom) => set(() => ({ roadmapTimeframe: zoom })),
       setRoadmapStyle: (style) => set(() => ({ roadmapStyle: style })),
       setAdminActiveTab: (key) => set(() => ({ adminActiveTab: key })),
@@ -605,7 +634,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 16,
+      version: 17,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -781,6 +810,14 @@ export const useViewStore = create<Store>()(
             || !validGroupBy.includes(persisted.statusReportGroupBy)
           ) {
             persisted.statusReportGroupBy = "swim_lane";
+          }
+        }
+        // < v17: added Board swim-lane column hide list. Default to
+        // empty (every lane visible) so returning users see the same
+        // board they had before the hide control landed.
+        if (version < 17) {
+          if (!Array.isArray(persisted.boardHiddenSwimLaneIds)) {
+            persisted.boardHiddenSwimLaneIds = [];
           }
         }
         return persisted;

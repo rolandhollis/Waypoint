@@ -838,27 +838,35 @@ function ItemRowSummary({
 }) {
   return (
     <div
-      className={cn(
-        "flex items-start gap-2 p-3",
-        dragProps && "cursor-grab touch-none select-none active:cursor-grabbing",
-      )}
-      {...dragProps}
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+      aria-label={`${expanded ? "Collapse" : "Expand"} ${item.name}`}
+      onClick={onToggleExpand}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggleExpand();
+        }
+      }}
+      className="flex cursor-pointer items-start gap-2 p-3 hover:bg-wp-stone/20"
     >
       {dragProps ? (
-        <span className="mt-0.5 shrink-0 text-wp-slate pointer-events-none" aria-hidden="true">
+        <button
+          type="button"
+          className="mt-0.5 shrink-0 cursor-grab touch-none select-none rounded p-0.5 text-wp-slate hover:bg-wp-stone/50 hover:text-wp-ink active:cursor-grabbing"
+          aria-label={`Drag ${item.name}`}
+          title="Drag to reorder"
+          {...dragProps}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
           <GripVertical size={14} />
-        </span>
+        </button>
       ) : null}
-      <button
-        type="button"
-        className="mt-0.5 shrink-0 text-wp-slate hover:text-wp-ink"
-        onClick={onToggleExpand}
-        onPointerDown={(e) => e.stopPropagation()}
-        aria-expanded={expanded}
-        aria-label={expanded ? "Collapse details" : "Expand details"}
-      >
+      <span className="mt-0.5 shrink-0 text-wp-slate" aria-hidden="true">
         <ChevronDown size={16} className={cn("transition", expanded ? "rotate-180" : "")} />
-      </button>
+      </span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium text-wp-ink">{item.name}</span>
@@ -896,7 +904,10 @@ function ItemRowSummary({
             className="btn-ghost !p-1.5 text-emerald-700 hover:text-emerald-900"
             title="Complete"
             aria-label="Complete"
-            onClick={onComplete}
+            onClick={(e) => {
+              e.stopPropagation();
+              onComplete();
+            }}
             onPointerDown={(e) => e.stopPropagation()}
           >
             <Check size={16} />
@@ -908,7 +919,10 @@ function ItemRowSummary({
             className="btn-ghost !p-1.5 text-wp-slate hover:text-wp-red"
             title="Delete"
             aria-label="Delete"
-            onClick={onDelete}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
             onPointerDown={(e) => e.stopPropagation()}
           >
             <Trash2 size={16} />

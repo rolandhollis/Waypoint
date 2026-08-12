@@ -7,7 +7,7 @@ import {
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpDown, Plus } from "lucide-react";
+import { ArrowUpDown, Eye, EyeOff, Plus, X } from "lucide-react";
 import { ApiError, api } from "../lib/api";
 import { useCanWrite, useIsAdmin, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import type { Project, SwimLane, Team, User } from "../lib/types";
@@ -38,11 +38,28 @@ export function BoardView() {
   const filters = useViewStore((s) => s.board.filters);
   const setFilters = useViewStore((s) => s.setFilters);
   const colorBy = useViewStore((s) => s.board.colorBy);
+  const hiddenLaneIds = useViewStore((s) => s.boardHiddenSwimLaneIds);
+  const hideBoardSwimLane = useViewStore((s) => s.hideBoardSwimLane);
+  const showBoardSwimLane = useViewStore((s) => s.showBoardSwimLane);
+  const showAllBoardSwimLanes = useViewStore((s) => s.showAllBoardSwimLanes);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // `null` = dialog closed. When open, the value is the lane id the new
   // card should land in (empty string means "Unassigned").
   const [newInLane, setNewInLane] = useState<string | null>(null);
+  // Post-create confirmation toast (bottom-right). Offers a one-click
+  // jump into the detail panel so PMs can keep filling in the card
+  // after the create dialog closes.
+  const [createdToast, setCreatedToast] = useState<{
+    projectId: string;
+    title: string;
+    laneName: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!createdToast) return;
+    const t = window.setTimeout(() => setCreatedToast(null), 8000);
+    return () => window.clearTimeout(t);
+  }, [createdToast]);
   // When a cross-lane move lands in a phase-bound lane (see
   // swim_lanes.phase_date_key), we defer showing the prompt until the
   // server confirms the move so the modal isn't rendered on top of a
@@ -155,6 +172,21 @@ export function BoardView() {
   const archiveLaneId = useMemo(
     () => (lanes.data ?? []).find((l) => l.is_archive)?.id ?? null,
     [lanes.data],
+  );
+  // Persist may retain ids for lanes that were later deleted — drop
+  // those so the "Hidden lanes" strip never shows orphans. Kept above
+  // the loading early-return so hook order stays stable.
+  const hiddenIdSet = useMemo(() => {
+    const known = new Set((lanes.data ?? []).map((l) => l.id));
+    return new Set(hiddenLaneIds.filter((id) => known.has(id)));
+  }, [lanes.data, hiddenLaneIds]);
+  const visibleLaneList = useMemo(
+    () => (lanes.data ?? []).filter((l) => !hiddenIdSet.has(l.id)),
+    [lanes.data, hiddenIdSet],
+  );
+  const hiddenLanes = useMemo(
+    () => (lanes.data ?? []).filter((l) => hiddenIdSet.has(l.id)),
+    [lanes.data, hiddenIdSet],
   );
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
@@ -405,6 +437,14 @@ export function BoardView() {
     laneList.filter((l) => !l.is_terminal).sort((a, b) => a.order - b.order)[0] ??
     laneList[0] ??
     null;
+  // Prefer a still-visible landing lane for the Add CTA so new cards
+  // aren't created into a column the PM just hid (they can still pick
+  // any lane inside the dialog).
+  const addDefaultLane =
+    (defaultNewLane && !hiddenIdSet.has(defaultNewLane.id) ? defaultNewLane : null)
+    ?? visibleLaneList.find((l) => !l.is_terminal)
+    ?? visibleLaneList[0]
+    ?? defaultNewLane;
 
   const allProjects = projects.data ?? [];
 
@@ -536,14 +576,48 @@ export function BoardView() {
     <div className="flex h-full flex-col overflow-hidden">
       <ViewPageHeader tabKey="board" />
       <FilterBar view="board" showSwimLaneFilter={false} />
+      {hiddenLanes.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-wp-stone bg-wp-stone/30 px-4 py-2">
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-wp-slate">
+            <EyeOff size={12} />
+            Hidden
+          </span>
+          {hiddenLanes.map((lane) => (
+            <button
+              key={lane.id}
+              type="button"
+              className="chip inline-flex items-center gap-1.5 !border-dashed !bg-white text-xs hover:!border-wp-ink/30 hover:!bg-wp-stone/40"
+              title={`Show ${lane.name}`}
+              onClick={() => showBoardSwimLane(lane.id)}
+            >
+              <span
+                className="inline-block h-2 w-2 rounded-full"
+                style={{ background: lane.color ?? "#94a3b8" }}
+                aria-hidden
+              />
+              {lane.name}
+              <Eye size={11} className="text-wp-slate" />
+            </button>
+          ))}
+          {hiddenLanes.length > 1 ? (
+            <button
+              type="button"
+              className="text-xs text-wp-slate underline-offset-2 hover:text-wp-ink hover:underline"
+              onClick={() => showAllBoardSwimLanes()}
+            >
+              Show all
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {canWrite ? (
         <div className="flex items-center justify-between border-b border-wp-stone bg-white/60 px-4 py-2">
           <p className="text-xs text-wp-slate">
-            New items land in <span className="font-medium text-wp-ink">{defaultNewLane?.name}</span>.
+            New items land in <span className="font-medium text-wp-ink">{addDefaultLane?.name}</span>.
           </p>
           <button
             className="btn-primary inline-flex items-center gap-1.5"
-            onClick={() => setNewInLane(defaultNewLane?.id ?? "")}
+            onClick={() => setNewInLane(addDefaultLane?.id ?? "")}
           >
             <Plus size={14} /> Add new item
           </button>
@@ -560,12 +634,13 @@ export function BoardView() {
       >
         <div className="flex-1 overflow-x-auto overflow-y-hidden">
           <div className="flex h-full min-w-max items-start gap-3 p-4">
-            {laneList.map((lane) => (
+            {visibleLaneList.map((lane) => (
               <LaneColumn
                 key={lane.id}
                 lane={lane}
                 projects={grouped.get(lane.id) ?? []}
                 onOpen={setSelectedId}
+                onHide={() => hideBoardSwimLane(lane.id)}
                 onSort={canWrite ? () => setSortingLaneId(lane.id) : undefined}
                 colorBy={colorBy}
                 users={users.data ?? []}
@@ -575,6 +650,11 @@ export function BoardView() {
                 makeQuickActions={makeQuickActions}
               />
             ))}
+            {visibleLaneList.length === 0 && laneList.length > 0 ? (
+              <div className="flex h-40 w-full min-w-[18rem] items-center justify-center rounded-lg border border-dashed border-wp-stone px-6 text-center text-sm text-wp-slate">
+                All swim lanes are hidden. Click a chip above to show one again.
+              </div>
+            ) : null}
           </div>
         </div>
         <DragOverlay>
@@ -602,11 +682,24 @@ export function BoardView() {
           // the per-lane items in drag-tracked position. Flatten and
           // pass so prev/next walks the board exactly the way the eye
           // does — top of leftmost column to bottom of rightmost.
-          siblingIds={laneList.flatMap((l) => (grouped.get(l.id) ?? []).map((p) => p.id))}
+          siblingIds={visibleLaneList.flatMap((l) => (grouped.get(l.id) ?? []).map((p) => p.id))}
         />
       ) : null}
       {newInLane !== null ? (
-        <NewProjectDialog defaultLaneId={newInLane || null} onClose={() => setNewInLane(null)} />
+        <NewProjectDialog
+          defaultLaneId={newInLane || null}
+          onClose={() => setNewInLane(null)}
+          onCreated={(project) => {
+            const laneName =
+              lanes.data?.find((l) => l.id === project.swim_lane_id)?.name
+              ?? "Unassigned";
+            setCreatedToast({
+              projectId: project.id,
+              title: project.title,
+              laneName,
+            });
+          }}
+        />
       ) : null}
       {sortingLaneId ? (() => {
         // Guard against the lane getting deleted between the button
@@ -638,6 +731,54 @@ export function BoardView() {
           />
         );
       })() : null}
+
+      {/* Bottom-right create confirmation. Auto-dismisses after ~8s;
+          Open jumps into the same detail panel the board already uses. */}
+      {createdToast ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 right-4 z-50 w-[min(22rem,calc(100vw-2rem))]"
+        >
+          <div className="flex items-start gap-3 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2.5 text-xs text-emerald-950 shadow-lg">
+            <div className="min-w-0 flex-1">
+              <p className="font-medium leading-snug">
+                Added to {createdToast.laneName}
+              </p>
+              <p className="mt-0.5 truncate text-emerald-900/80" title={createdToast.title}>
+                {createdToast.title}
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded border border-emerald-400/70 bg-white px-2 py-1 text-[11px] font-medium text-emerald-900 hover:bg-emerald-100"
+                  onClick={() => {
+                    setSelectedId(createdToast.projectId);
+                    setCreatedToast(null);
+                  }}
+                >
+                  Open & edit
+                </button>
+                <button
+                  type="button"
+                  className="rounded px-2 py-1 text-[11px] text-emerald-800/80 hover:bg-emerald-100 hover:text-emerald-950"
+                  onClick={() => setCreatedToast(null)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setCreatedToast(null)}
+              aria-label="Dismiss notification"
+              className="shrink-0 rounded p-0.5 text-emerald-700 hover:bg-emerald-100 hover:text-emerald-900"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -646,6 +787,8 @@ function LaneColumn(props: {
   lane: SwimLane;
   projects: Project[];
   onOpen: (id: string) => void;
+  /** Hide this column from the Board (restorable via Hidden chips). */
+  onHide: () => void;
   /** When provided, renders a "Sort" button in the lane header that
    *  fires this callback. Omitted for viewers so read-only sessions
    *  don't advertise an action they can't take. */
@@ -662,7 +805,7 @@ function LaneColumn(props: {
    *  `moveMutation`/`archiveMutation` closures stays in one place. */
   makeQuickActions: (project: Project) => BoardCardQuickActionsProps | undefined;
 }) {
-  const { lane, projects, onOpen, onSort, colorBy, users, teams, lanes, allProjects, makeQuickActions } = props;
+  const { lane, projects, onOpen, onHide, onSort, colorBy, users, teams, lanes, allProjects, makeQuickActions } = props;
   const droppableId = `lane:${lane.id}`;
 
   return (
@@ -690,21 +833,32 @@ function LaneColumn(props: {
         {lane.is_terminal ? (
           <span className="chip !border-emerald-300 !bg-emerald-50 !text-emerald-800">terminal</span>
         ) : null}
-        {/* Sort trigger anchored to the right of the header so it
-            doesn't fight the lane name / chip cluster for space.
-            Disabled implicitly (not rendered) for viewers via the
-            onSort omission from the parent. */}
-        {onSort && projects.length > 1 ? (
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
             type="button"
-            className="ml-auto btn-ghost !p-1 text-wp-slate hover:text-wp-ink"
-            onClick={onSort}
-            title="Reorder items in this lane"
-            aria-label={`Sort ${lane.name}`}
+            className="btn-ghost !p-1 text-wp-slate hover:text-wp-ink"
+            onClick={onHide}
+            title={`Hide ${lane.name}`}
+            aria-label={`Hide ${lane.name}`}
           >
-            <ArrowUpDown size={14} />
+            <EyeOff size={14} />
           </button>
-        ) : null}
+          {/* Sort trigger stays at the right of the header so it
+              doesn't fight the lane name / chip cluster for space.
+              Disabled implicitly (not rendered) for viewers via the
+              onSort omission from the parent. */}
+          {onSort && projects.length > 1 ? (
+            <button
+              type="button"
+              className="btn-ghost !p-1 text-wp-slate hover:text-wp-ink"
+              onClick={onSort}
+              title="Reorder items in this lane"
+              aria-label={`Sort ${lane.name}`}
+            >
+              <ArrowUpDown size={14} />
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <SortableContext
