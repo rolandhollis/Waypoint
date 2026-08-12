@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { ClipboardCopy, FileDown, Link2, Loader2, Wand2, X } from "lucide-react";
-import { useCanWrite, useKpis, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import { ClipboardCopy, FileDown, Link2, Loader2, Presentation, Wand2, X } from "lucide-react";
+import { useCanWrite, useCurrentGroup, useKpis, useProjects, useRecentAuditEvents, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { applyFilters, FILTER_UNASSIGNED_TEAM } from "../lib/filtering";
-import { useViewStore } from "../lib/viewState";
+import { emptyFilters, useViewStore } from "../lib/viewState";
 import { computePhases } from "../lib/phaseCompute";
 import { indexById } from "../lib/hierarchy";
 import { computeRoadmapChartRange, isProjectInRoadmapViewport } from "../lib/roadmapViewport";
@@ -13,6 +13,8 @@ import {
   hasAnyRoadmapUrlParam,
 } from "../lib/roadmapUrlState";
 import { computeHeadlineGroups } from "../lib/roadmapHeadline";
+import { api } from "../lib/api";
+import type { RecentAuditEventsResponse } from "../lib/types";
 import { useAppDialog } from "../components/AppDialogProvider";
 import { FilterBar } from "../components/FilterBar";
 import { GanttTimeline } from "../components/GanttTimeline";
@@ -34,6 +36,7 @@ export function RoadmapView() {
   const lanes = useSwimLanes();
   const teams = useTeams();
   const users = useUsers();
+  const currentGroup = useCurrentGroup();
   // KPI catalog is fetched here (not inside RoadmapHeadline) so the
   // AI summary can resolve KPI ids to display names without spinning
   // up its own query. The Gantt itself already uses the same query;
@@ -215,6 +218,7 @@ export function RoadmapView() {
   // static artefact).
   const exportRef = useRef<HTMLDivElement | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportingPptx, setExportingPptx] = useState(false);
   // Busy flag for the "Copy image" button. Kept separate from
   // `exporting` so the two actions can independently show / clear
   // their spinners without stepping on each other (e.g. user
@@ -259,6 +263,105 @@ export function RoadmapView() {
     () => new Set(visibleProjects.map((p) => p.id)),
     [visibleProjects],
   );
+
+  async function handleExportPptx() {
+    if (exportingPptx) return;
+    setExportingPptx(true);
+
+    // Snapshot + restore the live roadmap chrome so each product-area
+    // slide can embed a real 6-month Rows Gantt (not a schedule table).
+    // We force the canonical deck view: 6mo + rows + single-team
+    // filter + no grouping/conflicts, then capture
+    // `[data-roadmap-capture-root]` under pdfMode (full chart width,
+    // solid fills that survive html-to-image).
+    const store = useViewStore.getState();
+    const saved = {
+      filters: store.roadmap.filters,
+      groupBy: store.roadmap.groupBy,
+      zoom: store.roadmapTimeframe,
+      style: store.roadmapStyle,
+      showConflicts: store.showConflicts,
+    };
+
+    try {
+      const [
+        { buildRoadmapUpdateDeck },
+        { exportRoadmapUpdatePptx },
+        { captureRoadmapPng },
+      ] = await Promise.all([
+        import("../lib/roadmapUpdateDeck"),
+        import("../lib/exportRoadmapUpdatePptx"),
+        import("../lib/captureRoadmapPng"),
+      ]);
+      // Delivered column needs 30 days of lane-move history; the
+      // on-page Recent Changes feed only loads 7 days.
+      const recent = await api<RecentAuditEventsResponse>("/projects/audit/recent?days=30");
+      const deck = buildRoadmapUpdateDeck({
+        teams: teams.data ?? [],
+        lanes: lanes.data ?? [],
+        projects: projects.data ?? [],
+        recentEvents: recent.events,
+        workspaceName: currentGroup?.name ?? "Roadmap",
+      });
+
+      for (const section of deck.sections) {
+        flushSync(() => {
+          useViewStore.getState().setFilters("roadmap", {
+            ...emptyFilters,
+            teamIds: [section.team.id],
+          });
+          useViewStore.getState().setGroupBy("roadmap", "none");
+          useViewStore.getState().setRoadmapTimeframe("6mo");
+          useViewStore.getState().setRoadmapStyle("rows");
+          useViewStore.getState().setShowConflicts(false);
+          setPdfMode(true);
+        });
+
+        // Let layout + ResizeObserver settle before serialising.
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, 50);
+        });
+
+        const root = document.querySelector<HTMLElement>(
+          '[data-roadmap-capture-root="true"]',
+        );
+        if (!root) {
+          section.roadmapSnapshotDataUrl = null;
+          continue;
+        }
+        try {
+          section.roadmapSnapshotDataUrl = await captureRoadmapPng(root);
+        } catch (captureErr) {
+          console.warn(
+            `Roadmap snapshot failed for team ${section.team.name}`,
+            captureErr,
+          );
+          section.roadmapSnapshotDataUrl = null;
+        }
+      }
+
+      await exportRoadmapUpdatePptx(deck);
+    } catch (err) {
+      console.error("PPTX export failed", err);
+      await alert({
+        title: "PowerPoint export failed",
+        description: "Check the browser console for details.",
+      });
+    } finally {
+      flushSync(() => {
+        useViewStore.getState().setFilters("roadmap", saved.filters);
+        useViewStore.getState().setGroupBy("roadmap", saved.groupBy);
+        useViewStore.getState().setRoadmapTimeframe(saved.zoom);
+        useViewStore.getState().setRoadmapStyle(saved.style);
+        useViewStore.getState().setShowConflicts(saved.showConflicts);
+        setPdfMode(false);
+      });
+      setExportingPptx(false);
+    }
+  }
 
   async function handleExportPdf() {
     if (!exportRef.current || exporting) return;
@@ -726,6 +829,20 @@ export function RoadmapView() {
               >
                 <FileDown size={12} />
                 {exporting ? "Exporting…" : "Export PDF"}
+              </button>
+              <button
+                type="button"
+                className="btn-secondary !py-1 !text-xs"
+                onClick={handleExportPptx}
+                disabled={exportingPptx || !teams.data?.length}
+                title="Download a Roadmap Update PowerPoint (status cards + a 6-month Rows Gantt snapshot per product area)"
+              >
+                {exportingPptx ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Presentation size={12} />
+                )}
+                {exportingPptx ? "Capturing…" : "Export PPTX"}
               </button>
               {canWrite ? (
                 <button
