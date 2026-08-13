@@ -14,6 +14,7 @@ import {
   type BoardCardQuickActionsProps,
 } from "./BoardCardQuickActions";
 import { useProjectCurrentWeekStatus } from "../hooks/useProjectCurrentWeekStatus";
+import { laneRequiresWeeklyStatus } from "../lib/statusEligibility";
 
 export function ProjectCard(props: {
   project: Project;
@@ -61,7 +62,7 @@ export function ProjectCard(props: {
     : null;
 
   const status = useProjectCurrentWeekStatus(project.id);
-  const needsStatus = !!lane?.requires_weekly_status;
+  const needsStatus = laneRequiresWeeklyStatus(lane);
   // Mirrors the Roadmap's own scheduled-vs-unscheduled check so the icon
   // and the Roadmap tab always agree about which cards appear where.
   const onRoadmap = computePhases(project).scheduled;

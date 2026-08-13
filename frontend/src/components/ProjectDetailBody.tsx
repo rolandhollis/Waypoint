@@ -31,6 +31,7 @@ import { StatusUpdateForm } from "./StatusUpdateForm";
 import { SubtaskStatusUpdatesDisplay } from "./EpicSubtaskStatusUpdates";
 import { TagPicker } from "./TagPicker";
 import { TeamMultiSelect } from "./TeamMultiSelect";
+import { laneRequiresWeeklyStatus } from "../lib/statusEligibility";
 
 type Draft = Partial<Project>;
 
@@ -782,7 +783,7 @@ export function ProjectDetailBody({
     .map((tid) => teamsById.get(tid))
     .filter((t): t is Team => !!t);
   const lane = lanes.data?.find((l) => l.id === merged.swim_lane_id);
-  const requiresStatus = !!lane?.requires_weekly_status && merged.type === "epic";
+  const requiresStatus = laneRequiresWeeklyStatus(lane) && merged.type === "epic";
   const myChildren = kids.get(merged.id) ?? [];
   // Show the archive button whenever the card isn't already in an
   // archive lane. Non-admins never see admin-only lanes in

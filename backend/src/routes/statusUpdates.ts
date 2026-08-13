@@ -21,7 +21,11 @@ export const statusUpdatesRouter = Router();
  * Eligibility — epics only (subtasks roll into the parent epic update).
  * A project is eligible for `week_of` if EITHER:
  *   (a) it currently sits in a lane flagged `requires_weekly_status`, or
- *   (b) at any point during the week it moved into a lane flagged that way.
+ *   (b) at any point during the week it moved into a lane flagged that way,
+ * …AND its *current* lane is not the backlog / default-new landing lane.
+ * Backlog is pre-discovery: cards there should never prompt for a
+ * weekly status update, even if the lane flag was toggled on by mistake.
+ * (Frontend mirror: `frontend/src/lib/statusEligibility.ts`.)
  */
 export async function eligibleProjects(
   weekOf: Date,
@@ -40,6 +44,8 @@ export async function eligibleProjects(
      WHERE p.deleted_at IS NULL
        AND p.group_id = $3
        AND p.type = 'epic'
+       AND COALESCE(cur.is_default_new, FALSE) = FALSE
+       AND lower(trim(COALESCE(cur.name, ''))) <> 'backlog'
        AND (
              cur.requires_weekly_status = TRUE
           OR to_lane.requires_weekly_status = TRUE

@@ -1455,7 +1455,14 @@ function SortableLaneRow(props: {
           />
           default for new
         </label>
-        <label className="flex items-center gap-1 text-xs text-wp-slate">
+        <label
+          className="flex items-center gap-1 text-xs text-wp-slate"
+          title={
+            lane.is_default_new || lane.name.trim().toLowerCase() === "backlog"
+              ? "Backlog / default-new lanes never prompt for weekly status, even if this is checked."
+              : "Owners of epics in this lane are asked for a weekly status update."
+          }
+        >
           <input type="checkbox" checked={lane.requires_weekly_status} onChange={(e) => onToggleStatus(e.target.checked)} />
           weekly status
         </label>
