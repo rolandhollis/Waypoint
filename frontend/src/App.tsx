@@ -19,8 +19,10 @@ import { ProjectDetailPage } from "./views/ProjectDetailPage";
 import { LoginView } from "./views/LoginView";
 import { ForgotPasswordView } from "./views/ForgotPasswordView";
 import { ResetPasswordView } from "./views/ResetPasswordView";
+import { AbDemoBanner } from "./components/AbDemoBanner";
 import { ReminderBanner } from "./components/ReminderBanner";
 import { TopNav } from "./components/TopNav";
+import { AbSdkProvider } from "./lib/abSdk";
 import { UserSwitcher } from "./components/UserSwitcher";
 import { GroupSwitcher } from "./components/GroupSwitcher";
 import {
@@ -143,8 +145,10 @@ export function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <AbSdkProvider userId={me.data?.id ?? null}>
+      <div className="min-h-screen flex flex-col">
       {isMockMode ? <MockAuthBanner /> : null}
+      <AbDemoBanner />
       <TopBar />
       <DocumentTitleSync />
       <ReminderBanner />
@@ -192,6 +196,7 @@ export function App() {
         </Routes>
       </main>
     </div>
+    </AbSdkProvider>
   );
 }
 
