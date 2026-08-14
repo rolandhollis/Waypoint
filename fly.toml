@@ -18,6 +18,11 @@ primary_region = "iad"
 
 [build]
   dockerfile = "Dockerfile"
+  [build.args]
+    VITE_AB_API_BASE = "https://ziffsplit-api.fly.dev"
+    # Override per deploy: fly deploy --build-arg VITE_AB_SITE_KEY=...
+    # or set GitHub secret VITE_AB_SITE_KEY (see .github/workflows/deploy.yml).
+    VITE_AB_SITE_KEY = ""
 
 # Non-secret defaults. `AUTH_MODE=mock` is intentional here — the app
 # renders a "demo mode" banner at the top and the smoke test exercises

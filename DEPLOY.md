@@ -85,6 +85,34 @@ Everything the app needs at runtime is env-driven. Reference: `backend/.env.exam
 | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | if `AUTH_MODE=cloudflare-access` | `fly secrets set` |
 | `CORS_ORIGIN` | only relevant when SPA runs on a different origin (dev only) | n/a in prod |
 
+### ZiffSplit (build-time, frontend)
+
+These are baked into the SPA by Vite during `docker build` / `fly deploy` (not runtime Fly secrets):
+
+| Build arg | Required | Where |
+|-----------|----------|--------|
+| `VITE_AB_API_BASE` | no (defaults to Fly API) | `fly.toml` `[build.args]` + deploy workflow |
+| `VITE_AB_SITE_KEY` | yes to enable banners | GitHub Actions secret `VITE_AB_SITE_KEY`, or `fly deploy --build-arg VITE_AB_SITE_KEY=…` |
+
+Copy the site key from [ZiffSplit Admin](https://ziffsplit-admin.fly.dev) → brand → **production** env → Settings. Then:
+
+```bash
+# One-time: store for auto-deploy
+gh secret set VITE_AB_SITE_KEY --body '<site-key>' --repo <your/waypoint-repo>
+
+# Or one-off deploy
+fly deploy --app waypoint-qmh6xa \
+  --build-arg VITE_AB_API_BASE=https://ziffsplit-api.fly.dev \
+  --build-arg VITE_AB_SITE_KEY='<site-key>'
+```
+
+The SDK is vendored at `frontend/vendor/ziffsplit-sdk`. After changing the sibling `ziffsplit-sdk` repo:
+
+```bash
+cd frontend && npm run sync:ziffsplit-sdk && npm install
+```
+
+
 To rotate or add a secret:
 
 ```bash

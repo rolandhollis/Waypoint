@@ -7,13 +7,27 @@
 #
 # Local build:  docker build -t waypoint .
 # Fly.io:       `fly deploy` picks this up automatically.
+#
+# ZiffSplit (optional): pass site key at build time so Vite bakes it in.
+#   docker build \
+#     --build-arg VITE_AB_API_BASE=https://ziffsplit-api.fly.dev \
+#     --build-arg VITE_AB_SITE_KEY=<key-from-admin-settings> \
+#     -t waypoint .
 
 # ---------- Stage 1: install + build frontend ----------
 FROM node:20-alpine AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
+COPY frontend/vendor/ziffsplit-sdk ./vendor/ziffsplit-sdk
 RUN npm ci
 COPY frontend/ ./
+
+# Client-only; baked into the SPA at build time (same as any public site key).
+ARG VITE_AB_API_BASE=https://ziffsplit-api.fly.dev
+ARG VITE_AB_SITE_KEY=
+ENV VITE_AB_API_BASE=$VITE_AB_API_BASE
+ENV VITE_AB_SITE_KEY=$VITE_AB_SITE_KEY
+
 # API_BASE defaults to "/api" in the client — perfect for same-origin serving.
 RUN npm run build
 
