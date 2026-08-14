@@ -1,50 +1,66 @@
 import { isAbSdkConfigured, useAbSdk } from "../lib/abSdk";
+import { AbAuthoredHtml } from "./AbAuthoredHtml";
 
 /**
- * Demo surface for ZiffSplit on Waypoint.
- * Controlled by flag `waypoint_demo_banner` and experiment `waypoint_banner_copy`.
+ * Renders authored content for a single ZiffSplit experiment.
+ * Mount one instance per experiment/container you want live on the page.
+ * Pausing the experiment in admin hides that instance.
+ *
+ * Authored content is treated as raw HTML (styles + scripts included).
  */
-export function AbDemoBanner() {
+export function AbDemoBanner({
+  experimentKey,
+  placement = "page",
+}: {
+  experimentKey: string;
+  /** `shell` = sticky top bar; `page` = inline card on the page. */
+  placement?: "shell" | "page";
+}) {
   const ab = useAbSdk();
+  // Re-read assignments when admin preview overrides land.
+  void ab.previewRevision;
 
   if (!isAbSdkConfigured()) return null;
 
   if (!ab.ready) {
-    return (
-      <div className="sticky top-0 z-[60] border-b border-violet-300 bg-violet-100 px-4 py-2 text-sm text-violet-950">
-        ZiffSplit: loading config from localhost:4100…
-      </div>
-    );
+    if (placement === "shell") {
+      return (
+        <div className="sticky top-0 z-[60] border-b border-violet-300 bg-violet-100 px-4 py-2 text-sm text-violet-950">
+          ZiffSplit: loading config from localhost:4100…
+        </div>
+      );
+    }
+    return null;
   }
 
   if (ab.error) {
-    return (
-      <div className="sticky top-0 z-[60] border-b border-amber-400 bg-amber-100 px-4 py-2 text-sm text-amber-950">
-        ZiffSplit error: {ab.error}. Is ziffsplit-api running on :4100?
-      </div>
-    );
+    if (placement === "shell") {
+      return (
+        <div className="sticky top-0 z-[60] border-b border-amber-400 bg-amber-100 px-4 py-2 text-sm text-amber-950">
+          ZiffSplit error: {ab.error}. Is ziffsplit-api running on :4100?
+        </div>
+      );
+    }
+    return null;
   }
 
-  if (!ab.isOn("waypoint_demo_banner")) {
-    return (
-      <div className="sticky top-0 z-[60] border-b border-stone-300 bg-stone-100 px-4 py-2 text-sm text-stone-700">
-        ZiffSplit connected (config v{ab.configVersion ?? "?"}), but flag{" "}
-        <code>waypoint_demo_banner</code> is off.
-      </div>
-    );
-  }
+  const inPreview = new URLSearchParams(window.location.search).get("zs_preview") === "1";
 
-  const copy = ab.getContent("waypoint_banner_copy") ?? "ZiffSplit connected.";
-  const assignment = ab.getAssignment("waypoint_banner_copy");
+  // Admin live-preview uses AbPreviewBanner for the forced experiment.
+  if (inPreview) return null;
+
+  const assignment = ab.getAssignment(experimentKey);
+  const copy = ab.getContent(experimentKey);
+  if (!assignment || !copy) return null;
+
+  const className =
+    placement === "shell"
+      ? "sticky top-0 z-[60] border-b-2 border-violet-500 bg-violet-100 px-4 py-2.5 text-sm text-violet-950 shadow-sm"
+      : "mb-3 rounded-lg border-2 border-violet-500 bg-violet-100 px-4 py-2.5 text-sm text-violet-950 shadow-sm";
 
   return (
-    <div className="sticky top-0 z-[60] border-b-2 border-violet-500 bg-violet-100 px-4 py-2.5 text-sm font-medium text-violet-950 shadow-sm">
-      <strong>ZiffSplit:</strong> {copy}
-      {assignment ? (
-        <span className="ml-2 font-normal text-violet-800/80">
-          (variant: {assignment.variantKey})
-        </span>
-      ) : null}
+    <div className={className}>
+      <AbAuthoredHtml html={copy} className="ab-authored-html" />
     </div>
   );
 }

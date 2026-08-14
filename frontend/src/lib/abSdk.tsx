@@ -6,14 +6,15 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { init, type AbSdk, type Assignment, type ExposureEvent } from "@ziffsplit/sdk";
+import { init, PREVIEW_CHANGE_EVENT, type AbSdk, type Assignment, type ExposureEvent } from "@ziffsplit/sdk";
 
 interface AbContextValue {
   ready: boolean;
   error: string | null;
   sdk: AbSdk | null;
   configVersion: number | null;
-  isOn: (flagKey: string) => boolean;
+  /** Bumps when admin preview overrides change so consumers re-render. */
+  previewRevision: number;
   getAssignment: (experimentKey: string) => Assignment | null;
   getContent: (experimentKey: string) => string | null;
   lastExposure: ExposureEvent | null;
@@ -38,6 +39,15 @@ export function AbSdkProvider({
   const [error, setError] = useState<string | null>(null);
   const [configVersion, setConfigVersion] = useState<number | null>(null);
   const [lastExposure, setLastExposure] = useState<ExposureEvent | null>(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
+
+  useEffect(() => {
+    function onPreviewChange() {
+      setPreviewRevision((n) => n + 1);
+    }
+    window.addEventListener(PREVIEW_CHANGE_EVENT, onPreviewChange);
+    return () => window.removeEventListener(PREVIEW_CHANGE_EVENT, onPreviewChange);
+  }, []);
 
   useEffect(() => {
     if (!siteKey) {
@@ -65,6 +75,11 @@ export function AbSdkProvider({
     setReady(false);
     setError(null);
 
+    // Console helpers: window.__ziffsplit.listAssignments() / clearAssignments()
+    if (typeof window !== "undefined") {
+      (window as Window & { __ziffsplit?: AbSdk }).__ziffsplit = instance;
+    }
+
     instance
       .init()
       .then(() => {
@@ -76,8 +91,9 @@ export function AbSdkProvider({
           siteKey,
           apiBaseUrl,
           version: instance.config?.version,
-          flags: instance.config?.flags?.map((f) => f.key),
           experiments: instance.config?.experiments?.map((e) => e.key),
+          console:
+            "window.__ziffsplit.listAssignments() / getAssignments() / clearAssignments({ rebucket: true })",
         });
       })
       .catch((err: unknown) => {
@@ -91,6 +107,10 @@ export function AbSdkProvider({
     return () => {
       cancelled = true;
       instance.destroy();
+      if (typeof window !== "undefined") {
+        const w = window as Window & { __ziffsplit?: AbSdk };
+        if (w.__ziffsplit === instance) delete w.__ziffsplit;
+      }
     };
   }, [userId]);
 
@@ -100,13 +120,12 @@ export function AbSdkProvider({
       error,
       sdk,
       configVersion,
-      // configVersion in deps forces fresh closures after config arrives
-      isOn: (flagKey) => sdk?.isOn(flagKey) ?? false,
+      previewRevision,
       getAssignment: (experimentKey) => sdk?.getAssignment(experimentKey) ?? null,
       getContent: (experimentKey) => sdk?.getContent(experimentKey) ?? null,
       lastExposure,
     }),
-    [ready, error, sdk, configVersion, lastExposure],
+    [ready, error, sdk, configVersion, previewRevision, lastExposure],
   );
 
   return <AbContext.Provider value={value}>{children}</AbContext.Provider>;

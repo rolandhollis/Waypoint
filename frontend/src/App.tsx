@@ -20,6 +20,7 @@ import { LoginView } from "./views/LoginView";
 import { ForgotPasswordView } from "./views/ForgotPasswordView";
 import { ResetPasswordView } from "./views/ResetPasswordView";
 import { AbDemoBanner } from "./components/AbDemoBanner";
+import { AbPreviewBanner } from "./components/AbPreviewBanner";
 import { ReminderBanner } from "./components/ReminderBanner";
 import { TopNav } from "./components/TopNav";
 import { AbSdkProvider } from "./lib/abSdk";
@@ -148,7 +149,8 @@ export function App() {
     <AbSdkProvider userId={me.data?.id ?? null}>
       <div className="min-h-screen flex flex-col">
       {isMockMode ? <MockAuthBanner /> : null}
-      <AbDemoBanner />
+      <AbPreviewBanner />
+      <AbDemoBanner experimentKey="waypoint_banner_copy" placement="shell" />
       <TopBar />
       <DocumentTitleSync />
       <ReminderBanner />

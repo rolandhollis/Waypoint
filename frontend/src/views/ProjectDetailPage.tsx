@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { Link2, X } from "lucide-react";
+import { AbDemoBanner } from "../components/AbDemoBanner";
 import { ProjectDetailBody } from "../components/ProjectDetailBody";
 
 /**
@@ -30,6 +31,7 @@ export function ProjectDetailPage() {
 
   return (
     <div className="mx-auto flex min-h-full max-w-4xl flex-col p-4">
+      <AbDemoBanner experimentKey="project_page_banner_copy" placement="page" />
       <div className="mb-2 flex items-center justify-end">
         <CopyLinkButton />
       </div>
