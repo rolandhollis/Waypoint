@@ -5,6 +5,8 @@ node_modules/
 
 # Build output
 dist/
+!frontend/vendor/ziffsplit-sdk/dist/
+!frontend/vendor/ziffsplit-sdk/dist/**
 build/
 *.tsbuildinfo
 
