@@ -1,8 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 
 /**
  * Mounts PM-authored HTML into the DOM, including `<style>` and `<script>`.
  * Scripts inserted via innerHTML do not run, so we re-create them after mount.
+ * Uses layout effect so content is in the DOM before paint (avoids empty flash).
  */
 export function AbAuthoredHtml({
   html,
@@ -13,7 +14,7 @@ export function AbAuthoredHtml({
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const root = rootRef.current;
     if (!root) return;
 
@@ -30,10 +31,7 @@ export function AbAuthoredHtml({
       }
       oldScript.replaceWith(next);
     }
-
-    return () => {
-      root.innerHTML = "";
-    };
+    // Do not clear on cleanup — Strict Mode remounts would flash empty.
   }, [html]);
 
   return <div ref={rootRef} className={className} />;

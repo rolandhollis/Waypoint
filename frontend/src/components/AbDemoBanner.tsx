@@ -1,4 +1,4 @@
-import { getAbApiBaseUrl, isAbSdkConfigured, useAbSdk } from "../lib/abSdk";
+import { isAbSdkConfigured, useAbSdk } from "../lib/abSdk";
 import { AbAuthoredHtml } from "./AbAuthoredHtml";
 
 /**
@@ -8,6 +8,7 @@ import { AbAuthoredHtml } from "./AbAuthoredHtml";
  * uses the first that assigns (prefer one active experiment per slot).
  *
  * Authored content is treated as raw HTML (styles + scripts included).
+ * Stays invisible until content is ready to avoid loading / empty flashes.
  */
 export function AbDemoBanner({
   containerKey,
@@ -23,27 +24,14 @@ export function AbDemoBanner({
 
   if (!isAbSdkConfigured()) return null;
 
-  const apiBase = getAbApiBaseUrl();
-
-  if (!ab.ready) {
-    if (placement === "shell") {
-      return (
-        <div className="sticky top-0 z-[60] border-b border-violet-300 bg-violet-100 px-4 py-2 text-sm text-violet-950">
-          ZiffSplit: loading config from {apiBase}…
-        </div>
-      );
-    }
-    return null;
-  }
+  // Never paint loading chrome — wait for content to avoid layout flicker.
+  if (!ab.ready) return null;
 
   if (ab.error) {
-    if (placement === "shell") {
-      const hint = ab.error.includes("404")
-        ? "Unknown site key — copy the production API key from ZiffSplit Admin → Settings and redeploy with VITE_AB_SITE_KEY."
-        : `Check that ${apiBase} is reachable.`;
+    if (import.meta.env.DEV && placement === "shell") {
       return (
         <div className="sticky top-0 z-[60] border-b border-amber-400 bg-amber-100 px-4 py-2 text-sm text-amber-950">
-          ZiffSplit error: {ab.error}. {hint}
+          ZiffSplit error: {ab.error}
         </div>
       );
     }

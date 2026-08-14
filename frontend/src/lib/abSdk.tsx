@@ -3,6 +3,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -42,6 +43,9 @@ export function AbSdkProvider({
   const [configVersion, setConfigVersion] = useState<number | null>(null);
   const [lastExposure, setLastExposure] = useState<ExposureEvent | null>(null);
   const [previewRevision, setPreviewRevision] = useState(0);
+  // Keep identity current without tearing down the SDK (avoids banner flicker).
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
 
   useEffect(() => {
     function onPreviewChange() {
@@ -65,7 +69,7 @@ export function AbSdkProvider({
       siteKey,
       apiBaseUrl,
       pollIntervalMs: 60_000,
-      getUserId: () => userId ?? null,
+      getUserId: () => userIdRef.current ?? null,
     });
 
     instance.onExposure((event) => {
@@ -114,7 +118,7 @@ export function AbSdkProvider({
         if (w.__ziffsplit === instance) delete w.__ziffsplit;
       }
     };
-  }, [userId]);
+  }, []);
 
   const value = useMemo<AbContextValue>(
     () => ({
