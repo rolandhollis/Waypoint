@@ -31,7 +31,7 @@ export function ProjectDetailPage() {
 
   return (
     <div className="mx-auto flex min-h-full max-w-4xl flex-col p-4">
-      <AbDemoBanner experimentKey="project_page_banner_copy" placement="page" />
+      <AbDemoBanner containerKey="project_page_banner_copy" placement="page" />
       <div className="mb-2 flex items-center justify-end">
         <CopyLinkButton />
       </div>

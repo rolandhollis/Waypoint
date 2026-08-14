@@ -1,6 +1,9 @@
 # Build artifacts (the image rebuilds them in-stage).
+# Do NOT use **/dist — that would also drop frontend/vendor/ziffsplit-sdk/dist,
+# which must be present for npm ci / tsc during the frontend image build.
 **/node_modules
-**/dist
+frontend/dist
+backend/dist
 **/build
 **/*.tsbuildinfo
 

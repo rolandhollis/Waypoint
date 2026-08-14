@@ -21,6 +21,8 @@ COPY frontend/package.json frontend/package-lock.json ./
 COPY frontend/vendor/ziffsplit-sdk ./vendor/ziffsplit-sdk
 RUN npm ci
 COPY frontend/ ./
+# Ensure vendored SDK dist survives the full frontend copy.
+COPY frontend/vendor/ziffsplit-sdk ./vendor/ziffsplit-sdk
 
 # Client-only; baked into the SPA at build time (same as any public site key).
 ARG VITE_AB_API_BASE=https://ziffsplit-api.fly.dev

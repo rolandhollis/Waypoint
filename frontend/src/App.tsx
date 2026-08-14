@@ -150,7 +150,7 @@ export function App() {
       <div className="min-h-screen flex flex-col">
       {isMockMode ? <MockAuthBanner /> : null}
       <AbPreviewBanner />
-      <AbDemoBanner experimentKey="waypoint_banner_copy" placement="shell" />
+      <AbDemoBanner containerKey="waypoint_banner_copy" placement="shell" />
       <TopBar />
       <DocumentTitleSync />
       <ReminderBanner />

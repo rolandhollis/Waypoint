@@ -70,6 +70,14 @@ interface AbSdk {
     init(): Promise<void>;
     getAssignment(experimentKey: string): Assignment | null;
     getContent(experimentKey: string): string | null;
+    /**
+     * Resolve the UI slot by container key (what developers register in host code).
+     * If multiple active experiments share the container, the first that assigns
+     * wins (stable order by experiment key). Prefer one active experiment per
+     * container; pause the others.
+     */
+    getAssignmentByContainer(containerKey: string): Assignment | null;
+    getContentByContainer(containerKey: string): string | null;
     /** Evaluate every live experiment in the current config (fires exposures). */
     getAssignments(): Assignment[];
     /** Sticky assignments currently stored for this browser (does not evaluate or expose). */

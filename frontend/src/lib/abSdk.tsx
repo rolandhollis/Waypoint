@@ -17,6 +17,8 @@ interface AbContextValue {
   previewRevision: number;
   getAssignment: (experimentKey: string) => Assignment | null;
   getContent: (experimentKey: string) => string | null;
+  getAssignmentByContainer: (containerKey: string) => Assignment | null;
+  getContentByContainer: (containerKey: string) => string | null;
   lastExposure: ExposureEvent | null;
 }
 
@@ -123,6 +125,10 @@ export function AbSdkProvider({
       previewRevision,
       getAssignment: (experimentKey) => sdk?.getAssignment(experimentKey) ?? null,
       getContent: (experimentKey) => sdk?.getContent(experimentKey) ?? null,
+      getAssignmentByContainer: (containerKey) =>
+        sdk?.getAssignmentByContainer(containerKey) ?? null,
+      getContentByContainer: (containerKey) =>
+        sdk?.getContentByContainer(containerKey) ?? null,
       lastExposure,
     }),
     [ready, error, sdk, configVersion, previewRevision, lastExposure],
@@ -142,3 +148,8 @@ export function useAbSdk(): AbContextValue {
 export function isAbSdkConfigured(): boolean {
   return Boolean(siteKey);
 }
+
+export function getAbApiBaseUrl(): string {
+  return apiBaseUrl;
+}
+

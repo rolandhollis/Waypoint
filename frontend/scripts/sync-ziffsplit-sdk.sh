@@ -13,7 +13,7 @@ if [[ ! -d "$SRC" ]]; then
   exit 1
 fi
 
-echo "Building SDK in $SRC…"
+echo "Building SDK in $SRC..."
 (cd "$SRC" && npm run build)
 
 rm -rf "$DEST"
@@ -40,5 +40,5 @@ cat > "$DEST/package.json" <<'PKG'
 }
 PKG
 
-echo "Vendored SDK → $DEST"
+echo "Vendored SDK -> $DEST"
 echo "Next: npm install  # refresh lockfile if package.json changed"
