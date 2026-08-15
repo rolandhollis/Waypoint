@@ -271,10 +271,9 @@ function ActivityByUserChart() {
         ) : users.length === 0 && !activity.isLoading ? (
           <p className="mt-6 text-sm text-wp-slate">No activity in range.</p>
         ) : (
-          <div className="mt-6 overflow-x-auto">
+          <div className="mt-6">
             <div
-              className="flex h-56 min-w-full items-end gap-2 border-b border-wp-stone px-1"
-              style={{ minWidth: `${Math.max(users.length, 1) * 3.25}rem` }}
+              className="flex h-56 items-end gap-2 border-b border-wp-stone px-1"
               role="img"
               aria-label={`Bar chart of ${total} updates across ${users.length} users`}
             >
@@ -285,13 +284,13 @@ function ActivityByUserChart() {
                 return (
                   <div
                     key={key}
-                    className="flex w-12 shrink-0 flex-col items-center justify-end gap-1"
+                    className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1"
                   >
                     <span className="text-[11px] font-medium tabular-nums text-wp-ink">
                       {u.count}
                     </span>
                     <div
-                      className="w-full max-w-[2.5rem] rounded-t-md bg-wp-red/85 transition-[height]"
+                      className="w-full rounded-t-md bg-wp-red/85 transition-[height]"
                       style={{ height: `${heightPx}px` }}
                       title={`${u.user_name}: ${u.count}`}
                     />
@@ -299,16 +298,13 @@ function ActivityByUserChart() {
                 );
               })}
             </div>
-            <div
-              className="mt-2 flex gap-2 px-1"
-              style={{ minWidth: `${Math.max(users.length, 1) * 3.25}rem` }}
-            >
+            <div className="mt-2 flex gap-2 px-1">
               {users.map((u) => {
                 const key = `${u.user_id ?? "unknown"}-lbl`;
                 return (
                   <div
                     key={key}
-                    className="w-12 shrink-0 truncate text-center text-[10px] leading-tight text-wp-slate"
+                    className="min-w-0 flex-1 truncate text-center text-[10px] leading-tight text-wp-slate"
                     title={u.user_name}
                   >
                     {u.user_name}
