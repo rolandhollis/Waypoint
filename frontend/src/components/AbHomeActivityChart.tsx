@@ -24,6 +24,9 @@ export const HOME_ACTIVITY_CHART_CONTAINER = "home_activity_chart";
 export const HOME_ACTIVITY_BY_DAY_KEY = "activity_by_day";
 export const HOME_ACTIVITY_BY_USER_KEY = "activity_by_user";
 
+/** Plot area for bars (px). Avoid % height — it collapses in flex columns. */
+const BAR_MAX_PX = 180;
+
 function todayKey(): string {
   return format(new Date(), "yyyy-MM-dd");
 }
@@ -179,7 +182,9 @@ function ActivityByDayChart() {
               aria-label={`Bar chart of ${total} updates across ${days.length} days`}
             >
               {days.map((d) => {
-                const heightPct = d.count === 0 ? 0 : Math.max(4, (d.count / maxCount) * 100);
+                // Pixel heights — % height collapses inside flex column wrappers.
+                const heightPx =
+                  d.count === 0 ? 0 : Math.max(8, Math.round((d.count / maxCount) * BAR_MAX_PX));
                 const label = format(parseISO(d.date), "EEE M/d");
                 return (
                   <div
@@ -191,7 +196,7 @@ function ActivityByDayChart() {
                     </span>
                     <div
                       className="w-full max-w-[3rem] rounded-t-md bg-wp-red/85 transition-[height]"
-                      style={{ height: `${heightPct}%` }}
+                      style={{ height: `${heightPx}px` }}
                       title={`${label}: ${d.count}`}
                     />
                   </div>
@@ -274,7 +279,8 @@ function ActivityByUserChart() {
               aria-label={`Bar chart of ${total} updates across ${users.length} users`}
             >
               {users.map((u) => {
-                const heightPct = u.count === 0 ? 0 : Math.max(4, (u.count / maxCount) * 100);
+                const heightPx =
+                  u.count === 0 ? 0 : Math.max(8, Math.round((u.count / maxCount) * BAR_MAX_PX));
                 const key = u.user_id ?? `unknown-${u.user_name}`;
                 return (
                   <div
@@ -286,7 +292,7 @@ function ActivityByUserChart() {
                     </span>
                     <div
                       className="w-full max-w-[2.5rem] rounded-t-md bg-wp-red/85 transition-[height]"
-                      style={{ height: `${heightPct}%` }}
+                      style={{ height: `${heightPx}px` }}
                       title={`${u.user_name}: ${u.count}`}
                     />
                   </div>
