@@ -17,6 +17,13 @@
 # ---------- Stage 1: install + build frontend ----------
 FROM node:20-alpine AS frontend
 WORKDIR /app/frontend
+
+# Declared early so Fly/Depot cache keys include the public site key.
+ARG VITE_AB_API_BASE=https://ziffsplit-api.fly.dev
+ARG VITE_AB_SITE_KEY=
+ENV VITE_AB_API_BASE=$VITE_AB_API_BASE
+ENV VITE_AB_SITE_KEY=$VITE_AB_SITE_KEY
+
 COPY frontend/package.json frontend/package-lock.json ./
 COPY frontend/vendor/ziffsplit-sdk ./vendor/ziffsplit-sdk
 RUN npm ci
@@ -24,11 +31,14 @@ COPY frontend/ ./
 # Ensure vendored SDK dist survives the full frontend copy.
 COPY frontend/vendor/ziffsplit-sdk ./vendor/ziffsplit-sdk
 
-# Client-only; baked into the SPA at build time (same as any public site key).
-ARG VITE_AB_API_BASE=https://ziffsplit-api.fly.dev
-ARG VITE_AB_SITE_KEY=
-ENV VITE_AB_API_BASE=$VITE_AB_API_BASE
-ENV VITE_AB_SITE_KEY=$VITE_AB_SITE_KEY
+# Never let a developer .env.local override the build-args (dockerignore
+# should already exclude them; this is belt-and-suspenders).
+RUN rm -f .env .env.local .env.production .env.production.local \
+  && echo "ZiffSplit build: API_BASE=${VITE_AB_API_BASE}" \
+  && echo "ZiffSplit build: SITE_KEY length=${#VITE_AB_SITE_KEY}" \
+  && if [ -z "$VITE_AB_SITE_KEY" ]; then \
+       echo "WARNING: VITE_AB_SITE_KEY is empty — ZiffSplit will be disabled in this image"; \
+     fi
 
 # API_BASE defaults to "/api" in the client — perfect for same-origin serving.
 RUN npm run build
