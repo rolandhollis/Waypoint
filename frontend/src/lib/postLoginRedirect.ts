@@ -27,13 +27,14 @@ const AUTH_PATHS = new Set(["/login", "/forgot-password", "/reset-password"]);
  * (bouncing Bob to `/login` after signing him in would be a loop),
  * and swallows storage errors (Safari private mode, quota, etc.)
  * so a rare browser quirk never cascades into a failed login.
+ * When nothing is stashed, login screens fall back to `/` (Home).
  */
 export function stashPostLoginRedirect(pathname: string, search: string): void {
   if (AUTH_PATHS.has(pathname)) return;
   try {
     sessionStorage.setItem(POST_LOGIN_REDIRECT_STORAGE_KEY, `${pathname}${search}`);
   } catch {
-    // sessionStorage disabled — the login flow will fall back to /board.
+    // sessionStorage disabled — the login flow will fall back to /.
   }
 }
 

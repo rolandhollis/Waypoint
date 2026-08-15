@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { z } from "zod";
+import { addDays } from "date-fns";
+import { fromZonedTime } from "date-fns-tz";
 import { query } from "../db/pool.js";
 import { parseEventFilter } from "../lib/auditEventFilter.js";
+import { loadGroupWeeklyStatusSchedule } from "../lib/groupConstants.js";
 import { requireAdmin } from "../middleware/auth.js";
 import type { RecentAuditEventRow } from "../types.js";
 
@@ -224,5 +227,177 @@ auditRouter.get("/events", requireAdmin, async (req, res) => {
     page_size: params.pageSize,
     total,
     total_pages: totalPages,
+  });
+});
+
+const activityByDaySchema = z.object({
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  user_id: z.string().uuid().optional(),
+});
+
+/**
+ * Homepage activity chart — count of audit events + lane moves per
+ * calendar day in the workspace reporting timezone. Available to every
+ * authenticated group member (not admin-only).
+ */
+auditRouter.get("/activity-by-day", async (req, res) => {
+  const q = activityByDaySchema.parse(req.query);
+  if (q.from > q.to) {
+    res.status(400).json({ error: "`from` must be on or before `to`" });
+    return;
+  }
+
+  const schedule = await loadGroupWeeklyStatusSchedule(req.groupId!);
+  const tz = schedule.timezone;
+
+  const fromInstant = fromZonedTime(`${q.from}T00:00:00.000`, tz);
+  const toInstant = fromZonedTime(`${q.to}T23:59:59.999`, tz);
+  const spanDays =
+    Math.floor((toInstant.getTime() - fromInstant.getTime()) / 86_400_000) + 1;
+  if (spanDays > 90) {
+    res.status(400).json({ error: "date range cannot exceed 90 days" });
+    return;
+  }
+
+  const values: unknown[] = [req.groupId!, fromInstant.toISOString(), toInstant.toISOString(), tz];
+  let userClauseAudit = "";
+  let userClauseMove = "";
+  if (q.user_id) {
+    values.push(q.user_id);
+    userClauseAudit = `AND e.user_id = $5`;
+    userClauseMove = `AND sh.moved_by_user_id = $5`;
+  }
+
+  const { rows } = await query<{ day: string; count: number }>(
+    `
+    WITH events AS (
+      SELECT e."timestamp" AS ts
+        FROM project_audit_events e
+        JOIN projects p ON p.id = e.project_id
+       WHERE p.group_id = $1
+         AND p.deleted_at IS NULL
+         AND e.action <> 'move'
+         AND e."timestamp" >= $2::timestamptz
+         AND e."timestamp" <= $3::timestamptz
+         ${userClauseAudit}
+      UNION ALL
+      SELECT sh."timestamp" AS ts
+        FROM status_history sh
+        JOIN projects p ON p.id = sh.project_id
+       WHERE p.group_id = $1
+         AND p.deleted_at IS NULL
+         AND sh.from_swim_lane_id IS NOT NULL
+         AND sh."timestamp" >= $2::timestamptz
+         AND sh."timestamp" <= $3::timestamptz
+         ${userClauseMove}
+    )
+    SELECT to_char((ts AT TIME ZONE $4)::date, 'YYYY-MM-DD') AS day,
+           COUNT(*)::int AS count
+      FROM events
+     GROUP BY 1
+     ORDER BY 1
+    `,
+    values,
+  );
+
+  const byDay = new Map(rows.map((r) => [r.day, r.count] as const));
+  const days: Array<{ date: string; count: number }> = [];
+  // Walk calendar dates at UTC noon so DST cannot skip/duplicate a day key.
+  let cursor = new Date(`${q.from}T12:00:00.000Z`);
+  const end = new Date(`${q.to}T12:00:00.000Z`);
+  while (cursor.getTime() <= end.getTime()) {
+    const key = cursor.toISOString().slice(0, 10);
+    days.push({ date: key, count: byDay.get(key) ?? 0 });
+    cursor = addDays(cursor, 1);
+  }
+
+  res.json({
+    from: q.from,
+    to: q.to,
+    user_id: q.user_id ?? null,
+    timezone: tz,
+    days,
+    total: days.reduce((sum, d) => sum + d.count, 0),
+  });
+});
+
+const activityByUserSchema = z.object({
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+
+/**
+ * Homepage A/B chart — count of audit events + lane moves per user
+ * in the workspace reporting timezone. Same event universe as
+ * `/activity-by-day`. Available to every authenticated group member.
+ */
+auditRouter.get("/activity-by-user", async (req, res) => {
+  const q = activityByUserSchema.parse(req.query);
+  if (q.from > q.to) {
+    res.status(400).json({ error: "`from` must be on or before `to`" });
+    return;
+  }
+
+  const schedule = await loadGroupWeeklyStatusSchedule(req.groupId!);
+  const tz = schedule.timezone;
+
+  const fromInstant = fromZonedTime(`${q.from}T00:00:00.000`, tz);
+  const toInstant = fromZonedTime(`${q.to}T23:59:59.999`, tz);
+  const spanDays =
+    Math.floor((toInstant.getTime() - fromInstant.getTime()) / 86_400_000) + 1;
+  if (spanDays > 90) {
+    res.status(400).json({ error: "date range cannot exceed 90 days" });
+    return;
+  }
+
+  const { rows } = await query<{
+    user_id: string | null;
+    user_name: string | null;
+    count: number;
+  }>(
+    `
+    WITH events AS (
+      SELECT e.user_id AS user_id
+        FROM project_audit_events e
+        JOIN projects p ON p.id = e.project_id
+       WHERE p.group_id = $1
+         AND p.deleted_at IS NULL
+         AND e.action <> 'move'
+         AND e."timestamp" >= $2::timestamptz
+         AND e."timestamp" <= $3::timestamptz
+      UNION ALL
+      SELECT sh.moved_by_user_id AS user_id
+        FROM status_history sh
+        JOIN projects p ON p.id = sh.project_id
+       WHERE p.group_id = $1
+         AND p.deleted_at IS NULL
+         AND sh.from_swim_lane_id IS NOT NULL
+         AND sh."timestamp" >= $2::timestamptz
+         AND sh."timestamp" <= $3::timestamptz
+    )
+    SELECT e.user_id,
+           u.name AS user_name,
+           COUNT(*)::int AS count
+      FROM events e
+      LEFT JOIN users u ON u.id = e.user_id
+     GROUP BY e.user_id, u.name
+     ORDER BY count DESC, COALESCE(u.name, '') ASC
+    `,
+    [req.groupId!, fromInstant.toISOString(), toInstant.toISOString()],
+  );
+
+  const users = rows.map((r) => ({
+    user_id: r.user_id,
+    user_name: r.user_name?.trim() || "Unknown",
+    count: r.count,
+  }));
+
+  res.json({
+    from: q.from,
+    to: q.to,
+    timezone: tz,
+    users,
+    total: users.reduce((sum, u) => sum + u.count, 0),
   });
 });

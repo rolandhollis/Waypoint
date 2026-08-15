@@ -1,9 +1,10 @@
 import { useEffect } from "react";
-import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Route, Routes, Link, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppName, useHealth, useMe, useMockRoster } from "./lib/queries";
 import { useMockUserStore } from "./lib/mockUser";
 import { setUnauthorizedHandler } from "./lib/api";
+import { HomeView } from "./views/HomeView";
 import { BoardView } from "./views/BoardView";
 import { PrioritizationView } from "./views/PrioritizationView";
 import { RoadmapView } from "./views/RoadmapView";
@@ -156,7 +157,7 @@ export function App() {
       <ReminderBanner />
       <main className="flex-1 overflow-hidden">
         <Routes>
-          <Route path="/" element={<Navigate to="/board" replace />} />
+          <Route path="/" element={<HomeView />} />
           <Route path="/board" element={<BoardView />} />
           <Route path="/prioritization" element={<PrioritizationView />} />
           <Route path="/roadmap" element={<RoadmapView />} />
@@ -191,10 +192,10 @@ export function App() {
               password). Always render the view; the reset action
               itself revokes every session on success, which cleanly
               signs them out at the end of the flow. */}
-          <Route path="/login" element={<Navigate to="/board" replace />} />
-          <Route path="/forgot-password" element={<Navigate to="/board" replace />} />
+          <Route path="/login" element={<Navigate to="/" replace />} />
+          <Route path="/forgot-password" element={<Navigate to="/" replace />} />
           <Route path="/reset-password" element={<ResetPasswordView />} />
-          <Route path="*" element={<Navigate to="/board" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </div>
@@ -238,7 +239,7 @@ function MockLoginScreen() {
     // straight back to it instead of the /board default. Keeps
     // shareable-URL behavior consistent between mock and password
     // auth modes for local development.
-    const target = consumePostLoginRedirect() ?? "/board";
+    const target = consumePostLoginRedirect() ?? "/";
     navigate(target, { replace: true });
   }
 
@@ -272,7 +273,9 @@ function TopBar() {
     <header className="flex items-center justify-between border-b border-wp-stone bg-white px-5 py-2.5">
       <div className="flex items-center gap-6">
         <div className="flex items-baseline gap-2">
-          <span className="text-lg font-bold text-wp-red">{appName}</span>
+          <Link to="/" className="text-lg font-bold text-wp-red hover:opacity-90">
+            {appName}
+          </Link>
         </div>
         <TopNav />
       </div>

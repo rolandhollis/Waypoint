@@ -41,7 +41,7 @@ export function LoginView() {
       // and rejects anything that doesn't look like a same-origin
       // path, so a poisoned session store can't turn login into
       // an open redirect.
-      const target = consumePostLoginRedirect() ?? "/board";
+      const target = consumePostLoginRedirect() ?? "/";
       navigate(target, { replace: true });
     },
     onError: (err) => {

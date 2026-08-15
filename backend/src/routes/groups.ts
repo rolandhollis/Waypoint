@@ -272,6 +272,7 @@ const tabLabelValueSchema = z.string().trim().min(1).max(40).nullable();
 
 const tabLabelsPatchSchema = z
   .object({
+    home: tabLabelValueSchema.optional(),
     board: tabLabelValueSchema.optional(),
     prioritization: tabLabelValueSchema.optional(),
     roadmap: tabLabelValueSchema.optional(),
@@ -281,6 +282,7 @@ const tabLabelsPatchSchema = z
     phases: tabLabelValueSchema.optional(),
     simple_features: tabLabelValueSchema.optional(),
     design: tabLabelValueSchema.optional(),
+    game: tabLabelValueSchema.optional(),
     admin: tabLabelValueSchema.optional(),
   })
   .strict();

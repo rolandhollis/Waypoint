@@ -3,6 +3,7 @@
  * workspace via `groups.constants.tab_labels`.
  */
 export const TAB_LABEL_KEYS = [
+  "home",
   "board",
   "prioritization",
   "roadmap",
@@ -19,6 +20,7 @@ export const TAB_LABEL_KEYS = [
 export type TabLabelKey = (typeof TAB_LABEL_KEYS)[number];
 
 export const DEFAULT_TAB_LABELS: Record<TabLabelKey, string> = {
+  home: "Home",
   board: "Board",
   prioritization: "Prioritization",
   roadmap: "Roadmap",
@@ -34,6 +36,7 @@ export const DEFAULT_TAB_LABELS: Record<TabLabelKey, string> = {
 
 /** Default page subtitle shown under the title in each view header. */
 export const TAB_PAGE_DESCRIPTIONS: Partial<Record<TabLabelKey, string>> = {
+  home: "Workspace snapshot and recent activity.",
   board: "Kanban view of work across swim lanes.",
   roadmap: "Timeline of scheduled initiatives and phase bars.",
   status_report: "Submit and review weekly status updates.",
@@ -53,6 +56,7 @@ export type TabLabels = Partial<Record<TabLabelKey, string | null>>;
 
 /** Route path for each nav tab (used by TopNav grouping). */
 export const TAB_ROUTES: Record<TabLabelKey, string> = {
+  home: "/",
   board: "/board",
   prioritization: "/prioritization",
   roadmap: "/roadmap",
@@ -66,8 +70,9 @@ export const TAB_ROUTES: Record<TabLabelKey, string> = {
   admin: "/admin",
 };
 
-/** Always-visible primary nav tabs. */
+/** Always-visible primary nav tabs. Home (`/`) is brand-icon only, not a tab. */
 export const PRIMARY_NAV_KEYS: TabLabelKey[] = ["board", "roadmap", "status_report"];
+
 
 export type NavDropdownSection = {
   keys: TabLabelKey[];

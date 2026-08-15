@@ -5,6 +5,8 @@ import {
   type TabLabelKey,
 } from "./navTabs";
 import type {
+  ActivityByDayResponse,
+  ActivityByUserResponse,
   AiEstimatorHealth,
   AiReferenceEstimate,
   AiSuggestionCached,
@@ -395,6 +397,38 @@ export function useAuditEvents(filters: AuditEventsQuery) {
   return useQuery({
     queryKey: ["auditEvents", filters],
     queryFn: () => api<AuditEventsListResponse>(`/audit/events?${qs}`),
+  });
+}
+
+export function useActivityByDay(opts: {
+  from: string;
+  to: string;
+  user_id?: string;
+  enabled?: boolean;
+}) {
+  const qs = new URLSearchParams();
+  qs.set("from", opts.from);
+  qs.set("to", opts.to);
+  if (opts.user_id) qs.set("user_id", opts.user_id);
+  return useQuery({
+    queryKey: ["auditActivityByDay", opts.from, opts.to, opts.user_id ?? null],
+    queryFn: () => api<ActivityByDayResponse>(`/audit/activity-by-day?${qs}`),
+    enabled: opts.enabled !== false && !!opts.from && !!opts.to,
+  });
+}
+
+export function useActivityByUser(opts: {
+  from: string;
+  to: string;
+  enabled?: boolean;
+}) {
+  const qs = new URLSearchParams();
+  qs.set("from", opts.from);
+  qs.set("to", opts.to);
+  return useQuery({
+    queryKey: ["auditActivityByUser", opts.from, opts.to],
+    queryFn: () => api<ActivityByUserResponse>(`/audit/activity-by-user?${qs}`),
+    enabled: opts.enabled !== false && !!opts.from && !!opts.to,
   });
 }
 

@@ -525,6 +525,25 @@ export type AuditEventsListResponse = {
   total_pages: number;
 };
 
+/** GET /audit/activity-by-day — homepage chart series. */
+export type ActivityByDayResponse = {
+  from: string;
+  to: string;
+  user_id: string | null;
+  timezone: string;
+  days: Array<{ date: string; count: number }>;
+  total: number;
+};
+
+/** GET /audit/activity-by-user — homepage A/B chart series. */
+export type ActivityByUserResponse = {
+  from: string;
+  to: string;
+  timezone: string;
+  users: Array<{ user_id: string | null; user_name: string; count: number }>;
+  total: number;
+};
+
 /**
  * One-phase slice of a Claude-generated AI suggestion. The `size`
  * is a T-shirt catalog label (whatever the admin has renamed the
