@@ -7,11 +7,12 @@ import { AbAuthoredHtml } from "./AbAuthoredHtml";
  * Container: `home_hero`
  * Delivery: embedded
  *
- * - contentSource `authored` — PM HTML replaces the default mountain
- * - contentSource `code` (or no assignment) — default mountain hero
+ * - Container feature flag **off** → hero is hidden
+ * - contentSource `authored` → PM HTML replaces the mountain
+ * - contentSource `code` / no assignment → default mountain hero
  *
- * Default hero always renders when SDK is off / unassigned so the
- * homepage stays branded outside an experiment.
+ * Without VITE_AB_SITE_KEY the default mountain still renders so local
+ * dev without ZiffSplit stays branded.
  */
 export const HOME_HERO_CONTAINER = "home_hero";
 
@@ -32,29 +33,35 @@ export function AbHomeHero() {
   const ab = useAbSdk();
   void ab.previewRevision;
 
-  const inPreview = new URLSearchParams(window.location.search).get("zs_preview") === "1";
+  if (!isAbSdkConfigured()) {
+    return <DefaultMountainHero />;
+  }
 
-  if (
-    isAbSdkConfigured() &&
-    ab.ready &&
-    !ab.error &&
-    !inPreview &&
-    ab.isContainerEnabled(HOME_HERO_CONTAINER)
-  ) {
-    const assignment = ab.getAssignmentByContainer(HOME_HERO_CONTAINER);
-    if (assignment?.contentSource === "authored") {
-      const html = ab.getContentByContainer(HOME_HERO_CONTAINER);
-      if (html) {
-        return (
-          <div className="w-full overflow-hidden">
-            <AbAuthoredHtml html={html} className="ab-authored-html ab-home-hero" />
-          </div>
-        );
-      }
+  // Wait for config so we don't flash the hero before the flag is known.
+  if (!ab.ready) return null;
+
+  if (ab.error) {
+    return <DefaultMountainHero />;
+  }
+
+  const inPreview = new URLSearchParams(window.location.search).get("zs_preview") === "1";
+  if (inPreview) return null;
+
+  // Site container feature flag — key must be exactly `home_hero`.
+  if (!ab.isContainerEnabled(HOME_HERO_CONTAINER)) {
+    return null;
+  }
+
+  const assignment = ab.getAssignmentByContainer(HOME_HERO_CONTAINER);
+  if (assignment?.contentSource === "authored") {
+    const html = ab.getContentByContainer(HOME_HERO_CONTAINER);
+    if (html) {
+      return (
+        <div className="w-full overflow-hidden">
+          <AbAuthoredHtml html={html} className="ab-authored-html ab-home-hero" />
+        </div>
+      );
     }
-    // Code variants / control: fall through to default mountain.
-    // getAssignmentByContainer above still records exposure when an
-    // experiment is attached to this container.
   }
 
   return <DefaultMountainHero />;
