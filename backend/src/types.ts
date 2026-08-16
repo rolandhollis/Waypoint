@@ -450,7 +450,7 @@ export type ProjectCommentRow = {
   updated_at: Date;
 };
 
-export type ProjectAuditAction = "create" | "edit" | "move" | "archive" | "restore";
+export type ProjectAuditAction = "create" | "edit" | "move" | "archive" | "restore" | "celebrate";
 
 /**
  * One deadline row per (project, swim_lane) pair. See

@@ -6,6 +6,7 @@ import express from "express";
 import { config } from "./config.js";
 import { authenticate, groupScope } from "./middleware/auth.js";
 import { csrfGuard } from "./middleware/csrf.js";
+import { experimentContextMiddleware } from "./middleware/experimentContext.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 import { bootstrapSuperAdmin } from "./auth/bootstrap.js";
 import { runMigrations } from "./db/migrate.js";
@@ -34,6 +35,7 @@ import { auditRouter } from "./routes/audit.js";
 import { designItemsRouter } from "./routes/designItems.js";
 import { simpleFeaturesRouter } from "./routes/simpleFeatures.js";
 import { predictionGameRouter } from "./routes/predictionGame.js";
+import { analyticsRouter } from "./routes/analytics.js";
 import { startCron } from "./jobs/weeklyStatus.js";
 import { startPredictionGameCron } from "./jobs/predictionGame.js";
 
@@ -49,11 +51,17 @@ app.use(express.urlencoded({ extended: false, limit: "8kb" }));
 // CSRF defense (no-op in mock/okta modes; see middleware/csrf.ts).
 app.use(csrfGuard);
 
+// Optional: carry ZiffSplit assignments into audit writes (see EXPERIMENT_AUDIT_CONTEXT).
+app.use(experimentContextMiddleware);
+
 app.get("/api/health", (_req, res) => res.json({ ok: true, auth: config.authMode }));
 
 // Auth endpoints (login/logout) are intentionally NOT behind
 // authenticate — they run before a session exists.
 app.use("/api/auth", authRouter);
+
+// Public experiment analytics (no login required; join key = ziffsplit_id).
+app.use("/api/analytics", analyticsRouter);
 
 // Unauthenticated: mock roster for the dev switcher. In mock mode only.
 app.use("/api/users", (req, res, next) => {

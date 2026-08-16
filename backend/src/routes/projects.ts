@@ -22,6 +22,7 @@ import {
   syncDesignQueueAfterProjectLaneChange,
 } from "../lib/designQueue.js";
 import { fireMentionEmail } from "../notifications/mentionEmail.js";
+import { getExperimentContext } from "../lib/experimentContext.js";
 
 /** Ordered phase-date fields, earliest → latest. Used by both the
  * internal-ordering validator and the forward-cascade helper. */
@@ -95,10 +96,11 @@ export async function recordAudit(
     to?: unknown;
   },
 ) {
+  const experimentContext = getExperimentContext();
   await client.query(
     `INSERT INTO project_audit_events
-       (project_id, user_id, action, field, from_value, to_value)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)`,
+       (project_id, user_id, action, field, from_value, to_value, experiment_context)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb)`,
     [
       args.projectId,
       args.userId,
@@ -106,6 +108,7 @@ export async function recordAudit(
       args.field ?? null,
       args.from === undefined ? null : JSON.stringify(args.from),
       args.to === undefined ? null : JSON.stringify(args.to),
+      experimentContext ? JSON.stringify(experimentContext) : null,
     ],
   );
 }
@@ -1453,6 +1456,33 @@ projectsRouter.post("/reorder-lane", requireWrite, async (req, res) => {
  * resolved server-side so non-admins (who never see the lane in their
  * swim-lanes response) can still archive their own work with one click.
  */
+
+/**
+ * Record a Celebrate (confetti) click on the project detail panel.
+ * Writes a project_audit_events row so ZiffSplit assignment context
+ * (X-ZiffSplit-Context) is stamped when EXPERIMENT_AUDIT_CONTEXT is on.
+ */
+projectsRouter.post("/:id/celebrate", async (req, res) => {
+  const groupId = req.groupId!;
+  const projectId = String(req.params.id);
+  await withTransaction(async (client) => {
+    const { rows } = await client.query<{ id: string }>(
+      `SELECT id FROM projects WHERE id = $1 AND group_id = $2 AND deleted_at IS NULL`,
+      [projectId, groupId],
+    );
+    if (!rows[0]) throw new HttpError(404, "project not found");
+    await recordAudit(client, {
+      projectId,
+      userId: req.user?.id ?? null,
+      action: "celebrate",
+      field: "confetti",
+      from: null,
+      to: { source: "project_confetti" },
+    });
+  });
+  res.json({ ok: true });
+});
+
 projectsRouter.post("/:id/archive", requireWrite, async (req, res) => {
   const groupId = req.groupId!;
   const result = await withTransaction(async (client) => {

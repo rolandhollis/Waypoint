@@ -28,6 +28,12 @@ export const config = {
   databaseUrl: required("DATABASE_URL", "postgres://waypoint:waypoint@localhost:5433/waypoint"),
   authMode: (process.env.AUTH_MODE ?? "mock") as AuthMode,
   /**
+   * When true, mutating requests may carry X-ZiffSplit-Context and
+   * recordAudit stamps assignments onto project_audit_events.experiment_context.
+   * Host-owned feature — off by default so brands opt in.
+   */
+  experimentAuditContext: (process.env.EXPERIMENT_AUDIT_CONTEXT ?? "false").toLowerCase() === "true",
+  /**
    * Password mode super-admin bootstrap. If both env vars are set at
    * boot AND the user does not already exist, an admin row is
    * created. If the user exists with no password on file, the

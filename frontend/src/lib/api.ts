@@ -1,4 +1,5 @@
 import { useMockUserStore } from "./mockUser";
+import { buildZiffsplitContextHeader } from "./experimentContext";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "/api";
 
@@ -36,6 +37,13 @@ export async function api<T = unknown>(
   // dev don't require a client rebuild.
   const mockId = useMockUserStore.getState().mockUserId;
   if (mockId) headers.set("x-mock-user-id", mockId);
+
+  // Optional: stamp current ZiffSplit assignments onto audit writes.
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    const zsCtx = buildZiffsplitContextHeader();
+    if (zsCtx) headers.set("X-ZiffSplit-Context", zsCtx);
+  }
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,

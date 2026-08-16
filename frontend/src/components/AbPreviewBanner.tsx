@@ -20,7 +20,7 @@ export function AbPreviewBanner() {
 
   if (!ab.ready) {
     return (
-      <div className="sticky top-0 z-[61] border-b border-violet-300 bg-violet-100 px-4 py-2 text-sm text-violet-950">
+      <div className="sticky top-0 z-30 border-b border-violet-300 bg-violet-100 px-4 py-2 text-sm text-violet-950">
         ZiffSplit preview: loading…
       </div>
     );
@@ -28,7 +28,7 @@ export function AbPreviewBanner() {
 
   if (ab.error) {
     return (
-      <div className="sticky top-0 z-[61] border-b border-amber-400 bg-amber-100 px-4 py-2 text-sm text-amber-950">
+      <div className="sticky top-0 z-30 border-b border-amber-400 bg-amber-100 px-4 py-2 text-sm text-amber-950">
         ZiffSplit preview error: {ab.error}
       </div>
     );
@@ -38,7 +38,7 @@ export function AbPreviewBanner() {
   const copy = ab.getContent(experimentKey);
   if (!assignment || copy === null || copy === "") {
     return (
-      <div className="sticky top-0 z-[61] border-b border-amber-400 bg-amber-50 px-4 py-2 text-sm text-amber-950">
+      <div className="sticky top-0 z-30 border-b border-amber-400 bg-amber-50 px-4 py-2 text-sm text-amber-950">
         ZiffSplit preview: no content for <code>{experimentKey}</code>
         {assignment ? ` · ${assignment.variantKey}` : ""}. Save the variant or
         check the experiment key.
@@ -47,7 +47,7 @@ export function AbPreviewBanner() {
   }
 
   return (
-    <div className="sticky top-0 z-[61] border-b-2 border-fuchsia-500 bg-fuchsia-100 px-4 py-2.5 text-sm text-fuchsia-950 shadow-sm">
+    <div className="sticky top-0 z-30 border-b-2 border-fuchsia-500 bg-fuchsia-100 px-4 py-2.5 text-sm text-fuchsia-950 shadow-sm">
       <AbAuthoredHtml html={copy} className="ab-authored-html" />
     </div>
   );

@@ -6,7 +6,7 @@ export type ParsedEventFilter = {
   fieldPrefix?: string;
 };
 
-const LIFECYCLE_ACTIONS = new Set<ProjectAuditAction>(["create", "move", "archive", "restore"]);
+const LIFECYCLE_ACTIONS = new Set<ProjectAuditAction>(["create", "move", "archive", "restore", "celebrate"]);
 
 /**
  * Decode the admin audit-trail `event` query param into SQL filters.

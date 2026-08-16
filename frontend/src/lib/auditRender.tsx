@@ -61,6 +61,7 @@ export function AuditEventBody({
   if (entry.kind === "create") return <>created this item.</>;
   if (entry.kind === "archive") return <>archived this item.</>;
   if (entry.kind === "restore") return <>restored this item.</>;
+  if (entry.kind === "celebrate") return <>celebrated this item.</>;
 
   if (entry.kind === "move") {
     // Per-project history rows carry the lane ids in dedicated
@@ -298,6 +299,7 @@ export function auditEventTitle(entry: {
   if (entry.action === "create") return "Created";
   if (entry.action === "archive") return "Archived";
   if (entry.action === "restore") return "Restored";
+  if (entry.action === "celebrate" || entry.kind === "celebrate") return "Celebrated";
   if (entry.action === "edit" && entry.field) {
     if (entry.field.startsWith("deadline:")) return "Deadline updated";
     if (entry.field.startsWith("dependency:")) return "Dependency updated";

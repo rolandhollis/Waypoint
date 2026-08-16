@@ -41,6 +41,7 @@ export function AbBoardCtaVariant() {
           <a
             href="http://localhost:5174"
             className="rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-800"
+            onClick={() => ab.track("board_cta_clicked", { codeVariantKey: key })}
           >
             Open ZiffSplit admin
           </a>
@@ -54,7 +55,11 @@ export function AbBoardCtaVariant() {
       <div className="border-b border-sky-500 bg-sky-50 px-4 py-1.5 text-xs text-sky-950">
         <span className="font-semibold">Code variant <code>{key}</code></span>
         {" — "}
-        <a href="http://localhost:5174" className="font-semibold underline underline-offset-2">
+        <a
+          href="http://localhost:5174"
+          className="font-semibold underline underline-offset-2"
+          onClick={() => ab.track("board_cta_clicked", { codeVariantKey: key })}
+        >
           Admin
         </a>
       </div>

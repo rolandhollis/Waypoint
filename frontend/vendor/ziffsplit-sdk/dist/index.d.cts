@@ -51,8 +51,10 @@ interface ExposureEvent {
     experimentKey: string;
     variantKey: string;
     containerKey?: string;
+    /** Optional host user id (login, CRM id). Enrichment only — not the join key. */
     userId?: string;
-    anonId?: string;
+    /** ZiffSplit subject id. Always set; primary analytics join key. */
+    anonId: string;
     timestamp: string;
     deliveryMode: DeliveryMode;
     contentSource: "authored" | "code";
@@ -64,6 +66,10 @@ interface InitOptions {
     siteKey: string;
     apiBaseUrl?: string;
     identity?: IdentityConfigMeta;
+    /**
+     * Optional host user id for enrichment on exposure events.
+     * Does not affect bucketing — the SDK always buckets on its subject id.
+     */
     getUserId?: () => string | null;
     attributes?: Record<string, unknown>;
     pollIntervalMs?: number;
@@ -101,6 +107,11 @@ interface AbSdk {
      * Unknown keys (not in published config) default to enabled for older payloads.
      */
     isContainerEnabled(containerKey: string): boolean;
+    /**
+     * Stable ZiffSplit subject id for this browser (localStorage).
+     * Host analytics should stamp this on exposures and conversion events.
+     */
+    getSubjectId(): string;
     /** Evaluate every live experiment in the current config (fires exposures). */
     getAssignments(): Assignment[];
     /** Sticky assignments currently stored for this browser (does not evaluate or expose). */
@@ -145,6 +156,13 @@ declare function buildPreviewUrl(pageUrl: string, override: PreviewOverride, opt
 }): string;
 declare function postPreviewOverride(target: Window, override: PreviewOverride, targetOrigin?: string): void;
 
+/**
+ * Stable ZiffSplit subject id (always present).
+ * Used for bucketing and as the primary analytics join key across hosts.
+ * Independent of host login / `getUserId`.
+ */
+declare function getOrCreateSubjectId(): string;
+
 declare function init(options: InitOptions): AbSdk;
 
-export { type AbSdk, type Assignment, type ConfigPayload, type ExperimentConfig, type ExposureEvent, type InitOptions, PREVIEW_CHANGE_EVENT, PREVIEW_MESSAGE_TYPE, buildPreviewUrl, encodePreviewHash, init, postPreviewOverride };
+export { type AbSdk, type Assignment, type ConfigPayload, type ExperimentConfig, type ExposureEvent, type InitOptions, PREVIEW_CHANGE_EVENT, PREVIEW_MESSAGE_TYPE, buildPreviewUrl, encodePreviewHash, getOrCreateSubjectId, init, postPreviewOverride };

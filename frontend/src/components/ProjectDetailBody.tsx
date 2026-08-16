@@ -4,6 +4,7 @@ import { format, parseISO } from "date-fns";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Lock, LockOpen, Star, X } from "lucide-react";
+import { AbProjectConfettiButton } from "./AbProjectConfetti";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
 import { AuditEventBody, auditActorLabel, timelineEntryToRenderEntry } from "../lib/auditRender";
@@ -967,6 +968,7 @@ export function ProjectDetailBody({
           </div>
         </div>
         <div className="flex items-center gap-0.5">
+          <AbProjectConfettiButton projectId={id} />
           {/* Prev/next through the surrounding view's items.
               Rendered only when the parent view supplied a
               sibling list — Board / Roadmap / Status Report /

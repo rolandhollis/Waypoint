@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { init, PREVIEW_CHANGE_EVENT, type AbSdk, type Assignment, type ExposureEvent } from "@ziffsplit/sdk";
+import { track, trackExposure } from "./analytics";
 
 interface AbContextValue {
   ready: boolean;
@@ -21,6 +22,8 @@ interface AbContextValue {
   getAssignmentByContainer: (containerKey: string) => Assignment | null;
   getContentByContainer: (containerKey: string) => string | null;
   isContainerEnabled: (containerKey: string) => boolean;
+  getSubjectId: () => string | null;
+  track: (eventName: string, properties?: Record<string, unknown>) => void;
   lastExposure: ExposureEvent | null;
 }
 
@@ -35,7 +38,7 @@ export function AbSdkProvider({
   userId,
 }: {
   children: ReactNode;
-  /** Stable Waypoint user id for bucketing; falls back to SDK anon id. */
+  /** Optional Waypoint user id for exposure enrichment (not used for bucketing). */
   userId?: string | null;
 }) {
   const [sdk, setSdk] = useState<AbSdk | null>(null);
@@ -75,7 +78,7 @@ export function AbSdkProvider({
 
     instance.onExposure((event) => {
       setLastExposure(event);
-      console.info("[ziffsplit] exposure", event);
+      trackExposure(event);
     });
 
     setSdk(instance);
@@ -136,6 +139,12 @@ export function AbSdkProvider({
         sdk?.getContentByContainer(containerKey) ?? null,
       isContainerEnabled: (containerKey) =>
         sdk?.isContainerEnabled(containerKey) ?? true,
+      getSubjectId: () => sdk?.getSubjectId() ?? null,
+      track: (eventName, properties) => {
+        track(eventName, properties, {
+          ziffsplitId: sdk?.getSubjectId(),
+        });
+      },
       lastExposure,
     }),
     [ready, error, sdk, configVersion, previewRevision, lastExposure],

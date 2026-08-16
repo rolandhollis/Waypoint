@@ -30,7 +30,7 @@ export function AbDemoBanner({
   if (ab.error) {
     if (import.meta.env.DEV && placement === "shell") {
       return (
-        <div className="sticky top-0 z-[60] border-b border-amber-400 bg-amber-100 px-4 py-2 text-sm text-amber-950">
+        <div className="sticky top-0 z-30 border-b border-amber-400 bg-amber-100 px-4 py-2 text-sm text-amber-950">
           ZiffSplit error: {ab.error}
         </div>
       );
@@ -51,7 +51,7 @@ export function AbDemoBanner({
 
   const className =
     placement === "shell"
-      ? "sticky top-0 z-[60] border-b-2 border-violet-500 bg-violet-100 px-4 py-2.5 text-sm text-violet-950 shadow-sm"
+      ? "sticky top-0 z-30 border-b-2 border-violet-500 bg-violet-100 px-4 py-2.5 text-sm text-violet-950 shadow-sm"
       : "mb-3 rounded-lg border-2 border-violet-500 bg-violet-100 px-4 py-2.5 text-sm text-violet-950 shadow-sm";
 
   return (
