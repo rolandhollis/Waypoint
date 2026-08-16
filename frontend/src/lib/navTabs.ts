@@ -36,7 +36,7 @@ export const DEFAULT_TAB_LABELS: Record<TabLabelKey, string> = {
 
 /** Default page subtitle shown under the title in each view header. */
 export const TAB_PAGE_DESCRIPTIONS: Partial<Record<TabLabelKey, string>> = {
-  home: "Workspace snapshot and recent activity.",
+  home: "Plan · Track · Ship — workspace snapshot and recent activity.",
   board: "Kanban view of work across swim lanes.",
   roadmap: "Timeline of scheduled initiatives and phase bars.",
   status_report: "Submit and review weekly status updates.",
@@ -48,7 +48,7 @@ export const TAB_PAGE_DESCRIPTIONS: Partial<Record<TabLabelKey, string>> = {
     "Small initiatives under 16 hours of work that are not tracked on the roadmap.",
   design:
     "Design queue from this tab, roadmap design lanes, and Simple Features flagged needs design.",
-  game: "Daily prediction — vote yes or no before 5pm Central. Expect mild irreverence.",
+  game: "Daily sports prediction — vote yes or no before 5pm Central. Expect mild irreverence.",
   admin: "Manage swim lanes, teams, users, and workspace settings.",
 };
 

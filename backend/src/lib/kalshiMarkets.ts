@@ -22,13 +22,18 @@ const EVENT_META_CONCURRENCY = 3;
 
 /** Priority labels for logging; Kalshi API category strings differ from labels. */
 const CATEGORY_PRIORITY: Array<{ label: string; kalshiCategories: string[] }> = [
-  { label: "Culture", kalshiCategories: ["Entertainment", "Culture"] },
   { label: "Sports", kalshiCategories: ["Sports"] },
-  { label: "Politics", kalshiCategories: ["Politics"] },
 ];
 
-/** Last-resort fallback when Culture / Sports / Politics have no qualifying markets. */
-const FALLBACK_KALSHI_CATEGORIES = ["Economics", "World", "Elections", "Financials"];
+/**
+ * Soft Kalshi fallbacks when Sports has nothing tonight.
+ * Empty by design — prefer the sports invent path over politics/culture.
+ */
+const FALLBACK_KALSHI_CATEGORIES: string[] = [];
+
+/** Implied yes price band for a genuine toss-up (~50/50). */
+const YES_PRICE_MIN = 0.4;
+const YES_PRICE_MAX = 0.6;
 
 export type KalshiMarketCandidate = {
   ticker: string;
@@ -469,14 +474,30 @@ function toCandidate(row: QualifyingMarketInternal): KalshiMarketCandidate {
   };
 }
 
-/** TODO: customize selection — currently highest 24h volume, then open interest. */
+/** Distance from a fair coin flip (0 = perfectly 50/50). */
+function tossUpScore(yesPrice: number): number {
+  return Math.abs(yesPrice - 0.5);
+}
+
+function isTossUpPrice(yesPrice: number): boolean {
+  return yesPrice >= YES_PRICE_MIN && yesPrice <= YES_PRICE_MAX;
+}
+
+/**
+ * Prefer ~50/50 markets, then highest 24h volume, then open interest.
+ * If nothing sits in the toss-up band, fall back to closest-to-50% overall.
+ */
 function pickBestCandidate(rows: QualifyingMarketInternal[]): KalshiMarketCandidate {
-  const sorted = [...rows]
-    .map(toCandidate)
-    .sort((a, b) => {
-      if (b.volume_24h !== a.volume_24h) return b.volume_24h - a.volume_24h;
-      return b.open_interest - a.open_interest;
-    });
+  const candidates = rows.map(toCandidate);
+  const tossUps = candidates.filter((c) => isTossUpPrice(c.yes_price));
+  const pool = tossUps.length > 0 ? tossUps : candidates;
+
+  const sorted = [...pool].sort((a, b) => {
+    const tossDiff = tossUpScore(a.yes_price) - tossUpScore(b.yes_price);
+    if (tossDiff !== 0) return tossDiff;
+    if (b.volume_24h !== a.volume_24h) return b.volume_24h - a.volume_24h;
+    return b.open_interest - a.open_interest;
+  });
   return sorted[0]!;
 }
 
@@ -535,8 +556,8 @@ export async function collectQualifyingForKalshiCategoriesViaSeries(
 }
 
 /**
- * Pick one Kalshi event/market for today's prediction game.
- * Categories: Culture (Entertainment) → Sports → Politics → fallback list.
+ * Pick one Kalshi sports market for today's prediction game.
+ * Prefers Sports with ~40–60% yes price (win/loss or props), then soft fallbacks.
  */
 export async function pickEventForToday(gameDate: string): Promise<KalshiPickResult | null> {
   const bounds = gameDayTimeBounds(gameDate);
@@ -547,10 +568,12 @@ export async function pickEventForToday(gameDate: string): Promise<KalshiPickRes
     const inCategory = qualifying.filter((row) =>
       matchesKalshiCategories(row, entry.kalshiCategories),
     );
-    if (inCategory.length > 0) {
-      const pick = pickBestCandidate(inCategory);
+    const tossUps = inCategory.filter((row) => isTossUpPrice(impliedYesPrice(row.market)));
+    const pool = tossUps.length > 0 ? tossUps : inCategory;
+    if (pool.length > 0) {
+      const pick = pickBestCandidate(pool);
       console.log(
-        `[kalshi] pick ${pick.ticker} category=${entry.label} vol=${pick.volume_24h} url=${pick.kalshi_url}`,
+        `[kalshi] pick ${pick.ticker} category=${entry.label} yes=${pick.yes_price_pct}% vol=${pick.volume_24h} url=${pick.kalshi_url}`,
       );
       console.log(`[kalshi] category candidate counts: ${JSON.stringify(category_counts)}`);
       return { pick, category_counts };
@@ -559,17 +582,19 @@ export async function pickEventForToday(gameDate: string): Promise<KalshiPickRes
 
   for (const kalshiCategory of FALLBACK_KALSHI_CATEGORIES) {
     const inCategory = qualifying.filter((row) => row.category === kalshiCategory);
-    if (inCategory.length > 0) {
-      const pick = pickBestCandidate(inCategory);
+    const tossUps = inCategory.filter((row) => isTossUpPrice(impliedYesPrice(row.market)));
+    const pool = tossUps.length > 0 ? tossUps : inCategory;
+    if (pool.length > 0) {
+      const pick = pickBestCandidate(pool);
       console.log(
-        `[kalshi] pick ${pick.ticker} fallback=${kalshiCategory} vol=${pick.volume_24h} url=${pick.kalshi_url}`,
+        `[kalshi] pick ${pick.ticker} fallback=${kalshiCategory} yes=${pick.yes_price_pct}% vol=${pick.volume_24h} url=${pick.kalshi_url}`,
       );
       console.log(`[kalshi] category candidate counts: ${JSON.stringify(category_counts)}`);
       return { pick, category_counts };
     }
   }
 
-  console.log(`[kalshi] no qualifying event for ${gameDate}`);
+  console.log(`[kalshi] no qualifying Sports market for ${gameDate}`);
   console.log(`[kalshi] category candidate counts: ${JSON.stringify(category_counts)}`);
   return null;
 }
@@ -641,6 +666,7 @@ async function main(): Promise<void> {
         kalshi_url: pick.kalshi_url,
         volume_24h: pick.volume_24h,
         open_interest: pick.open_interest,
+        yes_price_pct: pick.yes_price_pct,
         category_counts,
       },
       null,

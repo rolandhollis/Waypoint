@@ -43,6 +43,11 @@ function useHomeActivityCodeVariant(): string {
     return HOME_ACTIVITY_BY_DAY_KEY;
   }
 
+  // When the container is gated off, keep the default chart (not blank).
+  if (!ab.isContainerEnabled(HOME_ACTIVITY_CHART_CONTAINER)) {
+    return HOME_ACTIVITY_BY_DAY_KEY;
+  }
+
   const assignment = ab.getAssignmentByContainer(HOME_ACTIVITY_CHART_CONTAINER);
   if (!assignment || assignment.contentSource !== "code") {
     return HOME_ACTIVITY_BY_DAY_KEY;

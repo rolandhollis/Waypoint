@@ -20,8 +20,8 @@ import { requireAdmin } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
 
 /**
- * Daily prediction game — LLM-authored yes/no questions about
- * real-world events; voting runs 9am–5pm Central.
+ * Daily prediction game — sports yes/no (win/loss or props) sourced from
+ * Kalshi or invented by the LLM; voting runs 9am–5pm Central.
  */
 export const predictionGameRouter = Router();
 

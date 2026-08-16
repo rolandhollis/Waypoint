@@ -7,17 +7,32 @@ interface ConfigPayload {
     version: number;
     publishedAt: string | null;
     experiments: ExperimentConfig[];
+    /** Registered containers and whether each slot is on. Absent on older snapshots. */
+    containers?: ContainerConfig[];
     identity: IdentityConfigMeta | null;
+}
+type DeliveryMode = "embedded" | "api" | "dom";
+/** When a `dom` experiment’s script should run. */
+type DomRunWhen = "domcontentloaded" | "load" | "navigation";
+interface ContainerConfig {
+    key: string;
+    /** False when the container is turned off in admin. */
+    enabled: boolean;
 }
 interface ExperimentConfig {
     key: string;
-    containerKey: string;
-    deliveryMode: "embedded" | "api";
+    /** Present for api/embedded; omitted or empty for dom. */
+    containerKey?: string;
+    deliveryMode: DeliveryMode;
     variants: ExperimentVariantConfig[];
     primaryKpi?: string;
     secondaryKpis?: string[];
     targetingRules: unknown[];
     rolloutPercent: number;
+    /** `dom` only: when to execute the assigned script. */
+    domRunWhen?: DomRunWhen;
+    /** `dom` only: RegExp source tested against `location.href`. */
+    domUrlPattern?: string;
 }
 interface ExperimentVariantConfig {
     key: string;
@@ -35,11 +50,11 @@ interface IdentityConfigMeta {
 interface ExposureEvent {
     experimentKey: string;
     variantKey: string;
-    containerKey: string;
+    containerKey?: string;
     userId?: string;
     anonId?: string;
     timestamp: string;
-    deliveryMode: "embedded" | "api";
+    deliveryMode: DeliveryMode;
     contentSource: "authored" | "code";
     primaryKpi?: string;
     siteKey: string;
@@ -57,12 +72,14 @@ interface Assignment {
     experimentKey: string;
     variantKey: string;
     variantDisplayName?: string;
-    containerKey: string;
-    deliveryMode: "embedded" | "api";
+    containerKey?: string;
+    deliveryMode: DeliveryMode;
     contentSource: "authored" | "code";
     authoredContent?: string;
     codeVariantKey?: string;
     primaryKpi?: string;
+    domRunWhen?: DomRunWhen;
+    domUrlPattern?: string;
 }
 interface AbSdk {
     readonly siteKey: string;
@@ -78,6 +95,12 @@ interface AbSdk {
      */
     getAssignmentByContainer(containerKey: string): Assignment | null;
     getContentByContainer(containerKey: string): string | null;
+    /**
+     * Whether a registered container slot is turned on.
+     * Off containers should render nothing (blank / invisible).
+     * Unknown keys (not in published config) default to enabled for older payloads.
+     */
+    isContainerEnabled(containerKey: string): boolean;
     /** Evaluate every live experiment in the current config (fires exposures). */
     getAssignments(): Assignment[];
     /** Sticky assignments currently stored for this browser (does not evaluate or expose). */

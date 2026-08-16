@@ -272,9 +272,16 @@ function TopBar() {
   return (
     <header className="flex items-center justify-between border-b border-wp-stone bg-white px-5 py-2.5">
       <div className="flex items-center gap-6">
-        <div className="flex items-baseline gap-2">
-          <Link to="/" className="text-lg font-bold text-wp-red hover:opacity-90">
-            {appName}
+        <div className="flex items-center gap-2">
+          <Link to="/" className="flex items-center gap-2 hover:opacity-90">
+            <img
+              src="/brand/icon-light-transparent.png"
+              alt=""
+              width={28}
+              height={28}
+              className="h-7 w-7"
+            />
+            <span className="text-lg font-bold text-wp-red">{appName}</span>
           </Link>
         </div>
         <TopNav />

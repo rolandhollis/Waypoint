@@ -40,10 +40,10 @@ function VoteTally({
     <div className="space-y-2">
       <div className="flex justify-between text-xs text-wp-slate">
         <span className={cn(highlight === true && "font-semibold text-wp-ink")}>
-          Will happen · {counts.will_happen} ({yesPct}%)
+          Yes · {counts.will_happen} ({yesPct}%)
         </span>
         <span className={cn(highlight === false && "font-semibold text-wp-ink")}>
-          Won&apos;t happen · {counts.will_not_happen} ({noPct}%)
+          No · {counts.will_not_happen} ({noPct}%)
         </span>
       </div>
       <div className="flex h-2 overflow-hidden rounded-full bg-wp-stone/50">
@@ -207,10 +207,10 @@ export function GameView() {
                   >
                     <span className="flex items-center gap-2 font-semibold">
                       <Check size={16} />
-                      Will happen
+                      Yes
                     </span>
                     <span className="mt-1 block text-xs text-wp-slate">
-                      {question.vote_yes_hint ?? "Happens as scheduled tonight."}
+                      {question.vote_yes_hint ?? "This side wins / prop hits."}
                     </span>
                   </button>
                   <button
@@ -226,10 +226,10 @@ export function GameView() {
                   >
                     <span className="flex items-center gap-2 font-semibold">
                       <X size={16} />
-                      Won&apos;t happen
+                      No
                     </span>
                     <span className="mt-1 block text-xs text-wp-slate">
-                      {question.vote_no_hint ?? "Does not happen that way tonight."}
+                      {question.vote_no_hint ?? "The other side / prop misses."}
                     </span>
                   </button>
                 </div>
@@ -249,7 +249,7 @@ export function GameView() {
                   )}
                 >
                   <span className="font-semibold">Result: </span>
-                  {question.outcome ? "Happened" : "Did not happen"}
+                  {question.outcome ? "Yes" : "No"}
                   {question.outcome_note ? (
                     <span className="text-wp-slate"> — {question.outcome_note}</span>
                   ) : null}
@@ -275,7 +275,7 @@ export function GameView() {
                       disabled={resolve.isPending}
                       onClick={() => resolve.mutate({ id: question.id, outcome: true })}
                     >
-                      Mark happened
+                      Mark Yes
                     </button>
                     <button
                       type="button"
@@ -283,7 +283,7 @@ export function GameView() {
                       disabled={resolve.isPending}
                       onClick={() => resolve.mutate({ id: question.id, outcome: false })}
                     >
-                      Mark did not happen
+                      Mark No
                     </button>
                     {regenerateEnabled ? (
                       <button
@@ -328,7 +328,7 @@ export function GameView() {
                         <span className="font-mono text-xs text-wp-slate">{row.game_date}</span>
                         {row.outcome !== null ? (
                           <span className="text-xs font-medium text-wp-ink">
-                            {row.outcome ? "Happened" : "Did not happen"}
+                            {row.outcome ? "Yes" : "No"}
                           </span>
                         ) : (
                           <span className="text-xs text-wp-slate">Pending</span>

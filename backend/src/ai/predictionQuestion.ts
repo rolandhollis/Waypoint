@@ -6,8 +6,8 @@ import { formatKalshiCloseHint } from "../lib/kalshiMarkets.js";
 /**
  * Daily prediction-game question generator.
  *
- * Picks human-scheduled evening events with a crisp yes/no stake and
- * phrases them in a witty, John Oliver–adjacent voice.
+ * Sports-first: evening games and props with ~50/50 stakes, phrased with
+ * dry, irreverent wit.
  */
 
 export type PredictionQuestionRequest = {
@@ -36,41 +36,39 @@ export class PredictionQuestionParseError extends Error {
 
 export function buildPredictionQuestionSystemPrompt(): string {
   return [
-    "You write daily yes/no prediction questions for a product team's internal game.",
-    "Voice: funny, irreverent, and sharp — think John Oliver on Last Week Tonight.",
+    "You write daily yes/no sports prediction questions for a product team's internal game.",
+    "Voice: funny, irreverent, and sharp — think a sports desk that watched too much John Oliver.",
     "Dry wit and skeptical curiosity are welcome; cruelty, slurs, and mean-spirited personal attacks are not.",
     "",
-    "CRITICAL — pick events that fit a clean yes/no vote:",
-    "- The event must be a HUMAN-SCHEDULED activity: a broadcast, vote, hearing, launch, premiere, press conference, award show, court ruling window, product drop, etc.",
-    "- Something an organizer can cancel, postpone, delay, or fail to hold — NOT a natural phenomenon.",
-    "- DO NOT use: meteor showers, eclipses, tides, weather, astronomical peaks, or \"will visibility be good\" questions.",
-    "- Sports are OK when the outcome is a real ~50/50 — avoid making every day a game preview.",
-    "- YES means the scheduled thing occurs as planned (airs, starts, passes, is held, releases, etc.).",
-    "- NO means it is cancelled, postponed, delayed past that evening, or clearly does not occur.",
-    "- The question must be phrased so both outcomes are sensible — never ask voters to pick \"cancelled\" for something that cannot be cancelled.",
+    "CRITICAL — this game is sports only:",
+    "- Pick a MAJOR sporting event that tips off / starts / finishes in the EVENING (after ~5:00pm US Central) or overnight.",
+    "- Prefer big leagues and tournaments teammates actually recognize: NFL, NBA, MLB, NHL, MLS, NCAA, soccer (EPL/UCL), tennis majors, golf majors, UFC, boxing title fights, Olympics, World Cup, etc.",
+    "- Avoid obscure lower leagues, micro props nobody tracks, and esports unless it's a widely known championship final.",
+    "- DO NOT use politics, entertainment premieres, hearings, launches, weather, or astronomy.",
     "",
-    "CRITICAL — pick events with genuine ~50/50 uncertainty:",
+    "CRITICAL — pick a crisp binary stake:",
+    "- Simple win/loss is great: \"Will the [favorite underdog] win tonight?\"",
+    "- Prop bets are also great when they're easy to verify: first team to score, over/under a round number, player to score, fight goes the distance, etc.",
+    "- YES and NO must map to clear, publicly checkable sports outcomes (box score, official result).",
+    "- Avoid parlays, multi-leg parlays, and nested conditionals.",
+    "",
+    "CRITICAL — pick outcomes with genuine ~50/50 uncertainty:",
     "- Teammates vote between 9:00am and 5:00pm Central — both sides should feel plausible before polls close.",
     "- Aim for roughly 40–60% either way, not a slam dunk.",
-    "- Prefer outcomes that are actively in doubt: cliffhanger votes, launch windows that often slip, \"will they actually announce tonight\", delayed hearings, surprise cancellations in flux.",
-    "- Avoid near-certainties: routine broadcasts that always air, holidays, events already confirmed hours ahead with no credible doubt.",
-    "- Avoid long-shot stunts unlikely to happen unless the scheduled event itself is the long shot (e.g. a bill that might pass tonight).",
-    "- If the base event is certain, do NOT use it — find a uncertain sub-question (timing, completion, announcement) or pick a different event.",
+    "- Prefer toss-up matchups, road dogs with a chance, competitive props near the line.",
+    "- Avoid heavy favorites, blowout locks, and \"will this game even be played\" cancellation questions unless the postponement risk is genuinely ~50/50.",
     "",
     "Event rules:",
     "- Outcome should not be knowable during voting hours (9:00am–5:00pm US Central).",
     "- Prefer events that resolve after 5:00pm CT or overnight (by 9:00am CT the next morning).",
-    "- Prefer weird news, politics, entertainment, awards, launches, hearings, corporate stunts, and culture moments.",
-    "- Sports are fine when genuinely uncertain (~50/50) — do not let sports dominate; prefer entertainment, politics, and general news when available.",
-    "- Economics and financial dailies are great when the contract is a crisp yes/no.",
-    "- Publicly verifiable by next morning (official schedules, news, government calendars, network listings).",
-    "- Do NOT invent fictional events.",
+    "- Publicly verifiable by next morning via box scores / official league results.",
+    "- Do NOT invent fictional games or teams.",
     "",
     "Output rules:",
-    "- question_text: witty setup ending in a clear yes/no — include approximate time when known.",
-    "- vote_yes_hint / vote_no_hint: short subtitles (max ~12 words) explaining what each button means FOR THIS question.",
+    "- question_text: witty setup ending in a clear yes/no — include approximate tip-off / start time when known.",
+    "- vote_yes_hint / vote_no_hint: short subtitles (max ~12 words) explaining what each button means FOR THIS question (e.g. team names, prop sides).",
     "- event_summary: factual one-liner for admins resolving the outcome.",
-    "- event_time_hint: scheduled time or resolution window when known.",
+    "- event_time_hint: scheduled tip-off / start / resolution window when known.",
     "",
     "You MUST respond by calling the submit_prediction_question tool exactly once.",
   ].join("\n");
@@ -81,19 +79,17 @@ export function buildPredictionQuestionUserPrompt(req: PredictionQuestionRequest
     `Calendar date: ${req.gameDateLabel} (${req.gameDate})`,
     `Workspace: ${req.tenantName}`,
     "",
-    "Pick one human-scheduled event where the outcome is genuinely uncertain (~50/50) during the 9am–5pm Central voting window.",
+    "Pick one major sporting event tonight (or overnight) where the outcome is genuinely uncertain (~50/50) during the 9am–5pm Central voting window.",
     "Outcome should resolve after voting closes (evening or by 9am CT next morning).",
-    "Skew toward entertainment, politics, general news, and economics — sports are OK but should not dominate.",
-    "Never a natural phenomenon.",
-    "Write a John Oliver–style prediction question where YES = it happens as scheduled and NO = cancelled/postponed/doesn't occur.",
-    "Include vote_yes_hint and vote_no_hint that match this specific question — not generic \"cancelled\" text unless cancellation is actually the NO case.",
+    "Sports only — win/loss or a simple prop. No politics, entertainment, or weather.",
+    "Write a witty sports-desk prediction question with a clear yes/no stake.",
+    "Include vote_yes_hint and vote_no_hint that name the sides (teams, over/under, player prop).",
     "",
-    "Good uncertain picks: cliffhanger floor vote, launch that might slip, earnings call where guidance is a coin flip, \"will they drop the news tonight vs. tomorrow\".",
-    "Bad picks: routine nightly news, sure-thing premieres, events with no credible chance of cancellation.",
-    "Bad event types: meteor shower visibility, \"will it rain\", sunrise/sunset, planetary alignment.",
+    "Good picks: evening NBA/NFL/MLB tip with a near coin-flip moneyline; UFC main event goes the distance; player scores / doesn't; O/U near the consensus number.",
+    "Bad picks: -14 favorites, obscure lower-league fixtures, multi-leg parlays, \"will it rain and cancel\".",
     "",
-    "Example tone for question_text (do not copy): \"Will the Senate actually gavel out before midnight, or will we get another 'historic evening of democracy' that eats everyone's dinner?\"",
-    "Example vote hints for that example: yes=\"They wrap before midnight\" no=\"Session drags on or gets postponed\"",
+    "Example tone for question_text (do not copy): \"The Celtics host the Knicks at 7:30 CT — will New York actually leave Boston with a W, or is this another night the Garden eats visitors for dinner?\"",
+    "Example vote hints for that example: yes=\"Knicks win\" no=\"Celtics win\"",
   ].join("\n");
 }
 
@@ -151,13 +147,13 @@ function assertDraft(value: unknown): Omit<
 
 const PREDICTION_QUESTION_TOOL = {
   name: "submit_prediction_question",
-  description: "Submit the daily prediction question.",
+  description: "Submit the daily sports prediction question.",
   input_schema: {
     type: "object",
     properties: {
       question_text: {
         type: "string",
-        description: "Witty yes/no question with a clear binary stake.",
+        description: "Witty sports yes/no question with a clear binary stake.",
       },
       event_summary: {
         type: "string",
@@ -165,7 +161,7 @@ const PREDICTION_QUESTION_TOOL = {
       },
       event_time_hint: {
         type: "string",
-        description: "When the outcome is expected, e.g. '10:30pm CT'.",
+        description: "When the game/prop resolves, e.g. '7:30pm CT tip'.",
       },
       vote_yes_hint: {
         type: "string",
@@ -222,11 +218,11 @@ async function callPredictionQuestionTool(
 
 export function buildKalshiRephraseSystemPrompt(): string {
   return [
-    "You rephrase Kalshi prediction-market contracts into daily game questions.",
-    "Voice: funny, irreverent, sharp — think John Oliver on Last Week Tonight.",
+    "You rephrase Kalshi sports prediction-market contracts into daily game questions.",
+    "Voice: funny, irreverent, sharp — think a sports desk that watched too much John Oliver.",
     "CRITICAL: Preserve the EXACT yes/no resolution from the Kalshi contract.",
     "Do not change what counts as yes vs no — admins resolve against Kalshi's settlement.",
-    "vote_yes_hint and vote_no_hint must match the Kalshi YES/NO subtitles (lightly edited for clarity).",
+    "vote_yes_hint and vote_no_hint must match the Kalshi YES/NO subtitles (lightly edited for clarity) — prefer team names / prop sides over generic Yes/No.",
     "event_summary: plain factual sentence for admins; mention the Kalshi ticker.",
     "You MUST respond by calling the submit_prediction_question tool exactly once.",
   ].join("\n");
@@ -241,13 +237,14 @@ export function buildKalshiRephraseUserPrompt(
     `Kalshi ticker: ${market.ticker}`,
     `Event: ${market.event_title}`,
     `Contract title: ${market.title}`,
+    `Category: ${market.category || "Sports"}`,
     `Kalshi URL: ${market.kalshi_url}`,
     `Kalshi YES means: ${market.yes_sub_title}`,
     `Kalshi NO means: ${market.no_sub_title}`,
-    `Market-implied yes probability: ~${market.yes_price_pct}% (pick markets near 50/50).`,
+    `Market-implied yes probability: ~${market.yes_price_pct}% (prefer markets near 50/50).`,
     `Market close time: ${market.close_time} (${formatKalshiCloseHint(market.close_time)}).`,
     "",
-    "Rephrase into one witty John Oliver–style question that ends in a clear yes/no.",
+    "Rephrase into one witty sports-desk question that ends in a clear yes/no.",
     "Do not invent a different event — this is the Kalshi contract teammates will resolve against.",
   ].join("\n");
 }

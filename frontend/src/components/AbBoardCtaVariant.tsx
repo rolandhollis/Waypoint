@@ -15,6 +15,8 @@ export function AbBoardCtaVariant() {
 
   if (!isAbSdkConfigured() || !ab.ready || ab.error) return null;
 
+  if (!ab.isContainerEnabled(CONTAINER_KEY)) return null;
+
   const inPreview = new URLSearchParams(window.location.search).get("zs_preview") === "1";
   // Live preview forces authored HTML via AbPreviewBanner; hide this slot then.
   if (inPreview) return null;

@@ -38,6 +38,8 @@ export function AbDemoBanner({
     return null;
   }
 
+  if (!ab.isContainerEnabled(containerKey)) return null;
+
   const inPreview = new URLSearchParams(window.location.search).get("zs_preview") === "1";
 
   // Admin live-preview uses AbPreviewBanner for the forced experiment.

@@ -20,6 +20,7 @@ interface AbContextValue {
   getContent: (experimentKey: string) => string | null;
   getAssignmentByContainer: (containerKey: string) => Assignment | null;
   getContentByContainer: (containerKey: string) => string | null;
+  isContainerEnabled: (containerKey: string) => boolean;
   lastExposure: ExposureEvent | null;
 }
 
@@ -133,6 +134,8 @@ export function AbSdkProvider({
         sdk?.getAssignmentByContainer(containerKey) ?? null,
       getContentByContainer: (containerKey) =>
         sdk?.getContentByContainer(containerKey) ?? null,
+      isContainerEnabled: (containerKey) =>
+        sdk?.isContainerEnabled(containerKey) ?? true,
       lastExposure,
     }),
     [ready, error, sdk, configVersion, previewRevision, lastExposure],
