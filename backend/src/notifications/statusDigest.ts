@@ -79,11 +79,34 @@ type GroupBundle = {
   missingByOwner: OwnerMissingGroup[];
 };
 
-type MissingProject = { project_id: string; project_title: string };
+type MissingProject = {
+  project_id: string;
+  project_title: string;
+  swim_lane_id: string | null;
+  swim_lane_name: string | null;
+  swim_lane_order: number | null;
+};
 
 type OwnerMissingGroup = {
   ownerName: string;
   projects: MissingProject[];
+};
+
+type PhaseSummaryRow = {
+  laneName: string;
+  laneOrder: number | null;
+  count: number;
+};
+
+type HealthSummaryRow = {
+  flag: UpdateRow["health_flag"] | "missing";
+  label: string;
+  count: number;
+};
+
+type DigestSummary = {
+  byPhase: PhaseSummaryRow[];
+  byHealth: HealthSummaryRow[];
 };
 
 async function loadRecipientsBatch(scope?: GroupScheduleScope): Promise<Map<string, DigestRecipient[]>> {
@@ -302,10 +325,20 @@ async function loadMissingForGroup(groupId: string, week: Date): Promise<OwnerMi
     title: string;
     owner_id: string | null;
     owner_name: string | null;
+    swim_lane_id: string | null;
+    swim_lane_name: string | null;
+    swim_lane_order: number | null;
   }>(
-    `SELECT p.id, p.title, p.owner_id, owner.name AS owner_name
+    `SELECT p.id,
+            p.title,
+            p.owner_id,
+            owner.name AS owner_name,
+            p.swim_lane_id,
+            sl.name AS swim_lane_name,
+            sl."order" AS swim_lane_order
        FROM projects p
        LEFT JOIN users owner ON owner.id = p.owner_id
+       LEFT JOIN swim_lanes sl ON sl.id = p.swim_lane_id
       WHERE p.id = ANY($1::uuid[])`,
     [projectIds],
   );
@@ -325,7 +358,13 @@ async function loadMissingForGroup(groupId: string, week: Date): Promise<OwnerMi
     if (completedIds.has(p.id)) continue;
     const ownerKey = p.owner_id ?? "__unassigned__";
     const ownerName = p.owner_name?.trim() || "Unassigned";
-    const project: MissingProject = { project_id: p.id, project_title: p.title };
+    const project: MissingProject = {
+      project_id: p.id,
+      project_title: p.title,
+      swim_lane_id: p.swim_lane_id,
+      swim_lane_name: p.swim_lane_name,
+      swim_lane_order: p.swim_lane_order,
+    };
     const existing = byOwner.get(ownerKey);
     if (existing) {
       existing.projects.push(project);
@@ -539,6 +578,145 @@ function missingUpdateCount(missingByOwner: OwnerMissingGroup[]): number {
   return missingByOwner.reduce((n, g) => n + g.projects.length, 0);
 }
 
+function buildDigestSummary(
+  updates: UpdateRow[],
+  missingByOwner: OwnerMissingGroup[],
+): DigestSummary {
+  const byLane = new Map<string, PhaseSummaryRow>();
+  const bumpPhase = (
+    key: string,
+    laneName: string,
+    laneOrder: number | null,
+  ) => {
+    const existing = byLane.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      byLane.set(key, { laneName, laneOrder, count: 1 });
+    }
+  };
+
+  for (const u of updates) {
+    bumpPhase(
+      u.swim_lane_id ?? u.swim_lane_name ?? "(no lane)",
+      u.swim_lane_name ?? "(no lane)",
+      u.swim_lane_order ?? null,
+    );
+  }
+  for (const { projects } of missingByOwner) {
+    for (const p of projects) {
+      bumpPhase(
+        p.swim_lane_id ?? p.swim_lane_name ?? "(no lane)",
+        p.swim_lane_name ?? "(no lane)",
+        p.swim_lane_order ?? null,
+      );
+    }
+  }
+
+  const byPhase = Array.from(byLane.values()).sort((a, b) =>
+    compareSwimLaneReportOrder(a.laneOrder, b.laneOrder, a.laneName, b.laneName),
+  );
+
+  const healthTally: Record<UpdateRow["health_flag"], number> = {
+    green: 0,
+    yellow: 0,
+    red: 0,
+    white: 0,
+  };
+  for (const u of updates) {
+    healthTally[u.health_flag] += 1;
+  }
+  const missingCount = missingUpdateCount(missingByOwner);
+
+  const byHealth: HealthSummaryRow[] = (
+    ["green", "yellow", "red", "white"] as const
+  )
+    .filter((flag) => healthTally[flag] > 0)
+    .map((flag) => ({
+      flag,
+      label: healthLabel(flag),
+      count: healthTally[flag],
+    }));
+  if (missingCount > 0) {
+    byHealth.push({ flag: "missing", label: "No update", count: missingCount });
+  }
+
+  return { byPhase, byHealth };
+}
+
+function formatDigestSummaryText(summary: DigestSummary): string[] {
+  const lines: string[] = ["At a glance:"];
+  if (summary.byPhase.length) {
+    lines.push("By phase:");
+    for (const row of summary.byPhase) {
+      lines.push(`  • ${row.laneName}: ${row.count}`);
+    }
+  }
+  if (summary.byHealth.length) {
+    lines.push("By status:");
+    for (const row of summary.byHealth) {
+      lines.push(`  • ${row.label}: ${row.count}`);
+    }
+  }
+  lines.push("");
+  return lines;
+}
+
+function renderDigestSummaryHtml(summary: DigestSummary): string {
+  if (!summary.byPhase.length && !summary.byHealth.length) return "";
+
+  const phaseRows = summary.byPhase
+    .map(
+      (row) => `
+        <tr>
+          <td style="padding:4px 12px 4px 0;color:#334155;">${escapeHtml(row.laneName)}</td>
+          <td align="right" style="padding:4px 0;font-weight:600;color:#0f172a;white-space:nowrap;">${row.count}</td>
+        </tr>`,
+    )
+    .join("");
+
+  const healthRows = summary.byHealth
+    .map((row) => {
+      const badge =
+        row.flag === "missing"
+          ? `<span style="display:inline-block;font-size:11px;font-weight:600;line-height:1.3;padding:3px 10px;border-radius:12px;background:#94a3b8;color:#fff;white-space:nowrap;">${escapeHtml(row.label)}</span>`
+          : healthBadgeHtml(row.flag);
+      return `
+        <tr>
+          <td style="padding:4px 12px 4px 0;">${badge}</td>
+          <td align="right" style="padding:4px 0;font-weight:600;color:#0f172a;white-space:nowrap;">${row.count}</td>
+        </tr>`;
+    })
+    .join("");
+
+  const phaseBlock = summary.byPhase.length
+    ? `
+      <div style="margin-bottom:${summary.byHealth.length ? "14px" : "0"};">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#64748b;margin-bottom:6px;">By phase</div>
+        <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px;">
+          ${phaseRows}
+        </table>
+      </div>`
+    : "";
+
+  const healthBlock = summary.byHealth.length
+    ? `
+      <div>
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#64748b;margin-bottom:6px;">By status</div>
+        <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px;">
+          ${healthRows}
+        </table>
+      </div>`
+    : "";
+
+  return `
+    <div style="margin:16px 0 8px;padding:14px 16px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;">
+      <div style="font-size:13px;font-weight:600;color:#0f172a;margin:0 0 10px;">At a glance</div>
+      ${phaseBlock}
+      ${healthBlock}
+    </div>`;
+}
+
 function renderMissingSectionText(
   missingByOwner: OwnerMissingGroup[],
   appUrl: string,
@@ -621,6 +799,7 @@ function renderDigest(input: {
   const laneGroups = laneGroupsForReport(updates);
   const laneCount = laneGroups.length;
   const missingCount = missingUpdateCount(missingByOwner);
+  const digestSummary = buildDigestSummary(updates, missingByOwner);
 
   const greeting = recipientName ? `Hi ${recipientName.split(/\s+/)[0] ?? recipientName},` : "Hello,";
   const noteText = adminNote?.trim() ?? "";
@@ -634,6 +813,7 @@ function renderDigest(input: {
   }
   textLines.push(`${groupName} status updates for the week of ${weekLabel}:`);
   textLines.push("");
+  textLines.push(...formatDigestSummaryText(digestSummary));
   for (const { laneName, items } of laneGroups) {
     textLines.push(`--- ${laneName} ---`);
     for (const u of items) {
@@ -673,6 +853,7 @@ function renderDigest(input: {
     missingCount > 0
       ? ` · <strong>${missingCount}</strong> eligible item${missingCount === 1 ? "" : "s"} without a submitted update`
       : "";
+  const summaryHtml = renderDigestSummaryHtml(digestSummary);
 
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;max-width:640px;">
@@ -680,6 +861,7 @@ function renderDigest(input: {
       <p>${escapeHtml(greeting)}</p>
       ${noteHtml}
       <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}${summaryExtra}.</p>
+      ${summaryHtml}
       ${laneHtml}
       ${missingHtml}
       <p style="margin-top:24px;">
