@@ -8,13 +8,10 @@ import type { EstimateSource, ProjectAuditAction, ProjectDeadlineRow, ProjectRow
 import { config } from "../config.js";
 import {
   AiEstimatorParseError,
-  buildUserPrompt,
   generateSuggestion,
   nearestSizeLabel,
-  PHASE_KEYS,
   type AiSuggestion,
   type FewShotExample,
-  type PhaseKey,
   type TshirtBucket,
 } from "../ai/estimator.js";
 import { newlyAddedMentionIds } from "../lib/mentions.js";
@@ -2153,9 +2150,3 @@ projectsRouter.post("/:id/ai-estimate", requireWrite, async (req, res) => {
 
   res.json({ suggestion, cached: false });
 });
-
-// Re-export a couple of estimator helpers for tests / hand-inspection
-// in local dev. Not part of the HTTP surface — imported directly by
-// scripts that want to eyeball a prompt without spending a token.
-export { buildUserPrompt, PHASE_KEYS };
-export type { PhaseKey };

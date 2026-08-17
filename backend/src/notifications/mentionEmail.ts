@@ -164,7 +164,3 @@ export function fireMentionEmail(input: SendMentionEmailInput): void {
     );
   });
 }
-
-// Re-export for callers that want the "how does this text render as
-// plain-language" helper without pulling from the lib module directly.
-export { renderMentionsAsPlain };

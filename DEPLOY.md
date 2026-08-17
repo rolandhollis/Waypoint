@@ -81,7 +81,7 @@ Everything the app needs at runtime is env-driven. Reference: `backend/.env.exam
 | `PORT` | no (defaults to `4000`) | `[env]` in `fly.toml` |
 | `STATIC_DIR` | pre-set in the image | `Dockerfile` |
 | `REPORTING_TIMEZONE` | no (defaults to `America/Chicago`) | `[env]` in `fly.toml` |
-| `OKTA_ISSUER`, `OKTA_AUDIENCE`, `OKTA_CLIENT_ID` | if `AUTH_MODE=okta` | `fly secrets set` |
+| `OKTA_ISSUER`, `OKTA_AUDIENCE` | if `AUTH_MODE=okta` | `fly secrets set` |
 | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | if `AUTH_MODE=cloudflare-access` | `fly secrets set` |
 | `CORS_ORIGIN` | only relevant when SPA runs on a different origin (dev only) | n/a in prod |
 
@@ -157,7 +157,6 @@ fly secrets set \
   AUTH_MODE=okta \
   OKTA_ISSUER=https://<your-org>.okta.com \
   OKTA_AUDIENCE=<audience> \
-  OKTA_CLIENT_ID=<client-id> \
   --app waypoint-qmh6xa
 ```
 

@@ -65,22 +65,6 @@ export function descendants(rootId: string, kids: Map<string, Project[]>): Proje
 }
 
 /**
- * Compute the depth of a project below the nearest epic ancestor.
- * Epics themselves are depth 0. Direct subtask of an epic → 1. And
- * so on. Used by the roadmap tree indentation.
- */
-export function depthFromEpic(project: Project, byId: Map<string, Project>): number {
-  let d = 0;
-  let cursor: Project | undefined = project;
-  while (cursor && cursor.parent_id) {
-    d++;
-    cursor = byId.get(cursor.parent_id);
-    if (d > 32) break;
-  }
-  return d;
-}
-
-/**
  * Find the top-most epic ancestor of a project. If the project is
  * already an epic, returns itself. Returns null only in the pathological
  * "orphaned subtask" case (should never happen in practice — the DB

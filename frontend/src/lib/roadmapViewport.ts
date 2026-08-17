@@ -108,10 +108,6 @@ export const ALL_ZOOM_MAX_FORWARD_DAYS = 5 * 365;
  */
 export const ALL_ZOOM_FALLBACK_DAY_PX = 1.5;
 
-/** Lower / upper clamps for the dynamic `dayPx` used by "all" zoom. */
-export const ALL_ZOOM_MIN_DAY_PX = 0.5;
-export const ALL_ZOOM_MAX_DAY_PX = 8;
-
 /**
  * Lower / upper clamps for the dynamic `dayPx` used by the fixed
  * zooms (3mo / 6mo / 1yr) when the chart is auto-sized to the

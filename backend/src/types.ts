@@ -124,18 +124,6 @@ export type WeeklyStatusSchedule = {
 };
 
 /**
- * One row per (user, group) pair. `role` is the user's role in that
- * specific tenant — a user can be admin in RMN and viewer in VC.
- * See migration 017 for the schema.
- */
-export type UserGroupRow = {
-  user_id: string;
-  group_id: string;
-  role: Role;
-  created_at: Date;
-};
-
-/**
  * Safe-to-return user shape — the exact same fields the frontend
  * expects, minus password_hash. Use scrubUser() before every
  * res.json() that returns a user row so a rogue endpoint can never
@@ -432,15 +420,6 @@ export type ProjectRow = {
  */
 export type EstimateSource = "user" | "claude" | "csv" | "cascade";
 
-export type StatusHistoryRow = {
-  id: string;
-  project_id: string;
-  from_swim_lane_id: string | null;
-  to_swim_lane_id: string | null;
-  moved_by_user_id: string | null;
-  timestamp: Date;
-};
-
 export type ProjectCommentRow = {
   id: string;
   project_id: string;
@@ -521,17 +500,6 @@ export type ProjectLinkRow = {
   position: number;
   created_at: Date;
   updated_at: Date;
-};
-
-export type ProjectAuditRow = {
-  id: string;
-  project_id: string;
-  user_id: string | null;
-  action: ProjectAuditAction;
-  field: string | null;
-  from_value: unknown;
-  to_value: unknown;
-  timestamp: Date;
 };
 
 /**

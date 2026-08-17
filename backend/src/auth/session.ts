@@ -30,9 +30,6 @@ export const SESSION_COOKIE = "waypoint.session";
  */
 export const SESSION_TTL_DEFAULT_MS = 7 * 24 * 60 * 60 * 1000;
 export const SESSION_TTL_REMEMBER_MS = 30 * 24 * 60 * 60 * 1000;
-/** @deprecated kept as an alias so callers reading the constant see
- *  the 7-day default; new code should pass the `rememberMe` flag. */
-export const SESSION_TTL_MS = SESSION_TTL_DEFAULT_MS;
 
 export function ttlFor(rememberMe: boolean): number {
   return rememberMe ? SESSION_TTL_REMEMBER_MS : SESSION_TTL_DEFAULT_MS;

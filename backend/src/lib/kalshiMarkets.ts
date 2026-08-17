@@ -71,12 +71,6 @@ export type GameDayTimeBounds = {
   settlementCompleteDeadline: Date;
 };
 
-type KalshiSeriesRaw = {
-  ticker: string;
-  title?: string;
-  category?: string;
-};
-
 type KalshiMarketRaw = {
   ticker: string;
   title?: string;
@@ -101,16 +95,6 @@ type KalshiEventRaw = {
   category?: string;
   series_ticker?: string;
   markets?: KalshiMarketRaw[];
-};
-
-type KalshiSeriesResponse = {
-  series?: KalshiSeriesRaw[] | null;
-  cursor?: string;
-};
-
-type KalshiEventsResponse = {
-  events?: KalshiEventRaw[];
-  cursor?: string;
 };
 
 type KalshiMarketsResponse = {
@@ -268,50 +252,6 @@ async function mapWithConcurrency<T, R>(
 }
 
 /**
- * Fetch all series templates in a Kalshi API category (paginated).
- * Note: Kalshi uses "Entertainment" for culture-style content; "Culture" is often empty.
- */
-export async function getSeriesByCategory(category: string): Promise<KalshiSeriesRaw[]> {
-  const rows = await paginateKalshi<KalshiSeriesResponse>(
-    "series",
-    (cursor) => {
-      const params = new URLSearchParams({ category, limit: String(PAGE_LIMIT) });
-      if (cursor) params.set("cursor", cursor);
-      return params;
-    },
-    (page) => ({
-      items: page.series ?? [],
-      cursor: page.cursor,
-    }),
-  );
-  return rows as KalshiSeriesRaw[];
-}
-
-/**
- * Fetch open events (with nested markets) for a single series ticker (paginated).
- */
-export async function getEventsForSeries(seriesTicker: string): Promise<KalshiEventRaw[]> {
-  const rows = await paginateKalshi<KalshiEventsResponse>(
-    "events",
-    (cursor) => {
-      const params = new URLSearchParams({
-        series_ticker: seriesTicker,
-        status: "open",
-        with_nested_markets: "true",
-        limit: String(PAGE_LIMIT),
-      });
-      if (cursor) params.set("cursor", cursor);
-      return params;
-    },
-    (page) => ({
-      items: page.events ?? [],
-      cursor: page.cursor,
-    }),
-  );
-  return rows as KalshiEventRaw[];
-}
-
-/**
  * Open markets whose close_time falls between vote cutoff and end of game day (paginated).
  * Narrows the search space before applying expiration/settlement filters.
  */
@@ -355,40 +295,6 @@ function marketQualifies(market: KalshiMarketRaw, bounds: GameDayTimeBounds): bo
     expectedExpiration <= bounds.settlementWindowEnd &&
     settlementComplete <= bounds.settlementCompleteDeadline
   );
-}
-
-/**
- * From open events with nested markets, return flat qualifying market rows.
- */
-export function filterQualifyingMarkets(
-  events: KalshiEventRaw[],
-  bounds: GameDayTimeBounds,
-): QualifyingMarketInternal[] {
-  const out: QualifyingMarketInternal[] = [];
-
-  for (const event of events) {
-    const eventTicker = event.event_ticker;
-    if (!eventTicker) continue;
-
-    const markets = event.markets ?? [];
-    for (const market of markets) {
-      if (!market.ticker || !market.title?.trim()) continue;
-
-      const blob = `${market.ticker} ${eventTicker} ${event.series_ticker ?? ""} ${market.title}`;
-      if (isParlayMarket(blob)) continue;
-      if (!marketQualifies(market, bounds)) continue;
-
-      out.push({
-        event_ticker: eventTicker,
-        event_title: (event.title ?? market.title).trim(),
-        category: (event.category ?? "").trim(),
-        series_ticker: (event.series_ticker ?? "").trim(),
-        market,
-      });
-    }
-  }
-
-  return out;
 }
 
 function filterQualifyingFlatMarkets(
@@ -532,27 +438,6 @@ async function collectQualifyingEveningMarkets(bounds: GameDayTimeBounds): Promi
   );
   if (!qualifying.length) return [];
   return enrichCandidatesWithEventMeta(qualifying);
-}
-
-/**
- * Series-template scan (spec API flow). Serial per-series to avoid rate limits.
- * Prefer {@link collectQualifyingEveningMarkets} for the daily cron job.
- */
-export async function collectQualifyingForKalshiCategoriesViaSeries(
-  kalshiCategories: string[],
-  bounds: GameDayTimeBounds,
-): Promise<QualifyingMarketInternal[]> {
-  const qualifying: QualifyingMarketInternal[] = [];
-
-  for (const kalshiCategory of kalshiCategories) {
-    const seriesList = await getSeriesByCategory(kalshiCategory);
-    for (const series of seriesList) {
-      const events = await getEventsForSeries(series.ticker);
-      qualifying.push(...filterQualifyingMarkets(events, bounds));
-    }
-  }
-
-  return qualifying;
 }
 
 /**

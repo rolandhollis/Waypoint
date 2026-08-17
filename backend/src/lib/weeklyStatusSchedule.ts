@@ -1,7 +1,6 @@
 import { addDays } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { config } from "../config.js";
-import type { AppConstants } from "../types.js";
 import { weekOfMonday } from "./time.js";
 
 /** ISO weekday: 1 = Monday … 7 = Sunday. */
@@ -75,12 +74,6 @@ export function resolveWeeklyStatusSchedule(
   };
 }
 
-export function weeklyStatusScheduleFromConstants(
-  constants: AppConstants,
-): WeeklyStatusSchedule {
-  return resolveWeeklyStatusSchedule(constants.weekly_status_schedule);
-}
-
 /**
  * Due instant for a reporting week. `weekOf` must be the Monday anchor
  * from `weekOfMonday` in the same timezone as the schedule.
@@ -118,18 +111,4 @@ export function isWeeklyStatusScheduleSlot(
 
 export function weekOfMondayForSchedule(now: Date, schedule: WeeklyStatusSchedule): Date {
   return weekOfMonday(now, schedule.timezone);
-}
-
-const DOW_LABELS: Record<number, string> = {
-  1: "Monday",
-  2: "Tuesday",
-  3: "Wednesday",
-  4: "Thursday",
-  5: "Friday",
-  6: "Saturday",
-  7: "Sunday",
-};
-
-export function formatScheduleDay(day: number): string {
-  return DOW_LABELS[day] ?? `Day ${day}`;
 }

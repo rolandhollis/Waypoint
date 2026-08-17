@@ -771,21 +771,3 @@ export function useMarkMentionRead() {
     },
   });
 }
-
-/**
- * POST /api/mentions/mark-all-read — bulk-clear every unread
- * mention for the current user in the active tenant. Mirrors the
- * single-mention mutation's cache-invalidation set so both the
- * badge and the popover flush together.
- */
-export function useMarkAllMentionsRead() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      api<void>("/mentions/mark-all-read", { method: "POST" }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["mentions", "unread-count"] });
-      qc.invalidateQueries({ queryKey: ["mentions", "recent"] });
-    },
-  });
-}

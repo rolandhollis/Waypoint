@@ -242,7 +242,7 @@ export const MentionTextarea = forwardRef<
       const chip = createMentionChip({ id: user.id, name: user.name }, doc);
       // Follow the picked chip with a trailing space so the user's
       // next keystroke isn't glued to the chip's visible text — same
-      // behavior as `insertMentionAt` in the plain-text helper.
+      // Append a trailing space so typing continues cleanly after the chip.
       const spaceNode = doc.createTextNode(" ");
       // Insert as a fragment so both nodes land in a single call —
       // avoids the "range.insertNode splits a text node and the caret

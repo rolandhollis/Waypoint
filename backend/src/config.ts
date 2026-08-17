@@ -52,7 +52,6 @@ export const config = {
   okta: {
     issuer: process.env.OKTA_ISSUER ?? "",
     audience: process.env.OKTA_AUDIENCE ?? "",
-    clientId: process.env.OKTA_CLIENT_ID ?? "",
   },
   /**
    * Cloudflare Access sits in front of the app, does the OIDC dance

@@ -33,10 +33,6 @@ export function computeProjectViolations(
   };
 }
 
-export function hasAnyViolation(v: ViolationSet): boolean {
-  return v.deadlines.length > 0 || v.dependencies.length > 0;
-}
-
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**

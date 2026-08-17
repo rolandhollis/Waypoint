@@ -8,12 +8,6 @@
  * gracefully when styling isn't in play, and can be diffed at write
  * time for "who was newly tagged?" without a separate offsets store.
  */
-export type MentionableUser = {
-  id: string;
-  name: string;
-  email: string;
-  color: string;
-};
 
 export type MentionSegment =
   | { kind: "text"; text: string }
@@ -55,56 +49,6 @@ export function parseMentions(text: string): MentionSegment[] {
   }
   if (lastIndex < text.length) {
     out.push({ kind: "text", text: text.slice(lastIndex) });
-  }
-  return out;
-}
-
-/**
- * Serialize a picked user into the canonical inline token. The
- * caller (MentionPicker) inserts this into the textarea at the
- * caret; the display name is trimmed to keep the token compact and
- * predictable.
- */
-export function formatToken(user: { id: string; name: string }): string {
-  return `@[${user.name.trim()}](user:${user.id})`;
-}
-
-/**
- * A mention token located inside `text`, with the exact character
- * offsets it occupies. Used by editor-side helpers that want to
- * treat mentions as atomic units — backspace-erases-whole-token,
- * arrow-jumps-over-token, cut-extends-to-whole-token, etc.
- *
- * `start` is inclusive, `end` is exclusive: `text.slice(start, end)`
- * yields the token exactly.
- */
-export type MentionRange = {
-  start: number;
-  end: number;
-  userId: string;
-  displayName: string;
-  text: string;
-};
-
-/**
- * Scan `text` for every well-formed mention token and return the
- * character range each one occupies. Cheap enough to recompute on
- * every keystroke: bailing out immediately when the string has no
- * `@` keeps the common case free.
- */
-export function getMentionRanges(text: string): MentionRange[] {
-  if (!text || text.indexOf("@") === -1) return [];
-  const out: MentionRange[] = [];
-  const re = new RegExp(MENTION_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    out.push({
-      start: match.index,
-      end: match.index + match[0].length,
-      userId: (match[2] ?? "").toLowerCase(),
-      displayName: (match[1] ?? "").trim(),
-      text: match[0],
-    });
   }
   return out;
 }
@@ -178,30 +122,6 @@ export function filterMentionCandidates<U extends { name: string; email: string 
     (u) =>
       u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q),
   );
-}
-
-/**
- * Replace the range from an `@` trigger through the current caret
- * with the token for the picked user, followed by one space so the
- * user can keep typing. Returns the new text plus the caret
- * position the textarea should sit at afterward.
- */
-export function insertMentionAt(args: {
-  text: string;
-  triggerStart: number;
-  caret: number;
-  user: { id: string; name: string };
-}): { text: string; caret: number } {
-  const { text, triggerStart, caret, user } = args;
-  const token = formatToken(user);
-  const before = text.slice(0, triggerStart);
-  const after = text.slice(caret);
-  // Append a space so the next character the user types isn't glued
-  // to the token — avoids `@Alicehello`. If the next char is
-  // already whitespace we skip inserting a duplicate.
-  const insert = /^\s/.test(after) ? token : `${token} `;
-  const nextText = `${before}${insert}${after}`;
-  return { text: nextText, caret: before.length + insert.length };
 }
 
 /**

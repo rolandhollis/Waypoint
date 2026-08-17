@@ -112,13 +112,6 @@ export function parentNavDropdownForTab(tabKey: TabLabelKey): NavDropdownGroup |
   return NAV_DROPDOWN_GROUPS.find((group) => navDropdownGroupKeys(group).includes(tabKey));
 }
 
-export function resolveActiveTabKey(pathname: string): TabLabelKey | null {
-  for (const key of TAB_LABEL_KEYS) {
-    if (isNavPathActive(pathname, TAB_ROUTES[key])) return key;
-  }
-  return null;
-}
-
 export function navDropdownGroupKeys(group: NavDropdownGroup): TabLabelKey[] {
   return group.sections.flatMap((section) => section.keys);
 }

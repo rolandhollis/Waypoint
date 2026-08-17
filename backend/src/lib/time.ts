@@ -1,4 +1,4 @@
-import { addDays, startOfDay } from "date-fns";
+import { addDays } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { config } from "../config.js";
 import {
@@ -34,8 +34,4 @@ export function dueAtForWeek(
     });
   }
   return dueAtForWeekFromSchedule(weekOf, timeZoneOrSchedule);
-}
-
-export function isoDate(d: Date): string {
-  return startOfDay(d).toISOString().slice(0, 10);
 }

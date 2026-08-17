@@ -47,8 +47,3 @@ export function computeDeadlineStatuses(
     return { deadline, lane, phaseKey, phaseDate, severity };
   });
 }
-
-/** Convenience: the subset of statuses that are currently a miss. */
-export function violatedDeadlines(statuses: DeadlineStatus[]): DeadlineStatus[] {
-  return statuses.filter((s) => s.severity !== "ok");
-}
