@@ -15,6 +15,10 @@ export function ReminderBanner() {
   const [statusModalId, setStatusModalId] = useState<string | null>(null);
   if (!data || data.pending.length === 0) return null;
 
+  // Hide until the week's reminder slot (default: Thursday 8:00 America/Chicago).
+  // Owners can still submit early from the Status Report page.
+  if (new Date() < new Date(data.reminder_at)) return null;
+
   const overdue = new Date(data.due_at) < new Date();
   const byId = new Map((projects.data ?? []).map((p) => [p.id, p]));
 

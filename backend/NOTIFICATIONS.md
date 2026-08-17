@@ -10,10 +10,12 @@ because Fly.io blocks outbound SMTP.
   resend.dev" in most inbox clients.
 - **What's sent today**: two weekly emails per tenant.
   1. **Reminder** — one email per opted-in owner every Thursday
-     at 10:00 in `REPORTING_TIMEZONE`, listing the status updates
+     at 08:00 in `REPORTING_TIMEZONE`, listing the status updates
      they owe that week. Only fires when they actually have
      pending items — the query mirrors the "Pending" list in the
-     app. Timed as a day-of-week nudge before the Friday due-date.
+     app. The in-app reminder banner uses the same slot and stays
+     hidden until then. Timed as a day-of-week nudge before the
+     Friday due-date.
   2. **Digest** — one email per admin-picked recipient every
      Friday at 17:00 in `REPORTING_TIMEZONE`, containing all of
      that week's completed status updates grouped by swim lane.

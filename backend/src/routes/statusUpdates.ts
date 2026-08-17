@@ -9,7 +9,7 @@ import {
   parseSubtaskStatusUpdatesForForm,
   type SubtaskStatusUpdateEntry,
 } from "../lib/subtaskStatusUpdates.js";
-import { dueAtForWeek, weekOfMonday } from "../lib/time.js";
+import { dueAtForWeek, reminderAtForWeek, weekOfMonday } from "../lib/time.js";
 import { weekOfMondayForSchedule } from "../lib/weeklyStatusSchedule.js";
 import { compareSwimLaneReportOrder } from "../lib/statusReportOrder.js";
 import { addDays } from "date-fns";
@@ -105,6 +105,7 @@ statusUpdatesRouter.get("/pending", async (req, res) => {
     res.json({
       week_of: week.toISOString().slice(0, 10),
       due_at: dueAtForWeek(week, schedule).toISOString(),
+      reminder_at: reminderAtForWeek(week, schedule).toISOString(),
       pending: [],
     });
     return;
@@ -126,6 +127,7 @@ statusUpdatesRouter.get("/pending", async (req, res) => {
   res.json({
     week_of: week.toISOString().slice(0, 10),
     due_at: dueAtForWeek(week, schedule).toISOString(),
+    reminder_at: reminderAtForWeek(week, schedule).toISOString(),
     pending,
   });
 });

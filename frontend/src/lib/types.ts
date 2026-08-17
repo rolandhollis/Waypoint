@@ -709,6 +709,8 @@ export type WeeklyStatusUpdate = {
 export type PendingStatusResponse = {
   week_of: string;
   due_at: string;
+  /** When the in-app reminder banner should start showing for this week. */
+  reminder_at: string;
   pending: Array<{
     project_id: string;
     existing_update: WeeklyStatusUpdate | null;

@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import {
   DEFAULT_WEEKLY_STATUS_SCHEDULE,
   dueAtForWeekFromSchedule,
+  reminderAtForWeekFromSchedule,
   type WeeklyStatusSchedule,
 } from "./weeklyStatusSchedule.js";
 
@@ -34,4 +35,18 @@ export function dueAtForWeek(
     });
   }
   return dueAtForWeekFromSchedule(weekOf, timeZoneOrSchedule);
+}
+
+/** When the in-app reminder banner (and email job) should start nagging for the week. */
+export function reminderAtForWeek(
+  weekOf: Date,
+  timeZoneOrSchedule: string | WeeklyStatusSchedule = config.reportingTimezone,
+): Date {
+  if (typeof timeZoneOrSchedule === "string") {
+    return reminderAtForWeekFromSchedule(weekOf, {
+      ...DEFAULT_WEEKLY_STATUS_SCHEDULE,
+      timezone: timeZoneOrSchedule,
+    });
+  }
+  return reminderAtForWeekFromSchedule(weekOf, timeZoneOrSchedule);
 }

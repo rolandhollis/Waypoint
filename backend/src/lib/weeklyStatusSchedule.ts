@@ -30,7 +30,7 @@ export const DEFAULT_WEEKLY_STATUS_SCHEDULE: WeeklyStatusSchedule = {
   due_day: 4,
   due_time: "23:59",
   reminder_day: 4,
-  reminder_time: "10:00",
+  reminder_time: "08:00",
   digest_day: 5,
   digest_time: "17:00",
 };
@@ -74,6 +74,23 @@ export function resolveWeeklyStatusSchedule(
   };
 }
 
+function atLocalDayTime(
+  weekOf: Date,
+  schedule: WeeklyStatusSchedule,
+  day: number,
+  time: string,
+): Date {
+  const offset = day - 1;
+  const dayStr = formatInTimeZone(addDays(weekOf, offset), schedule.timezone, "yyyy-MM-dd");
+  const [hh, mm] = time.split(":").map(Number);
+  const sec = time === "23:59" ? 59 : 0;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return fromZonedTime(
+    `${dayStr}T${pad(hh!)}:${pad(mm!)}:${pad(sec)}`,
+    schedule.timezone,
+  );
+}
+
 /**
  * Due instant for a reporting week. `weekOf` must be the Monday anchor
  * from `weekOfMonday` in the same timezone as the schedule.
@@ -82,15 +99,15 @@ export function dueAtForWeekFromSchedule(
   weekOf: Date,
   schedule: WeeklyStatusSchedule,
 ): Date {
-  const offset = schedule.due_day - 1;
-  const dayStr = formatInTimeZone(addDays(weekOf, offset), schedule.timezone, "yyyy-MM-dd");
-  const [hh, mm] = schedule.due_time.split(":").map(Number);
-  const sec = schedule.due_time === "23:59" ? 59 : 0;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return fromZonedTime(
-    `${dayStr}T${pad(hh!)}:${pad(mm!)}:${pad(sec)}`,
-    schedule.timezone,
-  );
+  return atLocalDayTime(weekOf, schedule, schedule.due_day, schedule.due_time);
+}
+
+/** Instant the owner reminder (banner + email) becomes active for the week. */
+export function reminderAtForWeekFromSchedule(
+  weekOf: Date,
+  schedule: WeeklyStatusSchedule,
+): Date {
+  return atLocalDayTime(weekOf, schedule, schedule.reminder_day, schedule.reminder_time);
 }
 
 export type WeeklyStatusScheduleSlot = "reminder" | "digest";

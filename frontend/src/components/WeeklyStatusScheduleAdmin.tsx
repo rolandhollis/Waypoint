@@ -26,7 +26,7 @@ function scheduleFromEffective(
     due_day: effective?.due_day ?? 4,
     due_time: effective?.due_time ?? "23:59",
     reminder_day: effective?.reminder_day ?? 4,
-    reminder_time: effective?.reminder_time ?? "10:00",
+    reminder_time: effective?.reminder_time ?? "08:00",
     digest_day: effective?.digest_day ?? 5,
     digest_time: effective?.digest_time ?? "17:00",
   };
