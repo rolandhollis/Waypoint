@@ -146,11 +146,10 @@ type Store = {
    * User-controlled height (in CSS px) of the Roadmap scrolling
    * card — the same card both Rows (`GanttTimeline`, sticky-header
    * branch) and Compact (`RoadmapCompactView`) render into. The
-   * card exposes a native `resize: vertical` drag handle; a
-   * `ResizeObserver` in each view writes the observed height here
-   * (debounced) so dragging to reveal more items survives a reload.
-   * `null` = "no explicit pick yet — fall back to the CSS-computed
-   * default"; the value is otherwise clamped into
+   * card exposes a bottom-edge drag handle (`HeightResizer`);
+   * committing a drag writes the height here so the pick survives
+   * a reload. `null` = "no explicit pick yet — fall back to the
+   * CSS-computed default"; the value is otherwise clamped into
    * `[ROADMAP_HEIGHT_MIN_PX, ROADMAP_HEIGHT_MAX_PX]` on write.
    * Quarters view and the auto-schedule preview modal don't share
    * this pref (different layouts), and `pdfMode` deliberately
@@ -424,11 +423,12 @@ function clampRoadmapLabelColumnPx(px: number): number {
  * plus a couple of rows on the smallest viewport we support;
  * `MAX_PX` prevents a stuck drag / stale persisted value from
  * writing an absurd height (e.g. a corrupted state that pins the
- * card taller than the tallest realistic display). The CSS class
- * still applies its own `max-h-[100vh]` cap at render time so
- * dragging can never extend past the current viewport, but the
- * store-level clamp is a defense-in-depth against any code path
- * (or migration) that could otherwise persist a wild value.
+ * card taller than the tallest realistic display). After the user
+ * picks a height the CSS `max-h-[100vh]` cap is dropped so the
+ * chart can grow past the current viewport (the outer roadmap pane
+ * then scrolls). The store-level clamp is a defense-in-depth
+ * against any code path (or migration) that could otherwise persist
+ * a wild value.
  */
 export const ROADMAP_HEIGHT_MIN_PX = 300;
 export const ROADMAP_HEIGHT_MAX_PX = 4000;

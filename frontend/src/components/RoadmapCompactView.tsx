@@ -19,6 +19,7 @@ import {
 import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy, GroupBy } from "../lib/viewState";
 import { useResizableRoadmapHeight } from "../lib/useResizableRoadmapHeight";
+import { HeightResizer } from "./HeightResizer";
 
 /**
  * Compact roadmap render — the second Roadmap style option.
@@ -266,11 +267,21 @@ export function RoadmapCompactView({
 
   // "Drag the bottom edge to resize" behavior for the scroll card.
   // The hook applies the persisted height on mount (via inline
-  // `style`) and observes subsequent height changes to write them
-  // back to the view store on a short debounce. pdfMode disables
-  // both halves so the export always captures the natural content
-  // height. See `useResizableRoadmapHeight` for the full contract.
-  const { style: resizableHeightStyle } = useResizableRoadmapHeight({
+  // `style`) and live-updates during a HeightResizer drag, writing
+  // the store only on commit. pdfMode disables both halves so the
+  // export always captures the natural content height. See
+  // `useResizableRoadmapHeight` for the full contract.
+  const {
+    style: resizableHeightStyle,
+    height: roadmapCardHeight,
+    hasExplicitHeight,
+    minHeight: roadmapMinHeight,
+    maxHeight: roadmapMaxHeight,
+    getStartHeight: getRoadmapStartHeight,
+    onHeightChange: onRoadmapHeightChange,
+    onCommit: onRoadmapHeightCommit,
+    onCancel: onRoadmapHeightCancel,
+  } = useResizableRoadmapHeight({
     ref: scrollRef,
     disabled: Boolean(pdfMode),
   });
@@ -583,21 +594,17 @@ export function RoadmapCompactView({
   }
 
   return (
+    <div className={pdfMode ? undefined : "relative"}>
     <div
       ref={scrollRef}
       data-roadmap-capture-root="true"
       className={
         pdfMode
           ? "card-surface"
-          // `resize-y` paints the browser's native drag handle in the
-          // bottom-right corner so the user can grow the card past
-          // the initial `max-h` cap and reveal more packed rows on a
-          // large screen. `min-h`/`max-h` bracket the drag; the
-          // persisted height is applied via inline `style` on
-          // rehydrate (see `useResizableRoadmapHeight`) so a picked
-          // size survives a reload. `overflow-auto` is required for
-          // `resize` to take effect at all.
-          : "card-surface min-h-[300px] max-h-[100vh] overflow-auto resize-y"
+          // Until a height is picked, `max-h-[100vh]` keeps first-load
+          // layout bounded. Once the user drags the bottom-edge handle,
+          // that cap drops so the chart can grow past the viewport.
+          : `card-surface min-h-[300px] overflow-auto${hasExplicitHeight ? "" : " max-h-[100vh]"}`
       }
       style={resizableHeightStyle}
     >
@@ -874,6 +881,19 @@ export function RoadmapCompactView({
           })}
         </div>
       </div>
+    </div>
+    {pdfMode ? null : (
+      <HeightResizer
+        currentHeight={roadmapCardHeight}
+        getStartHeight={getRoadmapStartHeight}
+        minHeight={roadmapMinHeight}
+        maxHeight={roadmapMaxHeight}
+        onHeightChange={onRoadmapHeightChange}
+        onCommit={onRoadmapHeightCommit}
+        onCancel={onRoadmapHeightCancel}
+        ariaLabel="Resize roadmap chart height"
+      />
+    )}
     </div>
   );
 }

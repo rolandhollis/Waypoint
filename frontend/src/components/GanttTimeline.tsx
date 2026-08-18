@@ -53,6 +53,7 @@ import {
 } from "../lib/viewState";
 import { useResizableRoadmapHeight } from "../lib/useResizableRoadmapHeight";
 import { ColumnResizer } from "./ColumnResizer";
+import { HeightResizer } from "./HeightResizer";
 import { useAppDialog } from "./AppDialogProvider";
 
 type Props = {
@@ -388,10 +389,20 @@ export function GanttTimeline(props: Props) {
   // content height for html-to-image, and the preview modal already
   // has a scroll container of its own that would fight a nested
   // resize handle. See `useResizableRoadmapHeight` for the full
-  // "apply saved height on mount + observe changes + persist"
+  // "apply saved height on mount + live drag + persist on commit"
   // contract; both this view and RoadmapCompactView share the same
   // hook so the two styles agree on the picked size.
-  const { style: resizableHeightStyle } = useResizableRoadmapHeight({
+  const {
+    style: resizableHeightStyle,
+    height: roadmapCardHeight,
+    hasExplicitHeight,
+    minHeight: roadmapMinHeight,
+    maxHeight: roadmapMaxHeight,
+    getStartHeight: getRoadmapStartHeight,
+    onHeightChange: onRoadmapHeightChange,
+    onCommit: onRoadmapHeightCommit,
+    onCancel: onRoadmapHeightCancel,
+  } = useResizableRoadmapHeight({
     ref: scrollRef,
     disabled: useMonolithic,
   });
@@ -1565,6 +1576,7 @@ export function GanttTimeline(props: Props) {
           `useLayoutEffect` that installs the ResizeObserver keeps
           `useMonolithic` in its dep list so a mode flip re-hooks
           onto the new element cleanly. */}
+      <div className={useMonolithic ? undefined : "relative"}>
       <div
         ref={useMonolithic ? null : scrollRef}
         // `data-roadmap-capture-root` marks this element as the
@@ -1578,20 +1590,19 @@ export function GanttTimeline(props: Props) {
         // via a wrapper of their own; the auto-schedule preview
         // renders its own toolbar so it doesn't share the button.
         //
-        // Sticky-layout branch (interactive Rows) adds `resize-y`
-        // + `min-h`/`max-h` so the user can drag the bottom edge
-        // to grow the card past its default cap and reveal more
-        // rows on a large screen; the picked height is applied on
-        // mount via the inline style from
-        // `useResizableRoadmapHeight` and persisted (debounced) to
-        // the view store on drag release. The monolithic branch
+        // Sticky-layout branch (interactive Rows): the user drags
+        // the bottom-edge `HeightResizer` to grow the card and
+        // reveal more rows. Until a height is picked, `max-h-[100vh]`
+        // keeps first-load layout bounded; once a height is set we
+        // drop that cap so the chart can grow past the viewport
+        // (outer page scroll takes over). The monolithic branch
         // (pdfMode + auto-schedule preview) keeps its historical
         // classes so capture geometry + nested-modal scroll
         // continue to behave the way those paths need.
         data-roadmap-capture-root="true"
         className={useMonolithic
           ? (pdfMode ? "card-surface" : "card-surface overflow-hidden")
-          : "card-surface min-h-[300px] max-h-[100vh] overflow-auto resize-y"}
+          : `card-surface min-h-[300px] overflow-auto${hasExplicitHeight ? "" : " max-h-[100vh]"}`}
         style={useMonolithic ? undefined : resizableHeightStyle}
       >
         {useMonolithic ? (
@@ -1725,6 +1736,19 @@ export function GanttTimeline(props: Props) {
             </div>
           </>
         )}
+      </div>
+      {useMonolithic ? null : (
+        <HeightResizer
+          currentHeight={roadmapCardHeight}
+          getStartHeight={getRoadmapStartHeight}
+          minHeight={roadmapMinHeight}
+          maxHeight={roadmapMaxHeight}
+          onHeightChange={onRoadmapHeightChange}
+          onCommit={onRoadmapHeightCommit}
+          onCancel={onRoadmapHeightCancel}
+          ariaLabel="Resize roadmap chart height"
+        />
+      )}
       </div>
     </div>
   );
