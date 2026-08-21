@@ -24,8 +24,9 @@ function isNonActiveLane(lane: SwimLane): boolean {
 }
 
 /**
- * Workspace homepage — hero (ZiffSplit) + project counts + activity chart.
- * Reachable from the brand icon only (not a primary nav tab).
+ * Workspace homepage — ZiffSplit hero as a background behind the
+ * overview cards (project counts + activity chart). Reachable from
+ * the brand icon only (not a primary nav tab).
  */
 export function HomeView() {
   const projects = useProjects();
@@ -49,10 +50,12 @@ export function HomeView() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <ViewPageHeader tabKey="home" />
-      <div className="flex-1 overflow-auto">
-        {/* ZiffSplit container `home_hero` — directly under the page title */}
-        <AbHomeHero />
-        <div className="p-5">
+      <div className="relative flex-1 overflow-auto">
+        {/* ZiffSplit `home_hero` — absolute so it sits behind overview cards */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-0">
+          <AbHomeHero />
+        </div>
+        <div className="relative z-10 p-5">
           <div className="mx-auto grid max-w-6xl grid-cols-1 gap-4 lg:grid-cols-12">
             {/* Column A — 4/12 */}
             <div className="lg:col-span-4">

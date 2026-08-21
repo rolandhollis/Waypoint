@@ -60,6 +60,7 @@ export function PhaseDatePromptModal({
     onSuccess: (updated) => {
       qc.setQueryData(["project", project.id], updated);
       qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["prioritization"] });
       qc.invalidateQueries({ queryKey: ["projectHistory", project.id] });
       onDismiss();
     },

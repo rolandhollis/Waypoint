@@ -7,6 +7,11 @@ import {
 } from "../lib/groupConstants.js";
 import { compareSwimLaneReportOrder } from "../lib/statusReportOrder.js";
 import {
+  loadNewBacklogSinceLastDigest,
+  isNewSinceDigest,
+  type NewBacklogProject,
+} from "../lib/newBacklogProjects.js";
+import {
   parseSubtaskStatusUpdates,
   type SubtaskStatusUpdateDisplay,
 } from "../lib/subtaskStatusUpdates.js";
@@ -49,6 +54,7 @@ export const DIGEST_UNSUB_KIND = "status_digest_unsubscribe";
 type UpdateRow = {
   project_id: string;
   project_title: string;
+  project_created_at: Date | string;
   swim_lane_id: string;
   swim_lane_name: string;
   swim_lane_order: number;
@@ -61,6 +67,7 @@ type UpdateRow = {
   owner_name: string | null;
   submitted_by_name: string | null;
   team_names: string[];
+  is_new?: boolean;
 };
 
 type DigestRecipient = {
@@ -77,14 +84,18 @@ type GroupBundle = {
   recipients: DigestRecipient[];
   /** Eligible projects with no completed update this week, by owner. */
   missingByOwner: OwnerMissingGroup[];
+  /** Epics created since the previous digest send. */
+  newBacklog: NewBacklogProject[];
 };
 
 type MissingProject = {
   project_id: string;
   project_title: string;
+  project_created_at: Date | string;
   swim_lane_id: string | null;
   swim_lane_name: string | null;
   swim_lane_order: number | null;
+  is_new?: boolean;
 };
 
 type OwnerMissingGroup = {
@@ -174,6 +185,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
       ? `SELECT p.group_id,
                 p.id AS project_id,
                 p.title AS project_title,
+                p.created_at AS project_created_at,
                 s.id AS swim_lane_id,
                 s.name AS swim_lane_name,
                 s."order" AS swim_lane_order,
@@ -206,6 +218,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
         ? `SELECT p.group_id,
                   p.id AS project_id,
                   p.title AS project_title,
+                  p.created_at AS project_created_at,
                   s.id AS swim_lane_id,
                   s.name AS swim_lane_name,
                   s."order" AS swim_lane_order,
@@ -237,6 +250,7 @@ async function loadUpdatesBatch(weekIso: string, scope?: GroupScheduleScope): Pr
         : `SELECT p.group_id,
                   p.id AS project_id,
                   p.title AS project_title,
+                  p.created_at AS project_created_at,
                   s.id AS swim_lane_id,
                   s.name AS swim_lane_name,
                   s."order" AS swim_lane_order,
@@ -323,6 +337,7 @@ async function loadMissingForGroup(groupId: string, week: Date): Promise<OwnerMi
   const { rows: projectRows } = await query<{
     id: string;
     title: string;
+    created_at: Date;
     owner_id: string | null;
     owner_name: string | null;
     swim_lane_id: string | null;
@@ -331,6 +346,7 @@ async function loadMissingForGroup(groupId: string, week: Date): Promise<OwnerMi
   }>(
     `SELECT p.id,
             p.title,
+            p.created_at,
             p.owner_id,
             owner.name AS owner_name,
             p.swim_lane_id,
@@ -361,6 +377,7 @@ async function loadMissingForGroup(groupId: string, week: Date): Promise<OwnerMi
     const project: MissingProject = {
       project_id: p.id,
       project_title: p.title,
+      project_created_at: p.created_at,
       swim_lane_id: p.swim_lane_id,
       swim_lane_name: p.swim_lane_name,
       swim_lane_order: p.swim_lane_order,
@@ -403,12 +420,25 @@ async function collectByGroup(week: Date, scope?: GroupScheduleScope): Promise<G
 
   const bundles: GroupBundle[] = [];
   for (const g of groups) {
+    const newBacklog = await loadNewBacklogSinceLastDigest(g.id, week);
+    const updates = (updatesByGroup.get(g.id) ?? []).map((u) => ({
+      ...u,
+      is_new: isNewSinceDigest(u.project_created_at, newBacklog.since, newBacklog.until),
+    }));
+    const missingByOwner = (await loadMissingForGroup(g.id, week)).map((group) => ({
+      ...group,
+      projects: group.projects.map((p) => ({
+        ...p,
+        is_new: isNewSinceDigest(p.project_created_at, newBacklog.since, newBacklog.until),
+      })),
+    }));
     bundles.push({
       groupId: g.id,
       groupName: g.name,
-      updates: updatesByGroup.get(g.id) ?? [],
+      updates,
       recipients: recipientsByGroup.get(g.id) ?? [],
-      missingByOwner: await loadMissingForGroup(g.id, week),
+      missingByOwner,
+      newBacklog: newBacklog.projects,
     });
   }
   return bundles;
@@ -515,10 +545,16 @@ function renderSubtaskUpdatesHtml(entries: SubtaskStatusUpdateDisplay[]): string
     .join("");
 }
 
+/** Compact emerald NEW badge — email-safe (no flex). */
+function newBadgeHtml(): string {
+  return `<span style="display:inline-block;font-size:10px;font-weight:700;line-height:1.3;padding:2px 6px;border-radius:4px;border:1px solid #6ee7b7;background:#d1fae5;color:#047857;letter-spacing:0.04em;vertical-align:middle;mso-line-height-rule:exactly;">NEW</span>`;
+}
+
 function formatUpdateTextLines(u: UpdateRow, appUrl: string): string[] {
   const projectUrl = `${appUrl}/projects/${u.project_id}`;
+  const newTag = u.is_new ? " [NEW]" : "";
   const lines: string[] = [
-    `• ${u.project_title} [${healthLabel(u.health_flag)}]`,
+    `• ${u.project_title}${newTag} [${healthLabel(u.health_flag)}]`,
     `   ${projectUrl}`,
   ];
   if (u.owner_name) lines.push(`   Owner: ${u.owner_name}`);
@@ -553,12 +589,13 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
   const submitterHtml = u.submitted_by_name
     ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Submitted by: ${escapeHtml(u.submitted_by_name)}</div>`
     : "";
+  const newBadge = u.is_new ? ` ${newBadgeHtml()}` : "";
   return `
         <article style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:8px;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
             <tr>
               <td style="vertical-align:top;padding-right:12px;">
-                <a href="${projectUrl}" style="font-weight:600;color:#0f172a;text-decoration:none;">${escapeHtml(u.project_title)}</a>
+                <a href="${projectUrl}" style="font-weight:600;color:#0f172a;text-decoration:none;">${escapeHtml(u.project_title)}</a>${newBadge}
               </td>
               <td align="right" style="vertical-align:top;white-space:nowrap;width:1%;">
                 ${healthBadgeHtml(u.health_flag)}
@@ -727,7 +764,7 @@ function renderMissingSectionText(
   for (const { ownerName, projects } of missingByOwner) {
     lines.push(`${ownerName} (${projects.length}):`);
     for (const p of projects) {
-      lines.push(`• ${p.project_title}`);
+      lines.push(`• ${p.project_title}${p.is_new ? " [NEW]" : ""}`);
       lines.push(`   ${appUrl}/projects/${p.project_id}`);
     }
     lines.push("");
@@ -745,7 +782,8 @@ function renderMissingSectionHtml(
       const items = projects
         .map((p) => {
           const projectUrl = `${appUrl}/projects/${p.project_id}`;
-          return `<li style="margin:2px 0;"><a href="${projectUrl}" style="color:#0f172a;text-decoration:none;">${escapeHtml(p.project_title)}</a></li>`;
+          const newBadge = p.is_new ? ` ${newBadgeHtml()}` : "";
+          return `<li style="margin:2px 0;"><a href="${projectUrl}" style="color:#0f172a;text-decoration:none;">${escapeHtml(p.project_title)}</a>${newBadge}</li>`;
         })
         .join("");
       return `
@@ -765,11 +803,51 @@ function renderMissingSectionHtml(
     </section>`;
 }
 
+function renderNewBacklogSectionText(
+  projects: NewBacklogProject[],
+  appUrl: string,
+): string[] {
+  const lines: string[] = [];
+  if (!projects.length) return lines;
+  lines.push("--- New projects identified for backlog ---");
+  for (const p of projects) {
+    const meta = [p.swim_lane_name, p.owner_name].filter(Boolean).join(" · ");
+    lines.push(meta ? `• ${p.project_title} [NEW] (${meta})` : `• ${p.project_title} [NEW]`);
+    lines.push(`   ${appUrl}/projects/${p.project_id}`);
+  }
+  lines.push("");
+  return lines;
+}
+
+function renderNewBacklogSectionHtml(
+  projects: NewBacklogProject[],
+  appUrl: string,
+): string {
+  if (!projects.length) return "";
+  const items = projects
+    .map((p) => {
+      const projectUrl = `${appUrl}/projects/${p.project_id}`;
+      const meta = [p.swim_lane_name, p.owner_name].filter(Boolean).join(" · ");
+      return `<li style="margin:4px 0;">
+        <a href="${projectUrl}" style="color:#0f172a;text-decoration:none;font-weight:600;">${escapeHtml(p.project_title)}</a> ${newBadgeHtml()}
+        ${meta ? `<span style="color:#64748b;font-size:12px;"> — ${escapeHtml(meta)}</span>` : ""}
+      </li>`;
+    })
+    .join("");
+  return `
+    <section style="margin-top:28px;border-top:1px solid #e2e8f0;padding-top:20px;">
+      <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.06em;color:#334155;margin:0 0 8px;">New projects identified for backlog</h2>
+      <p style="margin:0 0 10px;font-size:12px;color:#64748b;">Added since the last status digest was sent (${projects.length}).</p>
+      <ul style="margin:0;padding-left:18px;color:#334155;">${items}</ul>
+    </section>`;
+}
+
 function renderDigest(input: {
   groupName: string;
   weekOf: Date;
   updates: UpdateRow[];
   missingByOwner: OwnerMissingGroup[];
+  newBacklog: NewBacklogProject[];
   appUrl: string;
   recipientName?: string;
   unsubscribeUrl: string;
@@ -782,6 +860,7 @@ function renderDigest(input: {
     weekOf,
     updates,
     missingByOwner,
+    newBacklog,
     appUrl,
     recipientName,
     unsubscribeUrl,
@@ -821,6 +900,7 @@ function renderDigest(input: {
     }
   }
   textLines.push(...renderMissingSectionText(missingByOwner, appUrl));
+  textLines.push(...renderNewBacklogSectionText(newBacklog, appUrl));
   textLines.push(`Open status report: ${appUrl}/status-report`);
   textLines.push("");
   textLines.push("Unsubscribe from digest emails:");
@@ -831,6 +911,9 @@ function renderDigest(input: {
     `${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} lane${laneCount === 1 ? "" : "s"}` +
     (missingCount > 0
       ? ` · ${missingCount} item${missingCount === 1 ? "" : "s"} without an update`
+      : "") +
+    (newBacklog.length > 0
+      ? ` · ${newBacklog.length} new backlog item${newBacklog.length === 1 ? "" : "s"}`
       : "") +
     ` for ${groupName}.`;
 
@@ -849,6 +932,7 @@ function renderDigest(input: {
     : "";
 
   const missingHtml = renderMissingSectionHtml(missingByOwner, appUrl);
+  const newBacklogHtml = renderNewBacklogSectionHtml(newBacklog, appUrl);
   const summaryExtra =
     missingCount > 0
       ? ` · <strong>${missingCount}</strong> eligible item${missingCount === 1 ? "" : "s"} without a submitted update`
@@ -864,6 +948,7 @@ function renderDigest(input: {
       ${summaryHtml}
       ${laneHtml}
       ${missingHtml}
+      ${newBacklogHtml}
       <p style="margin-top:24px;">
         <a href="${appUrl}/status-report" style="display:inline-block;background:#DC2626;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;">Open status report</a>
       </p>
@@ -987,6 +1072,7 @@ export async function runStatusReportDigest({
           weekOf: week,
           updates: bundle.updates,
           missingByOwner: bundle.missingByOwner,
+          newBacklog: bundle.newBacklog,
           appUrl,
           recipientName: r.user_name ?? undefined,
           unsubscribeUrl: unsubUrl,

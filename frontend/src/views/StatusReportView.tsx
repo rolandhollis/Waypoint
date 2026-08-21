@@ -354,9 +354,14 @@ export function StatusReportView() {
                           <li key={p.project_id}>
                             <button
                               type="button"
-                              className="rounded-full border border-current/30 bg-white/80 px-2 py-0.5 text-xs font-medium hover:underline"
+                              className="inline-flex items-center gap-1 rounded-full border border-current/30 bg-white/80 px-2 py-0.5 text-xs font-medium hover:underline"
                               onClick={() => setSelectedId(p.project_id)}
                             >
+                              {p.is_new ? (
+                                <span className="inline-flex shrink-0 items-center rounded border border-emerald-300 bg-emerald-100 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-emerald-700">
+                                  NEW
+                                </span>
+                              ) : null}
                               {p.project_title}
                               {p.health_flag !== "white" && !p.completed ? (
                                 <span className="ml-1 opacity-70">(draft)</span>
@@ -453,13 +458,21 @@ export function StatusReportView() {
                       </td>
                       <td className="px-3 py-2">
                         <button
-                          className="text-left text-wp-ink hover:underline"
+                          className="inline-flex items-center gap-1.5 text-left text-wp-ink hover:underline"
                           onClick={(e) => {
                             e.stopPropagation();
                             setSelectedId(r.project_id);
                           }}
                         >
-                          {r.project_title}
+                          {r.is_new ? (
+                            <span
+                              className="inline-flex shrink-0 items-center rounded border border-emerald-300 bg-emerald-100 px-1 py-px text-[10px] font-bold uppercase tracking-wide text-emerald-700"
+                              title="Created since the last status digest was sent"
+                            >
+                              NEW
+                            </span>
+                          ) : null}
+                          <span>{r.project_title}</span>
                         </button>
                       </td>
                       <td className="px-3 py-2 text-wp-slate">
@@ -529,6 +542,54 @@ export function StatusReportView() {
             ) : null}
           </tbody>
         </table>
+
+        {report.data ? (
+          <section className="border-t border-wp-stone bg-white px-4 py-5">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-wp-slate">
+              New projects identified for backlog
+            </h2>
+            <p className="mt-1 text-xs text-wp-slate">
+              Epics added since the last status digest was sent
+              {report.data.new_backlog_since
+                ? ` (${format(new Date(report.data.new_backlog_since), "MMM d, yyyy")})`
+                : ""}
+              {(report.data.new_backlog_projects?.length ?? 0) > 0
+                ? ` · ${report.data.new_backlog_projects.length}`
+                : ""}
+            </p>
+            {(report.data.new_backlog_projects?.length ?? 0) === 0 ? (
+              <p className="mt-3 text-sm italic text-wp-slate/70">
+                No new projects since the last digest.
+              </p>
+            ) : (
+              <ul className="mt-3 divide-y divide-wp-stone rounded-md border border-wp-stone">
+                {(report.data.new_backlog_projects ?? []).map((p) => (
+                  <li key={p.project_id}>
+                    <button
+                      type="button"
+                      className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-2.5 text-left text-sm hover:bg-wp-stone/30"
+                      onClick={() => setSelectedId(p.project_id)}
+                    >
+                      <span
+                        className="inline-flex shrink-0 items-center rounded border border-emerald-300 bg-emerald-100 px-1 py-px text-[10px] font-bold uppercase tracking-wide text-emerald-700"
+                        title="Created since the last status digest was sent"
+                      >
+                        NEW
+                      </span>
+                      <span className="font-medium text-wp-ink">{p.project_title}</span>
+                      <span className="text-xs text-wp-slate">
+                        {[p.swim_lane_name, p.owner_name].filter(Boolean).join(" · ") || "—"}
+                      </span>
+                      <span className="ml-auto text-xs text-wp-slate">
+                        {format(new Date(p.created_at), "MMM d")}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        ) : null}
       </div>
 
       {selectedId ? (

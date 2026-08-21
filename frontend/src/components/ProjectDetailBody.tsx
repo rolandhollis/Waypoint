@@ -239,6 +239,7 @@ export function ProjectDetailBody({
     onSuccess: (updated) => {
       qc.setQueryData(["project", id], updated);
       qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["prioritization"] });
       qc.invalidateQueries({ queryKey: ["projectStatusUpdates", id] });
       qc.invalidateQueries({ queryKey: ["projectHistory", id] });
       // A description edit may add a fresh @mention that indexes
@@ -283,6 +284,7 @@ export function ProjectDetailBody({
     onSuccess: (updated, args) => {
       qc.setQueryData(["project", id], updated);
       qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["prioritization"] });
       qc.invalidateQueries({ queryKey: ["projectHistory", id] });
       // Clear any user-typed drafts for the phase-date fields the AI
       // just wrote so the merged view picks up the fresh dates. Non-

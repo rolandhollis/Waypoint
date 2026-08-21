@@ -289,12 +289,14 @@ export type ProjectRow = {
    * User-controlled 1..N ranking across every project eligible for
    * the Roadmap (see routes/prioritization.ts and the frontend
    * PrioritizationView). Lower value = higher priority. Not unique
-   * per group; ties break by updated_at DESC then id ASC on read.
+   * per group; ties break by created_at ASC then id ASC on read.
    *
-   * Default 0 (see migration 037) so unranked rows sit at the top
-   * until the PM opens the Prioritization tab; the tab surfaces a
-   * one-click "seed from current order" affordance to promote every
-   * item out of the shared-0 bucket on first visit.
+   * Default 0 (see migration 037) so unranked rows share a bucket
+   * until the PM drags on the Prioritization tab; GET orders that
+   * bucket by created_at ASC so newly added items sit at the
+   * bottom rather than jumping the queue. Create/import stamp
+   * MAX+1 so a new row also lands after any already-ranked 1..N
+   * list.
    *
    * A PUT to /api/prioritization ALSO cascades the resulting order
    * onto per-lane `position` values so the Board / Roadmap Priority

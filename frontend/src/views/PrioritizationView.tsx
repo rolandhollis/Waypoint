@@ -437,7 +437,7 @@ export function PrioritizationView() {
   // mid-migration, a group with a transient empty eligible set, or
   // a race where the server-side seed hadn't yet propagated. If
   // the eligible set is genuinely all-zeros the list simply renders
-  // in the server's `updated_at DESC, id ASC` fallback order and
+  // in the server's `created_at ASC, id ASC` fallback order and
   // the user's first drag assigns real priorities via the normal
   // PUT flow. Server-side create/import paths still stamp
   // MAX+1/MAX+N (see routes/projects.ts and routes/imports.ts).)

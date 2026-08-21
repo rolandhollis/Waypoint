@@ -1,31 +1,44 @@
+import type { ReactNode } from "react";
 import { isAbSdkConfigured, useAbSdk } from "../lib/abSdk";
 import { AbAuthoredHtml } from "./AbAuthoredHtml";
 
 /**
- * Embedded ZiffSplit slot for the homepage hero (under the page title).
+ * ZiffSplit homepage background (`home_hero`).
  *
- * Container: `home_hero`
- * Delivery: embedded
+ * Renders as a fixed-height decorative layer. HomeView places it
+ * behind the overview cards so the image does not push content down.
  *
- * - Container feature flag **off** → hero is hidden
- * - contentSource `authored` → PM HTML replaces the mountain
- * - contentSource `code` / no assignment → default mountain hero
+ * - Container feature flag **off** → nothing rendered
+ * - contentSource `authored` → PM HTML (typically an `<img>`) fills the layer
+ * - contentSource `code` / no assignment → default mountain image
  *
  * Without VITE_AB_SITE_KEY the default mountain still renders so local
  * dev without ZiffSplit stays branded.
  */
 export const HOME_HERO_CONTAINER = "home_hero";
 
+const HERO_SHELL =
+  "relative h-40 w-full overflow-hidden sm:h-48 lg:h-56";
+
+function HeroShell({ children }: { children: ReactNode }) {
+  return (
+    <div className={HERO_SHELL} aria-hidden>
+      {children}
+      {/* Soft fade into page background under the overlapping cards */}
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-wp-bg" />
+    </div>
+  );
+}
+
 function DefaultMountainHero() {
   return (
-    <div className="relative h-40 w-full overflow-hidden sm:h-48 lg:h-56">
+    <HeroShell>
       <img
         src="/hero-mountain.jpg"
         alt=""
         className="absolute inset-0 h-full w-full object-cover object-[center_45%]"
       />
-      <div className="absolute inset-0 bg-gradient-to-t from-wp-bg/70 via-transparent to-transparent" />
-    </div>
+    </HeroShell>
   );
 }
 
@@ -57,9 +70,9 @@ export function AbHomeHero() {
     const html = ab.getContentByContainer(HOME_HERO_CONTAINER);
     if (html) {
       return (
-        <div className="w-full overflow-hidden">
+        <HeroShell>
           <AbAuthoredHtml html={html} className="ab-authored-html ab-home-hero" />
-        </div>
+        </HeroShell>
       );
     }
   }

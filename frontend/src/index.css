@@ -31,6 +31,19 @@
   .card-surface {
     @apply rounded-lg border border-wp-stone bg-white shadow-sm;
   }
+  /* ZiffSplit homepage hero — authored HTML fills the fixed-height
+     background shell so PM images don't affect document flow. */
+  .ab-home-hero {
+    @apply absolute inset-0;
+  }
+  .ab-home-hero img,
+  .ab-home-hero picture,
+  .ab-home-hero video {
+    @apply absolute inset-0 h-full w-full object-cover;
+  }
+  .ab-home-hero > *:first-child:not(img):not(picture):not(video) {
+    @apply h-full w-full;
+  }
   /* Contenteditable @mention editor. The `.input` class (or whatever
      the parent passes via `className`) still owns the border, padding,
      min-height, and focus ring — `.mention-editable` layers the

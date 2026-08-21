@@ -264,9 +264,10 @@ export function useProjects() {
 
 /**
  * Ranked list of every roadmap-eligible project in the current
- * group, sorted `(global_priority ASC, updated_at DESC, id ASC)`.
+ * group, sorted `(global_priority ASC, created_at ASC, id ASC)`.
  * Backs the Prioritization tab; see backend/src/routes/prioritization.ts
- * for the eligibility predicate.
+ * for the eligibility predicate. New items are assigned MAX+1 so
+ * they join at the bottom of this list.
  *
  * Poll cadence matches the Board / Roadmap so a concurrent edit
  * in another tab flows into the drag surface within a few seconds.

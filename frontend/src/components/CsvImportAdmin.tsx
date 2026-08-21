@@ -109,6 +109,7 @@ export function CsvImportAdmin() {
       // A commit always touches the project list, so nuke the cached
       // list; the Roadmap / Board will refetch on their next tick.
       qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["prioritization"] });
       setPhase((prev) => {
         if (prev.kind !== "committing" && prev.kind !== "reviewing") return prev;
         return { kind: "done", filename: prev.filename, result };

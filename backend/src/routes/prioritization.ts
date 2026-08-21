@@ -29,6 +29,13 @@ import { recordAudit } from "./projects.js";
  *     the stricter "all six" gate is enforced here even though
  *     the RoadmapView's timeline draw predicate is more permissive.
  *
+ * GET returns rows ordered by `global_priority ASC, created_at ASC,
+ * id ASC`. Lower global_priority is higher on the list; new items
+ * are stamped MAX+1 on create (and again the first time they become
+ * eligible) so they join at the bottom. The created_at tie-break
+ * keeps same-rank rows in insertion order instead of bubbling the
+ * most recently edited card to the top.
+ *
  * The PUT endpoint atomically rewrites `global_priority` for the
  * caller-supplied ordered id list AND cascades the resulting
  * order onto per-swim-lane `position` values so:
@@ -177,7 +184,7 @@ prioritizationRouter.get("/", async (req, res) => {
       FROM projects p
      WHERE ${ELIGIBILITY_FRAGMENT}
        ${hiddenLaneClause}
-     ORDER BY p.global_priority ASC, p.updated_at DESC, p.id ASC`,
+     ORDER BY p.global_priority ASC, p.created_at ASC, p.id ASC`,
     [groupId],
   );
   // Version fingerprints the FULL eligible set (unaffected by the

@@ -142,6 +142,7 @@ export function NewProjectDialog({
     },
     onSuccess: (project) => {
       qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["prioritization"] });
       onCreated?.(project);
       onClose();
     },

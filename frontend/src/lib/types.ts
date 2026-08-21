@@ -300,10 +300,10 @@ export type Project = {
    * User-controlled global 1..N rank across every roadmap-eligible
    * project in the current group (see PrioritizationView). Lower
    * value = higher priority; multiple rows may share a value, in
-   * which case ties break by updated_at DESC then id ASC everywhere
+   * which case ties break by created_at ASC then id ASC everywhere
    * this field is read. Default 0 means "unranked" (see migration
-   * 037) — the Prioritization view detects an all-zero eligible set
-   * and offers a one-click seed from the current display order.
+   * 037). New items are stamped MAX+1 so they join at the bottom of
+   * the Prioritization list.
    */
   global_priority: number;
   owner_id: string | null;
@@ -727,12 +727,29 @@ export type StatusReportRow = WeeklyStatusUpdate & {
   swim_lane_id: string | null;
   swim_lane_name: string | null;
   swim_lane_order: number | null;
+  /** Created since the previous status digest was sent. */
+  is_new?: boolean;
+};
+
+/** Epic created since the previous status-report digest was sent. */
+export type StatusReportNewBacklogProject = {
+  project_id: string;
+  project_title: string;
+  created_at: string;
+  owner_name: string | null;
+  swim_lane_name: string | null;
+  team_names: string[];
 };
 
 export type StatusReportResponse = {
   week_of: string;
   due_at: string;
   rows: StatusReportRow[];
+  new_backlog_projects: StatusReportNewBacklogProject[];
+  /** ISO timestamp of the previous digest send (or 7-day fallback). */
+  new_backlog_since: string;
+  /** ISO timestamp upper bound for the window (this week's digest or now). */
+  new_backlog_until: string;
 };
 
 export type SimpleFeatureStatus = "next_up" | "in_development" | "completed" | "deleted";

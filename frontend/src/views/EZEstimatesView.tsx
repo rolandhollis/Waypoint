@@ -186,6 +186,7 @@ export function EZEstimatesView() {
       // is fetched on demand so we don't need to invalidate it
       // here.
       qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["prioritization"] });
     },
   });
 

@@ -12,6 +12,7 @@ import {
 import { dueAtForWeek, reminderAtForWeek, weekOfMonday } from "../lib/time.js";
 import { weekOfMondayForSchedule } from "../lib/weeklyStatusSchedule.js";
 import { compareSwimLaneReportOrder } from "../lib/statusReportOrder.js";
+import { loadNewBacklogSinceLastDigest, isNewSinceDigest } from "../lib/newBacklogProjects.js";
 import { addDays } from "date-fns";
 import type { WeeklyStatusUpdateRow } from "../types.js";
 
@@ -146,7 +147,15 @@ statusUpdatesRouter.get("/report", async (req, res) => {
   const weekIso = week.toISOString().slice(0, 10);
 
   if (!projectIds.length) {
-    res.json({ week_of: weekIso, due_at: dueAt.toISOString(), rows: [] });
+    const newBacklog = await loadNewBacklogSinceLastDigest(req.groupId!, week);
+    res.json({
+      week_of: weekIso,
+      due_at: dueAt.toISOString(),
+      rows: [],
+      new_backlog_projects: newBacklog.projects,
+      new_backlog_since: newBacklog.since,
+      new_backlog_until: newBacklog.until,
+    });
     return;
   }
 
@@ -154,6 +163,7 @@ statusUpdatesRouter.get("/report", async (req, res) => {
     Record<string, unknown> & {
       p_project_id: string;
       project_title: string;
+      project_created_at: Date;
       owner_id: string | null;
       owner_name: string | null;
       owner_email: string | null;
@@ -168,6 +178,7 @@ statusUpdatesRouter.get("/report", async (req, res) => {
     SELECT wsu.*,
            p.id       AS p_project_id,
            p.title    AS project_title,
+           p.created_at AS project_created_at,
            p.position AS project_position,
            p.owner_id AS owner_id,
            u.name     AS owner_name,
@@ -191,6 +202,8 @@ statusUpdatesRouter.get("/report", async (req, res) => {
     `,
     [weekIso, projectIds],
   );
+
+  const newBacklog = await loadNewBacklogSinceLastDigest(req.groupId!, week);
 
   const shaped = rows
     .map((r) => {
@@ -223,6 +236,11 @@ statusUpdatesRouter.get("/report", async (req, res) => {
         swim_lane_order: r.swim_lane_order,
         project_position: r.project_position,
         health_flag: mapped?.health_flag ?? "white",
+        is_new: isNewSinceDigest(
+          r.project_created_at,
+          newBacklog.since,
+          newBacklog.until,
+        ),
       };
     })
     .sort((a, b) => {
@@ -237,7 +255,14 @@ statusUpdatesRouter.get("/report", async (req, res) => {
       return a.project_title.localeCompare(b.project_title);
     });
 
-  res.json({ week_of: weekIso, due_at: dueAt.toISOString(), rows: shaped });
+  res.json({
+    week_of: weekIso,
+    due_at: dueAt.toISOString(),
+    rows: shaped,
+    new_backlog_projects: newBacklog.projects,
+    new_backlog_since: newBacklog.since,
+    new_backlog_until: newBacklog.until,
+  });
 });
 
 /** GET /projects/:id/status-updates — mounted under the projects namespace below. */

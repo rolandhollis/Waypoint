@@ -260,7 +260,7 @@ importsRouter.post("/csv/commit", requireAdmin, async (req, res) => {
   // the Prioritization view and stomped whatever ordering the PM
   // had curated). Multiple rows sharing a global_priority is fine
   // -- the ordering doesn't have a UNIQUE constraint (see migration
-  // 037) and downstream sorts use `updated_at DESC, id ASC` as the
+  // 037) and downstream sorts use `created_at ASC, id ASC` as the
   // tiebreaker -- but we can hand out fresh 1-apart values here for
   // free, so we do. A concurrent import racing this SELECT is
   // harmless for the same reason: the ranks just interleave.

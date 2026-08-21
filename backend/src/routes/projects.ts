@@ -227,6 +227,63 @@ async function replaceProjectKpis(client: PoolClient, projectId: string, kpiIds:
 }
 
 /**
+ * Next `global_priority` for a newly ranked row: one past the current
+ * MAX in this group so the item lands at the bottom of the
+ * Prioritization list. Create, CSV import, and first-eligibility
+ * (PATCH that fills the last missing phase dates) all use this
+ * instead of leaving the default 0, which would sort to the top.
+ */
+async function allocateNextGlobalPriority(
+  client: PoolClient,
+  groupId: string,
+): Promise<number> {
+  const { rows } = await client.query<{ next: number }>(
+    `SELECT COALESCE(MAX(global_priority), 0) + 1 AS next
+       FROM projects WHERE group_id = $1 AND deleted_at IS NULL`,
+    [groupId],
+  );
+  return Number(rows[0]?.next ?? 1);
+}
+
+function hasAllPhaseDates(p: {
+  start_date?: string | null;
+  target_date?: string | null;
+  dev_start_date?: string | null;
+  dev_end_date?: string | null;
+  optimization_start_date?: string | null;
+  optimization_end_date?: string | null;
+}): boolean {
+  return !!(
+    p.start_date &&
+    p.target_date &&
+    p.dev_start_date &&
+    p.dev_end_date &&
+    p.optimization_start_date &&
+    p.optimization_end_date
+  );
+}
+
+/**
+ * Prioritization-list eligibility that PATCH can evaluate without a
+ * swim-lane join (lane changes go through /move). Mirrors the date +
+ * hidden_from_roadmap half of ELIGIBILITY_FRAGMENT in
+ * routes/prioritization.ts. Parking-lot / archive items still won't
+ * appear on GET until they leave those lanes; stamping a tail rank
+ * here is still the right default for when they do.
+ */
+function isDateEligibleForPrioritization(p: {
+  hidden_from_roadmap?: boolean | null;
+  start_date?: string | null;
+  target_date?: string | null;
+  dev_start_date?: string | null;
+  dev_end_date?: string | null;
+  optimization_start_date?: string | null;
+  optimization_end_date?: string | null;
+}): boolean {
+  return p.hidden_from_roadmap !== true && hasAllPhaseDates(p);
+}
+
+/**
  * Enforce phase-boundary ordering across the six phase dates. Each
  * field is independently nullable ("not scheduled yet"). The only
  * invariant is that any pair of NON-NULL dates must be non-decreasing
@@ -765,12 +822,7 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
     // open the Prioritization tab, so "bottom" is the least-
     // surprising default. Falls back to 1 when the group has zero
     // ranked rows (MAX() → NULL).
-    const { rows: gpRows } = await client.query<{ next: number }>(
-      `SELECT COALESCE(MAX(global_priority), 0) + 1 AS next
-         FROM projects WHERE group_id = $1 AND deleted_at IS NULL`,
-      [groupId],
-    );
-    const nextGlobalPriority = gpRows[0]?.next ?? 1;
+    const nextGlobalPriority = await allocateNextGlobalPriority(client, groupId);
 
     // Stamp per-phase provenance for any phase whose START or END
     // date is non-null in the create body. New projects have no
@@ -1064,6 +1116,42 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
         `UPDATE projects SET ${fields.join(", ")}, updated_at = NOW()
            WHERE id = $${values.length} AND deleted_at IS NULL`,
         values,
+      );
+    }
+
+    // First time this row qualifies for the Prioritization list
+    // (all six phase dates set, not hidden), append it at the tail.
+    // Create already stamps MAX+1, but items born without dates keep
+    // that early number while PMs re-rank the eligible set 1..N —
+    // without this bump they jump to the top the moment they become
+    // eligible.
+    const nextDates = {
+      hidden_from_roadmap:
+        body.hidden_from_roadmap !== undefined
+          ? body.hidden_from_roadmap
+          : existing.hidden_from_roadmap,
+      start_date: body.start_date !== undefined ? body.start_date : existing.start_date,
+      target_date: body.target_date !== undefined ? body.target_date : existing.target_date,
+      dev_start_date:
+        body.dev_start_date !== undefined ? body.dev_start_date : existing.dev_start_date,
+      dev_end_date: body.dev_end_date !== undefined ? body.dev_end_date : existing.dev_end_date,
+      optimization_start_date:
+        body.optimization_start_date !== undefined
+          ? body.optimization_start_date
+          : existing.optimization_start_date,
+      optimization_end_date:
+        body.optimization_end_date !== undefined
+          ? body.optimization_end_date
+          : existing.optimization_end_date,
+    };
+    if (
+      !isDateEligibleForPrioritization(existing) &&
+      isDateEligibleForPrioritization(nextDates)
+    ) {
+      const nextGlobalPriority = await allocateNextGlobalPriority(client, groupId);
+      await client.query(
+        `UPDATE projects SET global_priority = $1 WHERE id = $2 AND group_id = $3`,
+        [nextGlobalPriority, projectId, groupId],
       );
     }
 
