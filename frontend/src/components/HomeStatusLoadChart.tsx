@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Link } from "react-router-dom";
 import { useMentionableUsers, useProjects, useSwimLanes } from "../lib/queries";
 import { laneRequiresWeeklyStatus } from "../lib/statusEligibility";
 
@@ -133,7 +134,12 @@ export function HomeStatusLoadChart() {
                 className="min-w-0 flex-1 truncate text-center text-[10px] leading-tight text-wp-slate"
                 title={b.ownerName}
               >
-                {b.ownerName}
+                <Link
+                  to={`/users/${b.ownerId}`}
+                  className="hover:text-wp-ink hover:underline"
+                >
+                  {b.ownerName}
+                </Link>
               </div>
             ))}
           </div>

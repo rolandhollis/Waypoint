@@ -773,6 +773,36 @@ export type SimpleFeature = {
   team_color: string | null;
 };
 
+export type PriorityTier = "P0" | "P1" | "P2" | "P3";
+
+export type FeatureGroupSummary = {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string;
+  position: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  creator_name: string;
+  feature_count: number;
+  features?: FeatureGroupFeature[];
+};
+
+export type FeatureGroupFeature = {
+  id: string;
+  feature_group_id: string;
+  name: string;
+  description: string;
+  priority_tier: PriorityTier;
+  position: number;
+  rank: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  creator_name: string;
+};
+
 export type DesignItemStatus = "next_up" | "in_design" | "completed" | "deleted";
 
 export type DesignItem = {

@@ -34,6 +34,7 @@ import { digestRecipientsRouter } from "./routes/digestRecipients.js";
 import { auditRouter } from "./routes/audit.js";
 import { designItemsRouter } from "./routes/designItems.js";
 import { simpleFeaturesRouter } from "./routes/simpleFeatures.js";
+import { featureGroupsRouter } from "./routes/featureGroups.js";
 import { predictionGameRouter } from "./routes/predictionGame.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { startCron } from "./jobs/weeklyStatus.js";
@@ -124,6 +125,7 @@ app.use("/api/mentions", authenticate, groupScope, mentionsRouter);
 app.use("/api/notifications/digest-recipients", authenticate, groupScope, digestRecipientsRouter);
 app.use("/api/audit", authenticate, groupScope, auditRouter);
 app.use("/api/simple-features", authenticate, groupScope, simpleFeaturesRouter);
+app.use("/api/feature-groups", authenticate, groupScope, featureGroupsRouter);
 app.use("/api/design-items", authenticate, groupScope, designItemsRouter);
 app.use("/api/prediction-game", authenticate, groupScope, predictionGameRouter);
 

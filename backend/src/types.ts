@@ -583,6 +583,32 @@ export type SimpleFeatureRow = {
   deleted_at: Date | null;
 };
 
+export type PriorityTier = "P0" | "P1" | "P2" | "P3";
+
+export type FeatureGroupRow = {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string;
+  position: number;
+  created_by: string;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type FeatureGroupFeatureRow = {
+  id: string;
+  feature_group_id: string;
+  name: string;
+  description: string;
+  priority_tier: PriorityTier;
+  position: number;
+  rank: number;
+  created_by: string;
+  created_at: Date;
+  updated_at: Date;
+};
+
 export type DesignItemStatus = "next_up" | "in_design" | "completed" | "deleted";
 
 export type DesignItemRow = {

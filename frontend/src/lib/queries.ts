@@ -23,6 +23,7 @@ import type {
   Role,
   SimpleFeature,
   DesignItem,
+  FeatureGroupSummary,
   PredictionHistoryEntry,
   PredictionTodayResponse,
   StatusReportResponse,
@@ -204,6 +205,25 @@ export function useSimpleFeatures() {
     queryFn: () => api<SimpleFeature[]>("/simple-features"),
     refetchInterval: POLL_MS,
     placeholderData: keepPreviousData,
+  });
+}
+
+export function useFeatureGroups() {
+  return useQuery({
+    queryKey: ["featureGroups"],
+    queryFn: () => api<FeatureGroupSummary[]>("/feature-groups"),
+    refetchInterval: POLL_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useFeatureGroup(id: string | undefined) {
+  return useQuery({
+    queryKey: ["featureGroups", id],
+    queryFn: () => api<FeatureGroupSummary>(`/feature-groups/${id}`),
+    refetchInterval: POLL_MS,
+    placeholderData: keepPreviousData,
+    enabled: !!id,
   });
 }
 

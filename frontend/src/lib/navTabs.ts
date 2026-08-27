@@ -13,6 +13,7 @@ export const TAB_LABEL_KEYS = [
   "phases",
   "simple_features",
   "design",
+  "feature_groups",
   "game",
   "admin",
 ] as const;
@@ -30,6 +31,7 @@ export const DEFAULT_TAB_LABELS: Record<TabLabelKey, string> = {
   phases: "Phases",
   simple_features: "Simple Features",
   design: "Design",
+  feature_groups: "Feature Groups",
   game: "Game",
   admin: "Admin",
 };
@@ -48,6 +50,8 @@ export const TAB_PAGE_DESCRIPTIONS: Partial<Record<TabLabelKey, string>> = {
     "Small initiatives under 16 hours of work that are not tracked on the roadmap.",
   design:
     "Design queue from this tab, roadmap design lanes, and Simple Features flagged needs design.",
+  feature_groups:
+    "Rank proposed project features with stakeholders — group lists and priority tiers.",
   game: "Daily sports prediction — vote yes or no before 5pm Central. Expect mild irreverence.",
   admin: "Manage swim lanes, teams, users, and workspace settings.",
 };
@@ -66,6 +70,7 @@ export const TAB_ROUTES: Record<TabLabelKey, string> = {
   phases: "/phases",
   simple_features: "/simple-features",
   design: "/design",
+  feature_groups: "/feature-groups",
   game: "/game",
   admin: "/admin",
 };
@@ -99,7 +104,7 @@ export const NAV_DROPDOWN_GROUPS: NavDropdownGroup[] = [
   {
     id: "queues",
     menuLabel: "Queues",
-    sections: [{ keys: ["simple_features", "design"] }],
+    sections: [{ keys: ["simple_features", "design", "feature_groups"] }],
   },
   {
     id: "reference",

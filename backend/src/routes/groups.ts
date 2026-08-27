@@ -282,6 +282,7 @@ const tabLabelsPatchSchema = z
     phases: tabLabelValueSchema.optional(),
     simple_features: tabLabelValueSchema.optional(),
     design: tabLabelValueSchema.optional(),
+    feature_groups: tabLabelValueSchema.optional(),
     game: tabLabelValueSchema.optional(),
     admin: tabLabelValueSchema.optional(),
   })

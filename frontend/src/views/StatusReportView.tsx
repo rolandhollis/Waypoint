@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { format } from "date-fns";
+import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import {
   useCanWrite,
@@ -476,7 +477,17 @@ export function StatusReportView() {
                         </button>
                       </td>
                       <td className="px-3 py-2 text-wp-slate">
-                        <div>{r.owner_name ?? "—"}</div>
+                        {r.owner_id ? (
+                          <Link
+                            to={`/users/${r.owner_id}`}
+                            className="hover:text-wp-ink hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {r.owner_name ?? "—"}
+                          </Link>
+                        ) : (
+                          <div>{r.owner_name ?? "—"}</div>
+                        )}
                         {isAdmin && r.owner_email ? (
                           <a
                             href={`mailto:${r.owner_email}`}

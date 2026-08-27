@@ -15,8 +15,11 @@ import { AdminSettingsView } from "./views/AdminSettingsView";
 import { PhasesView } from "./views/PhasesView";
 import { SimpleFeaturesView } from "./views/SimpleFeaturesView";
 import { DesignView } from "./views/DesignView";
+import { FeatureGroupsView } from "./views/FeatureGroupsView";
+import { FeatureGroupDetailView } from "./views/FeatureGroupDetailView";
 import { GameView } from "./views/GameView";
 import { ProjectDetailPage } from "./views/ProjectDetailPage";
+import { UserAssignmentsView } from "./views/UserAssignmentsView";
 import { LoginView } from "./views/LoginView";
 import { ForgotPasswordView } from "./views/ForgotPasswordView";
 import { ResetPasswordView } from "./views/ResetPasswordView";
@@ -167,6 +170,8 @@ export function App() {
           <Route path="/phases" element={<PhasesView />} />
           <Route path="/simple-features" element={<SimpleFeaturesView />} />
           <Route path="/design" element={<DesignView />} />
+          <Route path="/feature-groups" element={<FeatureGroupsView />} />
+          <Route path="/feature-groups/:groupId" element={<FeatureGroupDetailView />} />
           <Route path="/game" element={<GameView />} />
           <Route path="/admin" element={<AdminSettingsView />} />
           {/* Standalone `/projects/:id` — bookmarkable / shareable
@@ -181,6 +186,7 @@ export function App() {
               `consumePostLoginRedirect` after auth and drop the
               user back here. */}
           <Route path="/projects/:id" element={<ProjectDetailPage />} />
+          <Route path="/users/:userId" element={<UserAssignmentsView />} />
           {/* /login and /forgot-password only make sense while
               unauthenticated — bounce signed-in users home so they
               don't see the picker copy for a state they aren't in.
