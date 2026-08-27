@@ -15,7 +15,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronDown, GripVertical, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, GripVertical, Pencil, Plus, Trash2 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { Collapsible } from "../components/Collapsible";
 import { NameDescriptionModal } from "../components/NameDescriptionModal";
@@ -56,8 +56,11 @@ export function FeatureGroupDetailView() {
   const { confirm } = useAppDialog();
 
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingFeature, setEditingFeature] = useState<FeatureGroupFeature | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [activeId, setActiveId] = useState<string | null>(null);
   const dragSnapshotRef = useRef<FeatureGroupSummary | null>(null);
@@ -120,6 +123,41 @@ export function FeatureGroupDetailView() {
       qc.invalidateQueries({ queryKey: ["featureGroups"] });
     },
   });
+
+  const patchMutation = useMutation({
+    mutationFn: ({
+      featureId,
+      body,
+    }: {
+      featureId: string;
+      body: { name?: string; description?: string };
+    }) =>
+      api<FeatureGroupFeature>(`/feature-groups/${groupId}/features/${featureId}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (updated) => {
+      qc.setQueryData<FeatureGroupSummary>(["featureGroups", groupId], (prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          features: (prev.features ?? []).map((f) => (f.id === updated.id ? updated : f)),
+        };
+      });
+      setEditingFeature(null);
+    },
+  });
+
+  function openEditFeature(feature: FeatureGroupFeature) {
+    setEditingFeature(feature);
+    setEditName(feature.name);
+    setEditDescription(feature.description);
+  }
+
+  function closeEditFeature() {
+    setEditingFeature(null);
+    patchMutation.reset();
+  }
 
   const toggleExpanded = useCallback((id: string) => {
     setExpandedIds((prev) => {
@@ -346,6 +384,7 @@ export function FeatureGroupDetailView() {
                     expandedIds={expandedIds}
                     onToggleExpand={toggleExpanded}
                     onDelete={handleDeleteFeature}
+                    onEdit={openEditFeature}
                   />
                 ))}
               </div>
@@ -373,6 +412,28 @@ export function FeatureGroupDetailView() {
           submitLabel="Add feature"
         />
       ) : null}
+
+      {editingFeature ? (
+        <NameDescriptionModal
+          title="Edit feature"
+          nameFieldId="edit-feature-name"
+          descriptionFieldId="edit-feature-desc"
+          name={editName}
+          onNameChange={setEditName}
+          description={editDescription}
+          onDescriptionChange={setEditDescription}
+          onClose={closeEditFeature}
+          canSubmit={editName.trim().length > 0}
+          onSubmit={() =>
+            patchMutation.mutate({
+              featureId: editingFeature.id,
+              body: { name: editName.trim(), description: editDescription.trim() },
+            })
+          }
+          mutation={patchMutation}
+          submitLabel="Save"
+        />
+      ) : null}
     </div>
   );
 }
@@ -384,6 +445,7 @@ function TierSection({
   expandedIds,
   onToggleExpand,
   onDelete,
+  onEdit,
 }: {
   tier: PriorityTier;
   features: FeatureGroupFeature[];
@@ -391,6 +453,7 @@ function TierSection({
   expandedIds: Set<string>;
   onToggleExpand: (id: string) => void;
   onDelete: (feature: FeatureGroupFeature) => void;
+  onEdit: (feature: FeatureGroupFeature) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: bucketId(tier) });
 
@@ -423,6 +486,7 @@ function TierSection({
                   canWrite={canWrite}
                   onToggleExpand={() => onToggleExpand(feature.id)}
                   onDelete={() => void onDelete(feature)}
+                  onEdit={() => onEdit(feature)}
                 />
               ))}
             </ul>
@@ -439,12 +503,14 @@ function SortableFeatureRow({
   canWrite,
   onToggleExpand,
   onDelete,
+  onEdit,
 }: {
   feature: FeatureGroupFeature;
   expanded: boolean;
   canWrite: boolean;
   onToggleExpand: () => void;
   onDelete: () => void;
+  onEdit: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: feature.id,
@@ -498,14 +564,24 @@ function SortableFeatureRow({
           ) : null}
         </div>
         {canWrite ? (
-          <button
-            type="button"
-            className="btn-ghost !p-1.5 text-wp-slate hover:text-wp-red"
-            aria-label={`Delete ${feature.name}`}
-            onClick={onDelete}
-          >
-            <Trash2 size={16} />
-          </button>
+          <>
+            <button
+              type="button"
+              className="btn-ghost !p-1.5 text-wp-slate hover:text-wp-ink"
+              aria-label={`Edit ${feature.name}`}
+              onClick={onEdit}
+            >
+              <Pencil size={16} />
+            </button>
+            <button
+              type="button"
+              className="btn-ghost !p-1.5 text-wp-slate hover:text-wp-red"
+              aria-label={`Delete ${feature.name}`}
+              onClick={onDelete}
+            >
+              <Trash2 size={16} />
+            </button>
+          </>
         ) : null}
       </div>
       <Collapsible open={expanded}>
