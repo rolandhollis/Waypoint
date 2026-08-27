@@ -6,6 +6,7 @@ import {
 import { ViewPageHeader } from "../components/ViewPageHeader";
 import { AbHomeActivityChart } from "../components/AbHomeActivityChart";
 import { AbHomeHero } from "../components/AbHomeHero";
+import { HomeStatusLoadChart } from "../components/HomeStatusLoadChart";
 import type { SwimLane } from "../lib/types";
 
 function laneNameKey(lane: Pick<SwimLane, "name">): string {
@@ -94,6 +95,11 @@ export function HomeView() {
             {/* Column B — 8/12 · ZiffSplit container `home_activity_chart` */}
             <div className="lg:col-span-8">
               <AbHomeActivityChart />
+            </div>
+
+            {/* Full width — status-report load by product manager */}
+            <div className="lg:col-span-12">
+              <HomeStatusLoadChart />
             </div>
           </div>
         </div>

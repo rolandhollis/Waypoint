@@ -238,8 +238,10 @@ const activityByDaySchema = z.object({
 
 /**
  * Homepage activity chart — count of audit events + lane moves per
- * calendar day in the workspace reporting timezone. Available to every
- * authenticated group member (not admin-only).
+ * calendar day in the workspace reporting timezone. Excludes
+ * `global_priority` edits (Prioritization drags) so bulk reorders
+ * don't dominate the chart. Available to every authenticated group
+ * member (not admin-only).
  */
 auditRouter.get("/activity-by-day", async (req, res) => {
   const q = activityByDaySchema.parse(req.query);
@@ -278,6 +280,7 @@ auditRouter.get("/activity-by-day", async (req, res) => {
        WHERE p.group_id = $1
          AND p.deleted_at IS NULL
          AND e.action <> 'move'
+         AND e.field IS DISTINCT FROM 'global_priority'
          AND e."timestamp" >= $2::timestamptz
          AND e."timestamp" <= $3::timestamptz
          ${userClauseAudit}
@@ -330,7 +333,8 @@ const activityByUserSchema = z.object({
 /**
  * Homepage A/B chart — count of audit events + lane moves per user
  * in the workspace reporting timezone. Same event universe as
- * `/activity-by-day`. Available to every authenticated group member.
+ * `/activity-by-day` (also excludes `global_priority` edits).
+ * Available to every authenticated group member.
  */
 auditRouter.get("/activity-by-user", async (req, res) => {
   const q = activityByUserSchema.parse(req.query);
@@ -364,6 +368,7 @@ auditRouter.get("/activity-by-user", async (req, res) => {
        WHERE p.group_id = $1
          AND p.deleted_at IS NULL
          AND e.action <> 'move'
+         AND e.field IS DISTINCT FROM 'global_priority'
          AND e."timestamp" >= $2::timestamptz
          AND e."timestamp" <= $3::timestamptz
       UNION ALL
