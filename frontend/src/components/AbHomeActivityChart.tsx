@@ -1,11 +1,16 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { format, parseISO, subDays } from "date-fns";
+import { useMemo, useState } from "react";
+import { format, parseISO } from "date-fns";
 import { isAbSdkConfigured, useAbSdk } from "../lib/abSdk";
 import {
   useActivityByDay,
   useActivityByUser,
   useMentionableUsers,
 } from "../lib/queries";
+import {
+  homeDaysAgoKey,
+  homeTodayKey,
+  HomeDateRangeFilters,
+} from "./HomeDateRangeFilters";
 
 /**
  * Embedded ZiffSplit slot for the homepage activity chart.
@@ -26,14 +31,6 @@ export const HOME_ACTIVITY_BY_USER_KEY = "activity_by_user";
 
 /** Plot area for bars (px). Avoid % height — it collapses in flex columns. */
 const BAR_MAX_PX = 180;
-
-function todayKey(): string {
-  return format(new Date(), "yyyy-MM-dd");
-}
-
-function daysAgoKey(n: number): string {
-  return format(subDays(new Date(), n), "yyyy-MM-dd");
-}
 
 function useHomeActivityCodeVariant(): string {
   const ab = useAbSdk();
@@ -56,60 +53,10 @@ function useHomeActivityCodeVariant(): string {
   return assignment.codeVariantKey ?? HOME_ACTIVITY_BY_DAY_KEY;
 }
 
-function DateRangeFilters({
-  from,
-  to,
-  onFrom,
-  onTo,
-  onResetLast7,
-  rangeError,
-  extra,
-}: {
-  from: string;
-  to: string;
-  onFrom: (v: string) => void;
-  onTo: (v: string) => void;
-  onResetLast7: () => void;
-  rangeError: string | null;
-  extra?: ReactNode;
-}) {
-  return (
-    <section className="card-surface p-4">
-      <div className="flex flex-wrap items-end gap-3">
-        {extra}
-        <label className="block text-xs">
-          <span className="mb-1 block font-medium text-wp-slate">From</span>
-          <input
-            type="date"
-            className="rounded-md border border-wp-stone bg-white px-2 py-1.5 text-sm text-wp-ink"
-            value={from}
-            max={to || undefined}
-            onChange={(e) => onFrom(e.target.value)}
-          />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block font-medium text-wp-slate">To</span>
-          <input
-            type="date"
-            className="rounded-md border border-wp-stone bg-white px-2 py-1.5 text-sm text-wp-ink"
-            value={to}
-            min={from || undefined}
-            onChange={(e) => onTo(e.target.value)}
-          />
-        </label>
-        <button type="button" className="btn-secondary !py-1.5 !text-xs" onClick={onResetLast7}>
-          Last 7 days
-        </button>
-      </div>
-      {rangeError ? <p className="mt-3 text-sm text-wp-red">{rangeError}</p> : null}
-    </section>
-  );
-}
-
-function ActivityByDayChart() {
+function ActivityByDayChart({ title }: { title: string }) {
   const [userId, setUserId] = useState("");
-  const [from, setFrom] = useState(() => daysAgoKey(6));
-  const [to, setTo] = useState(() => todayKey());
+  const [from, setFrom] = useState(() => homeDaysAgoKey(6));
+  const [to, setTo] = useState(() => homeTodayKey());
 
   const users = useMentionableUsers();
   const userOptions = useMemo(
@@ -134,14 +81,14 @@ function ActivityByDayChart() {
 
   return (
     <div className="space-y-4">
-      <DateRangeFilters
+      <HomeDateRangeFilters
         from={from}
         to={to}
         onFrom={setFrom}
         onTo={setTo}
         onResetLast7={() => {
-          setFrom(daysAgoKey(6));
-          setTo(todayKey());
+          setFrom(homeDaysAgoKey(6));
+          setTo(homeTodayKey());
         }}
         rangeError={rangeError}
         extra={
@@ -165,7 +112,7 @@ function ActivityByDayChart() {
 
       <section className="card-surface p-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-base font-semibold text-wp-ink">Updates per day</h2>
+          <h2 className="text-base font-semibold text-wp-ink">{title}</h2>
           <p className="text-xs text-wp-slate">
             {activity.isLoading
               ? "Loading…"
@@ -227,9 +174,19 @@ function ActivityByDayChart() {
   );
 }
 
-function ActivityByUserChart() {
-  const [from, setFrom] = useState(() => daysAgoKey(6));
-  const [to, setTo] = useState(() => todayKey());
+function ActivityByUserChart({
+  title,
+  loadingText = "Loading…",
+  errorText = "Couldn’t load activity. Try refreshing.",
+  emptyText = "No activity in range.",
+}: {
+  title: string;
+  loadingText?: string;
+  errorText?: string;
+  emptyText?: string;
+}) {
+  const [from, setFrom] = useState(() => homeDaysAgoKey(6));
+  const [to, setTo] = useState(() => homeTodayKey());
 
   const rangeError = from && to && from > to
     ? "Start date must be on or before end date."
@@ -246,94 +203,114 @@ function ActivityByUserChart() {
   const maxCount = Math.max(1, ...users.map((u) => u.count));
 
   return (
-    <div className="space-y-4">
-      <DateRangeFilters
-        from={from}
-        to={to}
-        onFrom={setFrom}
-        onTo={setTo}
-        onResetLast7={() => {
-          setFrom(daysAgoKey(6));
-          setTo(todayKey());
-        }}
-        rangeError={rangeError}
-      />
+    <section className="card-surface p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="text-base font-semibold text-wp-ink" data-jiff-label="updates_per_user_title">
+          {title}
+        </h2>
+        <p className="text-xs text-wp-slate">
+          {activity.isLoading
+            ? loadingText
+            : `${total} event${total === 1 ? "" : "s"} · ${
+                activity.data?.timezone ?? "local"
+              }`}
+        </p>
+      </div>
 
-      <section className="card-surface p-4">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-base font-semibold text-wp-ink">Updates per user</h2>
-          <p className="text-xs text-wp-slate">
-            {activity.isLoading
-              ? "Loading…"
-              : `${total} event${total === 1 ? "" : "s"} · ${
-                  activity.data?.timezone ?? "local"
-                }`}
-          </p>
-        </div>
+      <div className="mt-4">
+        <HomeDateRangeFilters
+          embedded
+          from={from}
+          to={to}
+          onFrom={setFrom}
+          onTo={setTo}
+          onResetLast7={() => {
+            setFrom(homeDaysAgoKey(6));
+            setTo(homeTodayKey());
+          }}
+          rangeError={rangeError}
+        />
+      </div>
 
-        {activity.isError ? (
-          <p className="mt-6 text-sm text-wp-red">Couldn’t load activity. Try refreshing.</p>
-        ) : users.length === 0 && !activity.isLoading ? (
-          <p className="mt-6 text-sm text-wp-slate">No activity in range.</p>
-        ) : (
-          <div className="mt-6">
-            <div
-              className="flex h-56 items-end gap-2 border-b border-wp-stone px-1"
-              role="img"
-              aria-label={`Bar chart of ${total} updates across ${users.length} users`}
-            >
-              {users.map((u) => {
-                const heightPx =
-                  u.count === 0 ? 0 : Math.max(8, Math.round((u.count / maxCount) * BAR_MAX_PX));
-                const key = u.user_id ?? `unknown-${u.user_name}`;
-                return (
+      {activity.isError ? (
+        <p className="mt-6 text-sm text-wp-red" data-jiff-label="updates_per_user_error_text">
+          {errorText}
+        </p>
+      ) : users.length === 0 && !activity.isLoading ? (
+        <p className="mt-6 text-sm text-wp-slate" data-jiff-label="updates_per_user_empty_text">
+          {emptyText}
+        </p>
+      ) : (
+        <div className="mt-6">
+          <div
+            className="flex h-56 items-end gap-2 border-b border-wp-stone px-1"
+            role="img"
+            aria-label={`Bar chart of ${total} updates across ${users.length} users`}
+          >
+            {users.map((u) => {
+              const heightPx =
+                u.count === 0 ? 0 : Math.max(8, Math.round((u.count / maxCount) * BAR_MAX_PX));
+              const key = u.user_id ?? `unknown-${u.user_name}`;
+              return (
+                <div
+                  key={key}
+                  className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1"
+                >
+                  <span className="text-[11px] font-medium tabular-nums text-wp-ink">
+                    {u.count}
+                  </span>
                   <div
-                    key={key}
-                    className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1"
-                  >
-                    <span className="text-[11px] font-medium tabular-nums text-wp-ink">
-                      {u.count}
-                    </span>
-                    <div
-                      className="w-full rounded-t-md bg-wp-red/85 transition-[height]"
-                      style={{ height: `${heightPx}px` }}
-                      title={`${u.user_name}: ${u.count}`}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-2 flex gap-2 px-1">
-              {users.map((u) => {
-                const key = `${u.user_id ?? "unknown"}-lbl`;
-                return (
-                  <div
-                    key={key}
-                    className="min-w-0 flex-1 truncate text-center text-[10px] leading-tight text-wp-slate"
-                    title={u.user_name}
-                  >
-                    {u.user_name}
-                  </div>
-                );
-              })}
-            </div>
+                    className="w-full rounded-t-md bg-wp-red/85 transition-[height]"
+                    style={{ height: `${heightPx}px` }}
+                    title={`${u.user_name}: ${u.count}`}
+                  />
+                </div>
+              );
+            })}
           </div>
-        )}
-      </section>
-    </div>
+          <div className="mt-2 flex gap-2 px-1">
+            {users.map((u) => {
+              const key = `${u.user_id ?? "unknown"}-lbl`;
+              return (
+                <div
+                  key={key}
+                  className="min-w-0 flex-1 truncate text-center text-[10px] leading-tight text-wp-slate"
+                  title={u.user_name}
+                >
+                  {u.user_name}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
+
+/** Standalone chart for layout block `brand.updates_per_user`. */
+export { ActivityByUserChart };
 
 /**
  * Renders the assigned homepage activity chart (embedded / code).
  * Mount on HomeView column B.
  */
 export function AbHomeActivityChart() {
+  return <AbHomeActivityChartSlot />;
+}
+
+export function AbHomeActivityChartSlot({
+  dayTitle = "Updates per day",
+  userTitle = "Updates per user",
+}: {
+  dayTitle?: string;
+  userTitle?: string;
+}) {
   const codeKey = useHomeActivityCodeVariant();
 
   if (codeKey === HOME_ACTIVITY_BY_USER_KEY) {
-    return <ActivityByUserChart />;
+    return <ActivityByUserChart title={userTitle} />;
   }
 
-  return <ActivityByDayChart />;
+  return <ActivityByDayChart title={dayTitle} />;
 }

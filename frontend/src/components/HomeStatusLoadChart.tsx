@@ -1,7 +1,12 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMentionableUsers, useProjects, useSwimLanes } from "../lib/queries";
 import { laneRequiresWeeklyStatus } from "../lib/statusEligibility";
+import {
+  homeDaysAgoKey,
+  homeTodayKey,
+  HomeDateRangeFilters,
+} from "./HomeDateRangeFilters";
 
 /** Plot area for bars (px). Match AbHomeActivityChart. */
 const BAR_MAX_PX = 180;
@@ -25,13 +30,31 @@ function formatLaneList(names: string[]): string {
  *
  * Counts epics currently in a lane that would surface on the Status
  * Report (`requires_weekly_status`, excluding backlog / default-new),
- * grouped by owner. Ranked highest → lowest left to right; owners
- * with zero eligible items are omitted.
+ * grouped by owner. Owns an independent date range (UI parity with
+ * updates-per-user); bars remain a live snapshot of current assignments.
  */
-export function HomeStatusLoadChart() {
+export function HomeStatusLoadChart({
+  title = "Active Assignments by PM",
+  subtitle,
+  loadingText = "Loading…",
+  errorText = "Couldn’t load active assignments.",
+  emptyText = "No owned items currently in these swim lanes.",
+}: {
+  title?: string;
+  subtitle?: string;
+  loadingText?: string;
+  errorText?: string;
+  emptyText?: string;
+}) {
+  const [from, setFrom] = useState(() => homeDaysAgoKey(6));
+  const [to, setTo] = useState(() => homeTodayKey());
+
   const projects = useProjects();
   const lanes = useSwimLanes();
   const users = useMentionableUsers();
+
+  const rangeError =
+    from && to && from > to ? "Start date must be on or before end date." : null;
 
   const eligibleLaneNames = useMemo(() => {
     return (lanes.data ?? [])
@@ -76,30 +99,60 @@ export function HomeStatusLoadChart() {
     eligibleLaneNames.length > 0
       ? `Owned epics in ${formatLaneList(eligibleLaneNames)} — the swim lanes that appear on the weekly status report.`
       : "Owned epics in swim lanes that appear on the weekly status report.";
+  const subtitleText = subtitle?.trim() || laneSubtitle;
 
   return (
     <section className="card-surface p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <h2 className="text-base font-semibold text-wp-ink">Active Assignments by PM</h2>
-          <p className="mt-0.5 text-xs text-wp-slate">{laneSubtitle}</p>
+          <h2
+            className="text-base font-semibold text-wp-ink"
+            data-jiff-label="active_assignments_title"
+          >
+            {title}
+          </h2>
+          <p
+            className="mt-0.5 text-xs text-wp-slate"
+            data-jiff-label="active_assignments_description"
+          >
+            {subtitleText}
+          </p>
         </div>
         <p className="text-xs text-wp-slate">
           {loading
-            ? "Loading…"
+            ? loadingText
             : `${total} item${total === 1 ? "" : "s"} · ${bars.length} PM${
                 bars.length === 1 ? "" : "s"
               }`}
         </p>
       </div>
 
+      <div className="mt-4">
+        <HomeDateRangeFilters
+          embedded
+          from={from}
+          to={to}
+          onFrom={setFrom}
+          onTo={setTo}
+          onResetLast7={() => {
+            setFrom(homeDaysAgoKey(6));
+            setTo(homeTodayKey());
+          }}
+          rangeError={rangeError}
+        />
+      </div>
+
       {errored ? (
-        <p className="mt-6 text-sm text-wp-red">Couldn’t load active assignments.</p>
+        <p className="mt-6 text-sm text-wp-red" data-jiff-label="active_assignments_error_text">
+          {errorText}
+        </p>
       ) : loading ? (
-        <p className="mt-6 text-sm text-wp-slate">Loading…</p>
+        <p className="mt-6 text-sm text-wp-slate" data-jiff-label="active_assignments_loading_text">
+          {loadingText}
+        </p>
       ) : bars.length === 0 ? (
-        <p className="mt-6 text-sm text-wp-slate">
-          No owned items currently in these swim lanes.
+        <p className="mt-6 text-sm text-wp-slate" data-jiff-label="active_assignments_empty_text">
+          {emptyText}
         </p>
       ) : (
         <div className="mt-6">

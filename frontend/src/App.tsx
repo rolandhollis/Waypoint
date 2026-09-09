@@ -28,8 +28,10 @@ import { AbPreviewBanner } from "./components/AbPreviewBanner";
 import { ReminderBanner } from "./components/ReminderBanner";
 import { TopNav } from "./components/TopNav";
 import { AbSdkProvider } from "./lib/abSdk";
+import { boolFromText, rawTextByLabel, useJiffPageContent } from "./lib/jiffcontent";
 import { UserSwitcher } from "./components/UserSwitcher";
 import { GroupSwitcher } from "./components/GroupSwitcher";
+import { JcLocaleSwitcher } from "./components/JcLocaleSwitcher";
 import {
   consumePostLoginRedirect,
   stashPostLoginRedirect,
@@ -275,6 +277,17 @@ function MockLoginScreen() {
 
 function TopBar() {
   const appName = useAppName();
+  const cms = useJiffPageContent("shell");
+  const cmsItems = cms.data ?? [];
+  const navComponent = rawTextByLabel(cmsItems, "navbar_component") ?? "brand.navbar";
+  const navbarEnabledText = rawTextByLabel(cmsItems, "navbar_enabled");
+  const showNavbar = navbarEnabledText == null
+    ? navComponent.trim().toLowerCase() === "brand.navbar"
+    : boolFromText(navbarEnabledText, true);
+  const showGroupSwitcher = boolFromText(rawTextByLabel(cmsItems, "navbar_show_group_switcher"), true);
+  const showUserSwitcher = boolFromText(rawTextByLabel(cmsItems, "navbar_show_user_switcher"), true);
+  const announcement = rawTextByLabel(cmsItems, "navbar_announcement");
+
   return (
     <header className="flex items-center justify-between border-b border-wp-stone bg-white px-5 py-2.5">
       <div className="flex items-center gap-6">
@@ -289,12 +302,18 @@ function TopBar() {
             />
             <span className="text-lg font-bold text-wp-red">{appName}</span>
           </Link>
+          {announcement ? (
+            <span className="rounded-md border border-wp-stone bg-wp-stone/30 px-2 py-0.5 text-xs text-wp-slate">
+              {announcement}
+            </span>
+          ) : null}
         </div>
-        <TopNav />
+        {showNavbar ? <TopNav /> : null}
       </div>
       <div className="flex items-center gap-3">
-        <GroupSwitcher />
-        <UserSwitcher />
+        <JcLocaleSwitcher />
+        {showGroupSwitcher ? <GroupSwitcher /> : null}
+        {showUserSwitcher ? <UserSwitcher /> : null}
       </div>
     </header>
   );
