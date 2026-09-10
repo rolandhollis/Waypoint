@@ -106,6 +106,19 @@ fly deploy --app waypoint-qmh6xa \
   --build-arg VITE_AB_SITE_KEY='<site-key>'
 ```
 
+### JiffContent (build-time, frontend)
+
+| Build arg | Required | Where |
+|-----------|----------|--------|
+| `VITE_JIFFCONTENT_API_BASE` | no (defaults to `https://api.jiffcontent.com`) | `fly.toml` + deploy workflow |
+| `VITE_JIFFCONTENT_PUBLIC_KEY` | yes for CMS homepage | `fly.toml` / GitHub secret `VITE_JIFFCONTENT_PUBLIC_KEY` |
+
+Use the brand **public** key (`jc_pk_…`) only. Never put `jc_sk_…` in the frontend or Fly build args.
+
+```bash
+gh secret set VITE_JIFFCONTENT_PUBLIC_KEY --body 'jc_pk_…' --repo rolandhollis/Waypoint
+```
+
 The SDK is vendored at `frontend/vendor/ziffsplit-sdk`. After changing the sibling `ziffsplit-sdk` repo:
 
 ```bash

@@ -23,6 +23,9 @@ primary_region = "iad"
     # Override per deploy: fly deploy --build-arg VITE_AB_SITE_KEY=...
     # or set GitHub secret VITE_AB_SITE_KEY (see .github/workflows/deploy.yml).
     VITE_AB_SITE_KEY = "mAaRflGAPoc_IcFh_3Fu1A"
+    VITE_JIFFCONTENT_API_BASE = "https://api.jiffcontent.com"
+    # Public SDK key only (jc_pk_…). Never put jc_sk_… here.
+    VITE_JIFFCONTENT_PUBLIC_KEY = "jc_pk_ZhpvWxH_ZzkT51fS6AaqOspyDq1TaDXN"
 
 # Non-secret defaults. `AUTH_MODE=mock` is intentional here — the app
 # renders a "demo mode" banner at the top and the smoke test exercises

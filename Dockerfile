@@ -21,8 +21,12 @@ WORKDIR /app/frontend
 # Declared early so Fly/Depot cache keys include the public site key.
 ARG VITE_AB_API_BASE=https://ziffsplit-api.fly.dev
 ARG VITE_AB_SITE_KEY=
+ARG VITE_JIFFCONTENT_PUBLIC_KEY=
+ARG VITE_JIFFCONTENT_API_BASE=https://api.jiffcontent.com
 ENV VITE_AB_API_BASE=$VITE_AB_API_BASE
 ENV VITE_AB_SITE_KEY=$VITE_AB_SITE_KEY
+ENV VITE_JIFFCONTENT_PUBLIC_KEY=$VITE_JIFFCONTENT_PUBLIC_KEY
+ENV VITE_JIFFCONTENT_API_BASE=$VITE_JIFFCONTENT_API_BASE
 
 COPY frontend/package.json frontend/package-lock.json ./
 COPY frontend/vendor/ziffsplit-sdk ./vendor/ziffsplit-sdk
@@ -38,6 +42,11 @@ RUN rm -f .env .env.local .env.production .env.production.local \
   && echo "ZiffSplit build: SITE_KEY length=${#VITE_AB_SITE_KEY}" \
   && if [ -z "$VITE_AB_SITE_KEY" ]; then \
        echo "WARNING: VITE_AB_SITE_KEY is empty — ZiffSplit will be disabled in this image"; \
+     fi \
+  && echo "JiffContent build: API_BASE=${VITE_JIFFCONTENT_API_BASE}" \
+  && echo "JiffContent build: PUBLIC_KEY length=${#VITE_JIFFCONTENT_PUBLIC_KEY}" \
+  && if [ -z "$VITE_JIFFCONTENT_PUBLIC_KEY" ]; then \
+       echo "WARNING: VITE_JIFFCONTENT_PUBLIC_KEY is empty — CMS homepage will use built-in fallback"; \
      fi
 
 # API_BASE defaults to "/api" in the client — perfect for same-origin serving.
