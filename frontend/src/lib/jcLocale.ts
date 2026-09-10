@@ -17,8 +17,8 @@ function normalizeLocale(raw: string | null | undefined): JcLocaleCode {
   const code = (raw ?? "").trim().toLowerCase();
   if (ALLOWED.has(code)) return code as JcLocaleCode;
   // Accept BCP-47 prefixes (e.g. en-US → en).
-  const base = code.split("-")[0];
-  if (ALLOWED.has(base)) return base as JcLocaleCode;
+  const base = code.split("-")[0] ?? "";
+  if (base && ALLOWED.has(base)) return base as JcLocaleCode;
   return "en";
 }
 
