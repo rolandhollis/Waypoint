@@ -1,10 +1,15 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
+import { isAbSdkConfigured, useAbSdk } from "../lib/abSdk";
 import {
   rawTextByLabel,
   useJiffPageContent,
 } from "../lib/jiffcontent";
 import { useProjects, useSwimLanes } from "../lib/queries";
 import type { SwimLane } from "../lib/types";
+import { AbAuthoredHtml } from "./AbAuthoredHtml";
+
+/** JiffSplit container — on/off gate + experiment slot for authored/code variants. */
+export const PROJECTS_OVERVIEW_CONTAINER = "projects_overview";
 
 type Props = {
   pageName?: string;
@@ -25,11 +30,40 @@ function isNonActiveLane(lane: SwimLane): boolean {
   return false;
 }
 
+function SlotShell({
+  blockName,
+  pageName,
+  children,
+}: {
+  blockName?: string;
+  pageName: string;
+  children: ReactNode;
+}) {
+  return (
+    <section
+      className="card-surface p-4"
+      data-block-name={blockName}
+      data-block-type="brand.projects_overview"
+      data-jiff-component="projects_overview"
+      data-jiff-page={pageName}
+      data-zs-container={PROJECTS_OVERVIEW_CONTAINER}
+      data-zs-page="/"
+    >
+      {children}
+    </section>
+  );
+}
+
 /**
  * Layout block `brand.projects_overview`.
  * Copy from JC placements on `page_name` (default `homepage`); counts from Waypoint APIs.
+ * JiffSplit container `projects_overview`: off → hide; on + authored assignment → PM HTML;
+ * otherwise the default CMS-backed card (experiments are still evaluated for sticky/exposure).
  */
 export function BrandProjectsOverview({ pageName = "homepage", blockName }: Props) {
+  const ab = useAbSdk();
+  void ab.previewRevision;
+
   const projects = useProjects();
   const lanes = useSwimLanes();
   const cms = useJiffPageContent(pageName);
@@ -47,6 +81,59 @@ export function BrandProjectsOverview({ pageName = "homepage", blockName }: Prop
     }
     return { total: list.length, inProgress };
   }, [projects.data, lanes.data]);
+
+  const splitConfigured = isAbSdkConfigured();
+  // Wait for Split config so we don't flash the card before an off flag applies.
+  const splitPending = splitConfigured && !ab.ready;
+  const splitDisabled =
+    splitConfigured && !ab.error && ab.ready && !ab.isContainerEnabled(PROJECTS_OVERVIEW_CONTAINER);
+
+  // Always leave a discoverable marker for JiffSplit Inspector, even when gated off.
+  if (splitPending || splitDisabled) {
+    return (
+      <div
+        hidden
+        aria-hidden
+        data-zs-container={PROJECTS_OVERVIEW_CONTAINER}
+        data-zs-page="/"
+        data-zs-type="html"
+        data-block-name={blockName}
+        data-block-type="brand.projects_overview"
+      />
+    );
+  }
+
+  // Evaluate + sticky/exposure — required for experiments on this container.
+  const assignment =
+    splitConfigured && !ab.error && ab.ready
+      ? ab.getAssignmentByContainer(PROJECTS_OVERVIEW_CONTAINER)
+      : null;
+
+  // API treatments: original (code) → default card; blank authored → hide; HTML → replace.
+  if (assignment?.contentSource === "authored") {
+    const html = assignment.authoredContent ?? "";
+    if (!html.trim()) {
+      return (
+        <div
+          hidden
+          aria-hidden
+          data-zs-container={PROJECTS_OVERVIEW_CONTAINER}
+          data-zs-page="/"
+          data-zs-type="html"
+          data-block-name={blockName}
+          data-block-type="brand.projects_overview"
+        />
+      );
+    }
+    return (
+      <SlotShell blockName={blockName} pageName={pageName}>
+        <AbAuthoredHtml
+          html={html}
+          className="ab-authored-html ab-projects-overview"
+        />
+      </SlotShell>
+    );
+  }
 
   const loading = projects.isLoading || lanes.isLoading;
   const errored = projects.isError || lanes.isError;
@@ -72,13 +159,7 @@ export function BrandProjectsOverview({ pageName = "homepage", blockName }: Prop
     rawTextByLabel(items, "projects_error_text") ?? "Couldn’t load project counts.";
 
   return (
-    <section
-      className="card-surface p-4"
-      data-block-name={blockName}
-      data-block-type="brand.projects_overview"
-      data-jiff-component="projects_overview"
-      data-jiff-page={pageName}
-    >
+    <SlotShell blockName={blockName} pageName={pageName}>
       <h2 className="text-base font-semibold text-wp-ink" data-jiff-label="projects_title">
         {title}
       </h2>
@@ -119,6 +200,6 @@ export function BrandProjectsOverview({ pageName = "homepage", blockName }: Prop
           </div>
         </dl>
       )}
-    </section>
+    </SlotShell>
   );
 }

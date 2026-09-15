@@ -308,9 +308,13 @@ export function AbHomeActivityChartSlot({
 }) {
   const codeKey = useHomeActivityCodeVariant();
 
-  if (codeKey === HOME_ACTIVITY_BY_USER_KEY) {
-    return <ActivityByUserChart title={userTitle} />;
-  }
-
-  return <ActivityByDayChart title={dayTitle} />;
+  return (
+    <div data-zs-container={HOME_ACTIVITY_CHART_CONTAINER} data-zs-page="/">
+      {codeKey === HOME_ACTIVITY_BY_USER_KEY ? (
+        <ActivityByUserChart title={userTitle} />
+      ) : (
+        <ActivityByDayChart title={dayTitle} />
+      )}
+    </div>
+  );
 }

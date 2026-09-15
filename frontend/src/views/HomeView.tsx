@@ -1,11 +1,8 @@
 import { useMemo, type ReactNode } from "react";
-import {
-  useProjects,
-  useSwimLanes,
-} from "../lib/queries";
 import { ViewPageHeader } from "../components/ViewPageHeader";
 import { AbHomeActivityChartSlot } from "../components/AbHomeActivityChart";
 import { AbHomeHero } from "../components/AbHomeHero";
+import { BrandProjectsOverview } from "../components/BrandProjectsOverview";
 import { HomeStatusLoadChart } from "../components/HomeStatusLoadChart";
 import { JiffLayoutRenderer } from "../components/JiffLayoutRenderer";
 import {
@@ -18,22 +15,6 @@ import {
   useJiffPageContent,
   useJiffResolvedPage,
 } from "../lib/jiffcontent";
-import type { SwimLane } from "../lib/types";
-
-function laneNameKey(lane: Pick<SwimLane, "name">): string {
-  return lane.name.trim().toLowerCase();
-}
-
-/** Lanes that are not active delivery work (backlog, complete, parking lot, archive). */
-function isNonActiveLane(lane: SwimLane): boolean {
-  const name = laneNameKey(lane);
-  if (lane.is_archive) return true;
-  if (lane.is_terminal) return true;
-  if (lane.is_default_new) return true;
-  if (name === "backlog") return true;
-  if (name === "parking lot") return true;
-  return false;
-}
 
 function HomeShell({ children, busy }: { children?: ReactNode; busy?: boolean }) {
   return (
@@ -52,8 +33,6 @@ function HomeShell({ children, busy }: { children?: ReactNode; busy?: boolean })
  * overview cards only after resolve settles with no published layout.
  */
 export function HomeView() {
-  const projects = useProjects();
-  const lanes = useSwimLanes();
   const cmsConfigured = isJiffContentConfigured();
   const resolved = useJiffResolvedPage(jiffHomePagePath());
   const cmsPageDoc = publishedLayoutDocument(resolved.data);
@@ -61,27 +40,6 @@ export function HomeView() {
   // Placement-based copy still powers the built-in fallback homepage.
   const cms = useJiffPageContent("homepage");
   const cmsItems = cms.data ?? [];
-
-  const projectCounts = useMemo(() => {
-    const list = projects.data ?? [];
-    const laneById = new Map((lanes.data ?? []).map((l) => [l.id, l]));
-    let inProgress = 0;
-    for (const p of list) {
-      if (!p.swim_lane_id) continue;
-      const lane = laneById.get(p.swim_lane_id);
-      if (!lane) continue;
-      if (!isNonActiveLane(lane)) inProgress += 1;
-    }
-    return { total: list.length, inProgress };
-  }, [projects.data, lanes.data]);
-
-  const countsLoading = projects.isLoading || lanes.isLoading;
-  const projectsTitle = rawTextByLabel(cmsItems, "home_projects_title") ?? "Projects";
-  const projectsSubtitle =
-    rawTextByLabel(cmsItems, "home_projects_subtitle") ??
-    "In progress excludes backlog, complete, parking lot, and archive.";
-  const totalLabel = rawTextByLabel(cmsItems, "home_projects_total_label") ?? "Total";
-  const inProgressLabel = rawTextByLabel(cmsItems, "home_projects_in_progress_label") ?? "In progress";
 
   const activityDayTitle = rawTextByLabel(cmsItems, "home_activity_day_title") ?? "Updates per day";
   const activityUserTitle = rawTextByLabel(cmsItems, "home_activity_user_title") ?? "Updates per user";
@@ -137,34 +95,7 @@ export function HomeView() {
 
   const projectsSection = (
     <div className="lg:col-span-4" key="projects">
-      <section className="card-surface p-4">
-        <h2 className="text-base font-semibold text-wp-ink">{projectsTitle}</h2>
-        <p className="mt-1 text-xs text-wp-slate">{projectsSubtitle}</p>
-        {countsLoading ? (
-          <p className="mt-6 text-sm text-wp-slate">Loading…</p>
-        ) : projects.isError || lanes.isError ? (
-          <p className="mt-6 text-sm text-wp-red">Couldn’t load project counts.</p>
-        ) : (
-          <dl className="mt-5 grid grid-cols-2 gap-3">
-            <div className="rounded-lg border border-wp-stone bg-wp-paper/60 px-3 py-3">
-              <dt className="text-[11px] font-medium uppercase tracking-wide text-wp-slate">
-                {totalLabel}
-              </dt>
-              <dd className="mt-1 text-3xl font-semibold tabular-nums text-wp-ink">
-                {projectCounts.total}
-              </dd>
-            </div>
-            <div className="rounded-lg border border-wp-stone bg-wp-paper/60 px-3 py-3">
-              <dt className="text-[11px] font-medium uppercase tracking-wide text-wp-slate">
-                {inProgressLabel}
-              </dt>
-              <dd className="mt-1 text-3xl font-semibold tabular-nums text-wp-ink">
-                {projectCounts.inProgress}
-              </dd>
-            </div>
-          </dl>
-        )}
-      </section>
+      <BrandProjectsOverview pageName="homepage" />
     </div>
   );
 

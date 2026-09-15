@@ -22,7 +22,12 @@ const HERO_SHELL =
 
 function HeroShell({ children }: { children: ReactNode }) {
   return (
-    <div className={HERO_SHELL} aria-hidden>
+    <div
+      className={HERO_SHELL}
+      aria-hidden
+      data-zs-container={HOME_HERO_CONTAINER}
+      data-zs-page="/"
+    >
       {children}
       {/* Soft fade into page background under the overlapping cards */}
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-wp-bg" />

@@ -13,10 +13,13 @@ import { AbAuthoredHtml } from "./AbAuthoredHtml";
 export function AbDemoBanner({
   containerKey,
   placement = "page",
+  pageRoute,
 }: {
   containerKey: string;
   /** `shell` = sticky top bar; `page` = inline card on the page. */
   placement?: "shell" | "page";
+  /** Route for JiffSplit Inspector (`data-zs-page`). */
+  pageRoute?: string;
 }) {
   const ab = useAbSdk();
   // Re-read assignments when admin preview overrides land.
@@ -54,8 +57,10 @@ export function AbDemoBanner({
       ? "sticky top-0 z-30 border-b-2 border-violet-500 bg-violet-100 px-4 py-2.5 text-sm text-violet-950 shadow-sm"
       : "mb-3 rounded-lg border-2 border-violet-500 bg-violet-100 px-4 py-2.5 text-sm text-violet-950 shadow-sm";
 
+  const zsPage = pageRoute ?? (placement === "shell" ? "/" : "/projects");
+
   return (
-    <div className={className}>
+    <div className={className} data-zs-container={containerKey} data-zs-page={zsPage}>
       <AbAuthoredHtml html={copy} className="ab-authored-html" />
     </div>
   );

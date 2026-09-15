@@ -146,6 +146,8 @@ export function AbProjectConfettiButton({
       disabled={busy}
       title="Celebrate with confetti"
       aria-label="Celebrate with confetti"
+      data-zs-container={PROJECT_CONFETTI_CONTAINER}
+      data-zs-page="/projects"
     >
       <PartyPopper size={16} className="text-wp-red" />
       <span className="hidden sm:inline">Celebrate</span>
