@@ -68,6 +68,8 @@ const AUDITED_FIELDS = [
   "dates_locked",
   "hidden_from_roadmap",
   "is_key_strategic",
+  "is_blocked",
+  "blocked_reason",
   // `global_priority` is intentionally NOT in this list. The only
   // legitimate write path is PUT /api/prioritization, which emits
   // its own per-project audit events for rank changes (see
@@ -639,6 +641,14 @@ const projectBaseSchema = z.object({
    * filter chip. Default false at the DB level.
    */
   is_key_strategic: z.boolean().optional(),
+  /**
+   * PM-controlled blocked flag (migration 052). When true, the
+   * Roadmap draws a stop-sign on the development bar; `blocked_reason`
+   * holds the hover text. Default false at the DB level.
+   */
+  is_blocked: z.boolean().optional(),
+  /** Free-text blocked reason. Null clears. Max length keeps UI tooltips sane. */
+  blocked_reason: z.string().max(500).nullable().optional(),
   // Note: `global_priority` is deliberately absent from this schema.
   // The only write path is PUT /api/prioritization, which is
   // race-checked with a version fingerprint. A PATCH body carrying
@@ -688,6 +698,8 @@ const PROJECT_COLUMN_KEYS = [
   "dates_locked",
   "hidden_from_roadmap",
   "is_key_strategic",
+  "is_blocked",
+  "blocked_reason",
 ] as const;
 
 /**
@@ -857,12 +869,13 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
           start_date, target_date, dev_start_date, dev_end_date,
           optimization_start_date, optimization_end_date,
           excluded_from_capacity, dev_estimate_sourced_by_dev, dates_locked,
-          hidden_from_roadmap, is_key_strategic, global_priority, created_by,
+          hidden_from_roadmap, is_key_strategic, is_blocked, blocked_reason,
+          global_priority, created_by,
           discovery_updated_at, discovery_updated_by_user_id, discovery_updated_source,
           development_updated_at, development_updated_by_user_id, development_updated_source,
           post_dev_updated_at, post_dev_updated_by_user_id, post_dev_updated_source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-               $23,$24,$25,$26,$27,$28,$29,$30,$31) RETURNING id`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,
+               $24,$25,$26,$27,$28,$29,$30,$31,$32,$33) RETURNING id`,
       [
         groupId,
         body.title,
@@ -884,6 +897,8 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
         body.dates_locked ?? false,
         body.hidden_from_roadmap ?? false,
         body.is_key_strategic ?? false,
+        body.is_blocked ?? false,
+        body.blocked_reason ?? null,
         nextGlobalPriority,
         req.user!.id,
         phaseStamps.discovery.at,

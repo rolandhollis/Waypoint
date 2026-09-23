@@ -6,6 +6,11 @@ import {
   removeDigestRecipient,
   runStatusReportDigest,
 } from "../notifications/statusDigest.js";
+import {
+  loadOverdueProjects,
+  reportingTodayIso,
+  runOverdueCompletionReminders,
+} from "../notifications/overdueCompletion.js";
 import { verifyUnsubscribeToken } from "../notifications/unsubscribe.js";
 import { config } from "../config.js";
 import { authenticate, groupScope, requireAdmin } from "../middleware/auth.js";
@@ -156,6 +161,50 @@ notificationsRouter.post(
       adminNote: body.admin_note,
     });
     res.json(result);
+  },
+);
+
+const runOverdueCompletionSchema = z.object({
+  dry_run: z.boolean().optional().default(false),
+});
+
+/**
+ * Admin trigger for the daily overdue-completion reminder.
+ * Dry run previews owners; real run force-sends for the current group
+ * (clears today's log rows first so a re-click actually emails again).
+ */
+notificationsRouter.post(
+  "/overdue-completion/run",
+  authenticate,
+  groupScope,
+  requireAdmin,
+  async (req, res) => {
+    const body = runOverdueCompletionSchema.parse(req.body ?? {});
+    const result = await runOverdueCompletionReminders({
+      dryRun: body.dry_run,
+      scopeGroupId: req.groupId!,
+      force: !body.dry_run,
+    });
+    res.json(result);
+  },
+);
+
+/**
+ * In-app alert feed: overdue projects owned by the current user in
+ * the active group. Powers the top banner (live; not gated on email).
+ */
+notificationsRouter.get(
+  "/overdue-completion",
+  authenticate,
+  groupScope,
+  async (req, res) => {
+    const todayIso = reportingTodayIso();
+    const projects = await loadOverdueProjects({
+      todayIso,
+      scope: { groupId: req.groupId! },
+      ownerId: req.user!.id,
+    });
+    res.json({ day_of: todayIso, projects });
   },
 );
 

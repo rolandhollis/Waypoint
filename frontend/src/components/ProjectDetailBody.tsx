@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Lock, LockOpen, Star, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Lock, LockOpen, Octagon, Star, X } from "lucide-react";
 import { AbProjectConfettiButton } from "./AbProjectConfetti";
 import { api } from "../lib/api";
 import type { Project, ProjectTimelineEntry, ProjectType, Team, WeeklyStatusUpdate } from "../lib/types";
@@ -149,7 +149,7 @@ export function ProjectDetailBody({
   const tshirtSizes = useTshirtSizes();
   const allProjects = useProjects();
   const qc = useQueryClient();
-  const { confirm } = useAppDialog();
+  const { confirm, prompt } = useAppDialog();
 
   // `me` / `currentRole` are read to keep the panel subscribed to
   // identity + role changes (a mid-session group swap must re-render
@@ -407,6 +407,78 @@ export function ProjectDetailBody({
       qc.invalidateQueries({ queryKey: ["project", id] });
     },
   });
+
+  /**
+   * Stop-sign blocked toggle. Enabling prompts for a reason; clearing
+   * also clears `blocked_reason`. Same optimistic cache pattern as
+   * `strategicToggle` so the header icon flips immediately.
+   */
+  const blockedToggle = useMutation({
+    mutationFn: (v: { next: boolean; reason: string | null }) =>
+      api<Project>(`/projects/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          is_blocked: v.next,
+          blocked_reason: v.next ? v.reason : null,
+        }),
+      }),
+    onMutate: async (v) => {
+      await qc.cancelQueries({ queryKey: ["projects"] });
+      await qc.cancelQueries({ queryKey: ["project", id] });
+      const prevList = qc.getQueryData<Project[]>(["projects"]);
+      const prevOne = qc.getQueryData<Project>(["project", id]);
+      const patch = {
+        is_blocked: v.next,
+        blocked_reason: v.next ? v.reason : null,
+      };
+      if (prevList) {
+        qc.setQueryData<Project[]>(
+          ["projects"],
+          prevList.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+        );
+      }
+      if (prevOne) {
+        qc.setQueryData<Project>(["project", id], { ...prevOne, ...patch });
+      }
+      return { prevList, prevOne };
+    },
+    onError: (_err, _v, ctx) => {
+      if (ctx?.prevList) qc.setQueryData(["projects"], ctx.prevList);
+      if (ctx?.prevOne) qc.setQueryData(["project", id], ctx.prevOne);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["project", id] });
+      qc.invalidateQueries({ queryKey: ["projectHistory", id] });
+    },
+  });
+
+  async function handleBlockedClick() {
+    if (merged.is_blocked) {
+      const ok = await confirm({
+        title: "Clear blocked status?",
+        description: merged.blocked_reason
+          ? `This will remove the blocked flag and reason:\n“${merged.blocked_reason}”`
+          : "This will remove the blocked flag.",
+        confirmLabel: "Clear blocked",
+        cancelLabel: "Keep blocked",
+      });
+      if (!ok) return;
+      blockedToggle.mutate({ next: false, reason: null });
+      return;
+    }
+    const reason = await prompt({
+      title: "Mark as blocked",
+      description: "Why is this item blocked? The reason shows on the roadmap when someone hovers the stop sign.",
+      placeholder: "e.g. Waiting on legal review",
+      defaultValue: merged.blocked_reason ?? "",
+      confirmLabel: "Mark blocked",
+    });
+    if (reason === null) return;
+    const trimmed = reason.trim();
+    if (!trimmed) return;
+    blockedToggle.mutate({ next: true, reason: trimmed });
+  }
 
   /**
    * Lane-swap mutation for the "Swim lane" dropdown below. Hits the
@@ -922,6 +994,66 @@ export function ProjectDetailBody({
           }
         />
       )}
+      {/* Stop-sign blocked toggle (migration 052). Pressed look when
+          blocked; click prompts for a reason or clears the flag. */}
+      {canWrite ? (
+        <button
+          type="button"
+          aria-label={merged.is_blocked ? "Clear blocked status" : "Mark as blocked"}
+          aria-pressed={merged.is_blocked}
+          title={
+            merged.is_blocked
+              ? merged.blocked_reason
+                ? `Blocked: ${merged.blocked_reason}`
+                : "Blocked — click to clear"
+              : "Mark as blocked"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleBlockedClick();
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+          disabled={blockedToggle.isPending}
+          className={
+            "inline-flex shrink-0 cursor-pointer items-center justify-center rounded p-0.5 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-red/40 " +
+            (merged.is_blocked
+              ? "bg-red-100 text-red-700 ring-1 ring-inset ring-red-300 hover:bg-red-200"
+              : "text-wp-slate/40 hover:scale-110 hover:bg-wp-stone/40 hover:text-wp-slate")
+          }
+        >
+          <span className="relative inline-flex size-[18px] items-center justify-center">
+            <Octagon
+              size={18}
+              className={merged.is_blocked ? "fill-red-600 text-red-700" : ""}
+            />
+            <X
+              size={10}
+              strokeWidth={3}
+              className={
+                "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 " +
+                (merged.is_blocked ? "text-white" : "text-current")
+              }
+              aria-hidden
+            />
+          </span>
+        </button>
+      ) : merged.is_blocked ? (
+        <span
+          className="inline-flex shrink-0 items-center justify-center rounded bg-red-100 p-0.5 text-red-700 ring-1 ring-inset ring-red-300"
+          title={merged.blocked_reason ? `Blocked: ${merged.blocked_reason}` : "Blocked"}
+          aria-label={merged.blocked_reason ? `Blocked: ${merged.blocked_reason}` : "Blocked"}
+        >
+          <span className="relative inline-flex size-[18px] items-center justify-center">
+            <Octagon size={18} className="fill-red-600 text-red-700" />
+            <X
+              size={10}
+              strokeWidth={3}
+              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white"
+              aria-hidden
+            />
+          </span>
+        </span>
+      ) : null}
       {titleElement}
     </div>
   );
@@ -1522,6 +1654,7 @@ export function ProjectDetailBody({
           <MutationErrorBanner mutation={archive} className="mb-2" />
           <MutationErrorBanner mutation={lockToggle} className="mb-2" />
           <MutationErrorBanner mutation={strategicToggle} className="mb-2" />
+          <MutationErrorBanner mutation={blockedToggle} className="mb-2" />
           <MutationErrorBanner mutation={moveLane} className="mb-2" />
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">

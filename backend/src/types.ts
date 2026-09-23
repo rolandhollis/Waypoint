@@ -367,6 +367,16 @@ export type ProjectRow = {
    */
   hidden_from_roadmap: boolean;
   /**
+   * PM-controlled "this work is blocked" marker (migration 052).
+   * Surfaces as a stop-sign toggle on the item detail header and a
+   * stop-sign glyph on the left edge of the Roadmap development bar.
+   * When true, `blocked_reason` holds the free-text explanation shown
+   * on hover. Default FALSE.
+   */
+  is_blocked: boolean;
+  /** Free-text reason shown when `is_blocked` is true. Null when clear. */
+  blocked_reason: string | null;
+  /**
    * PM flag: has the dev-phase estimate been vetted by an engineer?
    * Default false — old rows carry no confirmation, new rows are
    * created as unconfirmed until a PM flips the checkbox on the

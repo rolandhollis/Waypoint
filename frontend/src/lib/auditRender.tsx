@@ -286,6 +286,8 @@ export const FIELD_LABELS: Record<string, string> = {
   dates_locked: "dates locked",
   hidden_from_roadmap: "hidden from roadmap",
   is_key_strategic: "key strategic",
+  is_blocked: "blocked",
+  blocked_reason: "blocked reason",
   global_priority: "global priority",
 };
 

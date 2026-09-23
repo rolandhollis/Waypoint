@@ -7,7 +7,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDownAZ, GripVertical, Mail, Send, Sparkles, Trash2 } from "lucide-react";
+import { ArrowDownAZ, CalendarClock, GripVertical, Mail, Send, Sparkles, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import {
   useAiEstimatorHealth,
@@ -504,6 +504,16 @@ type ReminderRunResult = {
   dryRun: boolean;
 };
 
+type OverdueCompletionRunResult = {
+  candidates: number;
+  pendingOwners: number;
+  projectsIncluded: number;
+  sent: number;
+  errors: number;
+  dayOf: string;
+  dryRun: boolean;
+};
+
 function notificationRunBannerClass(
   errors: number,
   sent: number,
@@ -538,6 +548,7 @@ function NotificationsAdmin() {
     <div className="flex flex-col gap-4">
       <ReminderAdmin />
       <DigestAdmin />
+      <OverdueCompletionAdmin />
       <AiEstimatorStatusRow />
     </div>
   );
@@ -724,6 +735,140 @@ function ReminderAdmin() {
         Users opt out from their profile dialog (top-right nav) or by clicking the
         unsubscribe link in any reminder email. Opt-outs stick — an admin re-triggering
         the job never overrides an individual choice.
+      </p>
+    </section>
+  );
+}
+
+function overdueCompletionRunTitle(last: OverdueCompletionRunResult): string {
+  if (last.errors > 0 && last.sent === 0) {
+    return "Overdue-completion send failed — check server logs and RESEND_API_KEY.";
+  }
+  if (last.errors > 0) {
+    return "Overdue-completion emails sent with errors — some owners may not have received email.";
+  }
+  if (last.dryRun) {
+    return "Preview complete — no emails sent.";
+  }
+  if (last.sent === 0 && last.pendingOwners === 0) {
+    return "No projects past their completion date — nothing to send.";
+  }
+  if (last.sent === 0) return "No overdue-completion emails sent.";
+  return `Overdue-completion email sent to ${last.sent} owner${last.sent === 1 ? "" : "s"}.`;
+}
+
+function OverdueCompletionAdmin() {
+  const { confirm } = useAppDialog();
+  const runJob = useMutation({
+    mutationFn: (dryRun: boolean) =>
+      api<OverdueCompletionRunResult>("/notifications/overdue-completion/run", {
+        method: "POST",
+        body: JSON.stringify({ dry_run: dryRun }),
+      }),
+  });
+
+  const busy = runJob.isPending;
+  const last = runJob.data;
+
+  return (
+    <section className="card-surface p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-700">
+          <CalendarClock size={16} />
+        </span>
+        <div>
+          <h2 className="text-base font-semibold text-wp-ink">
+            Overdue completion-date reminder
+          </h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Daily at 8:00am America/Chicago — one email per owner listing every project they own
+            whose planned completion date has passed and that is not yet Complete or Archive.
+            Also powers the in-app red banner. Use these buttons to preview or force-send for the
+            group you're currently viewing.
+          </p>
+        </div>
+      </div>
+
+      <MutationErrorBanner mutation={runJob} className="mt-4" />
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn-secondary inline-flex items-center gap-1.5"
+          disabled={busy}
+          onClick={() => runJob.mutate(true)}
+        >
+          <Mail size={13} />
+          {busy && runJob.variables === true ? "Previewing…" : "Preview (dry run)"}
+        </button>
+        <button
+          type="button"
+          className="btn-primary inline-flex items-center gap-1.5"
+          disabled={busy}
+          onClick={async () => {
+            if (
+              !(await confirm({
+                title: "Send overdue-completion emails now?",
+                description:
+                  "Every opted-in owner in this group with past-due completion dates will get one consolidated email — including anyone who already received one today.",
+                confirmLabel: "Send now",
+              }))
+            )
+              return;
+            runJob.mutate(false);
+          }}
+        >
+          <Send size={13} />
+          {busy && runJob.variables === false ? "Sending…" : "Send now"}
+        </button>
+      </div>
+
+      {last ? (
+        <div
+          className={
+            "mt-4 rounded-md border px-3 py-2 text-xs " +
+            notificationRunBannerClass(last.errors, last.sent, last.dryRun)
+          }
+          role="status"
+          aria-live="polite"
+        >
+          <div className="font-semibold">{overdueCompletionRunTitle(last)}</div>
+          <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
+            <li>
+              <span className="text-wp-slate">Day of</span>
+              <span className="ml-1 font-mono">{last.dayOf}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Owners overdue</span>
+              <span className="ml-1 font-mono">{last.pendingOwners}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Projects</span>
+              <span className="ml-1 font-mono">{last.projectsIncluded}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Opted-in candidates</span>
+              <span className="ml-1 font-mono">{last.candidates}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">
+                {last.dryRun ? "Would send" : "Sent"}
+              </span>
+              <span className="ml-1 font-mono">{last.sent}</span>
+            </li>
+            {last.errors > 0 ? (
+              <li className="col-span-2 text-red-700">
+                <span>Errors</span>
+                <span className="ml-1 font-mono">{last.errors}</span>
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
+
+      <p className="mt-4 text-[11px] text-wp-slate/80">
+        Same opt-out as weekly reminders (profile toggle or unsubscribe link). The in-app banner
+        still shows for owners who have opted out of email.
       </p>
     </section>
   );

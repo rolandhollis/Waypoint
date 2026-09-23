@@ -25,6 +25,7 @@ import { ForgotPasswordView } from "./views/ForgotPasswordView";
 import { ResetPasswordView } from "./views/ResetPasswordView";
 import { AbDemoBanner } from "./components/AbDemoBanner";
 import { AbPreviewBanner } from "./components/AbPreviewBanner";
+import { OverdueCompletionBanner } from "./components/OverdueCompletionBanner";
 import { ReminderBanner } from "./components/ReminderBanner";
 import { TopNav } from "./components/TopNav";
 import { AbSdkProvider } from "./lib/abSdk";
@@ -160,6 +161,7 @@ export function App() {
       <TopBar />
       <DocumentTitleSync />
       <ReminderBanner />
+      <OverdueCompletionBanner />
       <main className="flex-1 overflow-hidden">
         <Routes>
           <Route path="/" element={<HomeView />} />

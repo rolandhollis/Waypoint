@@ -22,9 +22,20 @@ function formatEmailFrom(displayName: string, rawAddress: string): string {
 const defaultEmailFromAddress = process.env.EMAIL_FROM_ADDRESS ?? "onboarding@resend.dev";
 const defaultEmailFromName = process.env.EMAIL_FROM_NAME ?? "RetailMeNot Product";
 
+/** Comma-separated Origins (e.g. localhost Vite + waypoint.local via Caddy). */
+function parseCorsOrigins(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export const config = {
   port: Number(process.env.PORT ?? 4000),
-  corsOrigin: process.env.CORS_ORIGIN ?? "http://localhost:5173",
+  /** First configured origin — kept for callers that expect a single string. */
+  corsOrigin: (process.env.CORS_ORIGIN ?? "http://localhost:5173").split(",")[0]!.trim(),
+  /** All trusted browser origins for CORS + CSRF (comma-separated CORS_ORIGIN). */
+  corsOrigins: parseCorsOrigins(process.env.CORS_ORIGIN ?? "http://localhost:5173"),
   databaseUrl: required("DATABASE_URL", "postgres://waypoint:waypoint@localhost:5433/waypoint"),
   authMode: (process.env.AUTH_MODE ?? "mock") as AuthMode,
   /**

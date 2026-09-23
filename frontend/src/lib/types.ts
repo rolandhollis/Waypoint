@@ -388,6 +388,14 @@ export type Project = {
    */
   is_key_strategic: boolean;
   /**
+   * PM-controlled "this work is blocked" marker (migration 052).
+   * Stop-sign toggle on the detail header; Gantt shows a stop-sign
+   * on the left of the development bar with `blocked_reason` on hover.
+   */
+  is_blocked: boolean;
+  /** Free-text reason when `is_blocked` is true. Null when clear. */
+  blocked_reason: string | null;
+  /**
    * PM flag: has an engineer signed off on the dev-phase estimate?
    * Default false — new rows are provisional until dev confirms.
    * When false, the roadmap draws the dev bar segment with a
@@ -704,6 +712,19 @@ export type WeeklyStatusUpdate = {
   submitted_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type OverdueCompletionProject = {
+  id: string;
+  title: string;
+  optimization_end_date: string;
+  group_id: string;
+  group_name: string;
+};
+
+export type OverdueCompletionResponse = {
+  day_of: string;
+  projects: OverdueCompletionProject[];
 };
 
 export type PendingStatusResponse = {

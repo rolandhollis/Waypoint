@@ -14,6 +14,7 @@ import type {
   AuditEventsListResponse,
   Group,
   Kpi,
+  OverdueCompletionResponse,
   PendingStatusResponse,
   Project,
   ProjectComment,
@@ -502,6 +503,15 @@ export function usePendingStatus() {
   return useQuery({
     queryKey: ["pendingStatus"],
     queryFn: () => api<PendingStatusResponse>("/status-updates/pending?user_id=me"),
+    refetchInterval: 15_000,
+  });
+}
+
+/** Projects the current user owns that are past their planned completion date. */
+export function useOverdueCompletion() {
+  return useQuery({
+    queryKey: ["overdueCompletion"],
+    queryFn: () => api<OverdueCompletionResponse>("/notifications/overdue-completion"),
     refetchInterval: 15_000,
   });
 }

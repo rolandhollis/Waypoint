@@ -40,6 +40,11 @@ npm run dev    # http://localhost:5173
 
 Open `http://localhost:5173` and pick a mock user from the login screen.
 
+Optional friendly hostname (same pattern as other local apps on this Mac —
+`/etc/hosts` + Caddy on port 80): with Vite on `:5173` and Caddy running,
+open **http://waypoint.local**. Backend `CORS_ORIGIN` should include both
+`http://localhost:5173` and `http://waypoint.local` (see `.env.example`).
+
 ## Repository layout
 
 ```

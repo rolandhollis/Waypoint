@@ -61,7 +61,7 @@ function candidateOrigins(req: Request): string[] {
     out.push(`https://${host}`);
     out.push(`http://${host}`);
   }
-  if (config.corsOrigin) out.push(config.corsOrigin);
+  if (config.corsOrigins.length) out.push(...config.corsOrigins);
   return out;
 }
 

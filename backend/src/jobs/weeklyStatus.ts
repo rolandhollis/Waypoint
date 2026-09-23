@@ -9,6 +9,7 @@ import {
 } from "../lib/weeklyStatusSchedule.js";
 import { runStatusReportReminders } from "../notifications/statusReminders.js";
 import { runStatusReportDigest } from "../notifications/statusDigest.js";
+import { runOverdueCompletionReminders } from "../notifications/overdueCompletion.js";
 
 /**
  * Weekly rollover — Monday 00:05 in reporting timezone.
@@ -82,5 +83,16 @@ export function startCron() {
   cron.schedule("5 0 * * 1", () => rolloverJob().catch(console.error), { timezone: tz });
   cron.schedule("5 0 * * 5", () => overdueJob().catch(console.error), { timezone: tz });
   cron.schedule("* * * * *", () => tickWeeklyStatusJobs().catch(console.error));
-  console.log(`[cron] scheduled weekly jobs in ${tz}; status emails use per-group schedule`);
+  // Daily overdue completion-date reminders at 8:00am reporting TZ.
+  cron.schedule(
+    "0 8 * * *",
+    () =>
+      runOverdueCompletionReminders({ force: false }).catch((err) =>
+        console.error("[cron] overdue-completion job failed:", err),
+      ),
+    { timezone: tz },
+  );
+  console.log(
+    `[cron] scheduled weekly jobs in ${tz}; status emails use per-group schedule; overdue-completion daily at 08:00`,
+  );
 }

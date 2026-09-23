@@ -1984,6 +1984,37 @@ function Bar(props: {
                     pointerEvents="none"
                   />
                 ) : null}
+                {/* Blocked stop-sign on the left edge of the development
+                    bar (migration 052). Native <title> shows the reason
+                    on hover. Hit target is slightly larger than the glyph. */}
+                {p.is_blocked ? (
+                  <g
+                    transform={`translate(${devGeom.x - 2}, ${barY + barH / 2})`}
+                    style={{ pointerEvents: "auto", cursor: "help" }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => { e.stopPropagation(); onOpen(p.id); }}
+                  >
+                    <title>
+                      {p.blocked_reason?.trim()
+                        ? `Blocked: ${p.blocked_reason.trim()}`
+                        : "Blocked"}
+                    </title>
+                    <rect x={-10} y={-10} width={20} height={20} fill="transparent" />
+                    {/* Octagon stop-sign with an X (lucide Octagon path). */}
+                    <path
+                      d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86L7.86 2z"
+                      transform="translate(-7,-7) scale(0.58)"
+                      fill="#DC2626"
+                      stroke="#7F1D1D"
+                      strokeWidth={1.5}
+                      strokeLinejoin="round"
+                    />
+                    <g stroke="#ffffff" strokeWidth={1.75} strokeLinecap="round" pointerEvents="none">
+                      <line x1={-3.2} y1={-3.2} x2={3.2} y2={3.2} />
+                      <line x1={3.2} y1={-3.2} x2={-3.2} y2={3.2} />
+                    </g>
+                  </g>
+                ) : null}
               </>
             ) : null}
             {optGapGeom ? (

@@ -8,7 +8,7 @@ because Fly.io blocks outbound SMTP.
 - **Sender**: `Waypoint <onboarding@resend.dev>` — Resend's shared
   verified domain. Works instantly, but recipients see "via
   resend.dev" in most inbox clients.
-- **What's sent today**: two weekly emails per tenant.
+- **What's sent today**: three email jobs per tenant.
   1. **Reminder** — one email per opted-in owner every Thursday
      at 08:00 in `REPORTING_TIMEZONE`, listing the status updates
      they owe that week. Only fires when they actually have
@@ -23,6 +23,15 @@ because Fly.io blocks outbound SMTP.
      of registered users and ad-hoc email addresses). Groups
      with no completed updates or no recipients skip silently
      so the digest never sends an empty "nothing to report".
+  3. **Overdue completion** — one email per opted-in owner every
+     day at 08:00 in `REPORTING_TIMEZONE`, listing every project
+     they own whose planned completion date
+     (`optimization_end_date`) is before today and that is not
+     yet in a Complete or Archive lane. Idempotent per calendar
+     day via `notification_log` (`kind=overdue_completion`,
+     `week_of` = Chicago date). The same predicate powers a live
+     in-app red banner (not gated on email opt-in). Admins can
+     Preview / Send now under Admin → Notifications.
 
 ## Fly.io secrets to set
 

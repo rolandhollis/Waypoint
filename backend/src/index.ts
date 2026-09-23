@@ -42,7 +42,7 @@ import { startPredictionGameCron } from "./jobs/predictionGame.js";
 
 const app = express();
 
-app.use(cors({ origin: config.corsOrigin, credentials: true }));
+app.use(cors({ origin: config.corsOrigins, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 // Form-encoded parser is only needed for the RFC 8058 One-Click
 // unsubscribe POST that mail clients send. Small limit so this

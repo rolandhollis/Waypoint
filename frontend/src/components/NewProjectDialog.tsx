@@ -198,6 +198,8 @@ export function NewProjectDialog({
       // threads the field through so the shared Project type is
       // satisfied without shipping a value on the wire.
       is_key_strategic: false,
+      is_blocked: false,
+      blocked_reason: null,
       // Global priority is server-assigned on insert (see the
       // POST handler in backend/src/routes/projects.ts, which
       // seeds new rows at `MAX + 1` so they land at the bottom

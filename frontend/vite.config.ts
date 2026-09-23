@@ -15,6 +15,9 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5173,
+    // Allow Caddy to reverse-proxy http://waypoint.local → :5173
+    // (Host header is the friendly name, not 127.0.0.1).
+    allowedHosts: ["waypoint.local", "localhost"],
     proxy: {
       "/api": {
         target: "http://127.0.0.1:4000",

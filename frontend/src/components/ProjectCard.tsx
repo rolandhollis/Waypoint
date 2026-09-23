@@ -1,5 +1,5 @@
 import { differenceInCalendarDays, format } from "date-fns";
-import { AlertTriangle, Calendar, ChevronRight, Layers, Map as MapIcon } from "lucide-react";
+import { AlertTriangle, Calendar, ChevronRight, Layers, Map as MapIcon, Octagon, X } from "lucide-react";
 import { useRef } from "react";
 import type { Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy } from "../lib/viewState";
@@ -188,6 +188,29 @@ export function ProjectCard(props: {
           ) : null}
         </div>
         <div className="flex items-center gap-2">
+          {project.is_blocked ? (
+            <span
+              className="relative inline-flex size-3.5 items-center justify-center text-red-700"
+              title={
+                project.blocked_reason?.trim()
+                  ? `Blocked: ${project.blocked_reason.trim()}`
+                  : "Blocked"
+              }
+              aria-label={
+                project.blocked_reason?.trim()
+                  ? `Blocked: ${project.blocked_reason.trim()}`
+                  : "Blocked"
+              }
+            >
+              <Octagon size={14} className="fill-red-600 text-red-700" />
+              <X
+                size={8}
+                strokeWidth={3}
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white"
+                aria-hidden
+              />
+            </span>
+          ) : null}
           {onRoadmap ? (
             <span
               className="inline-flex items-center text-wp-red"
