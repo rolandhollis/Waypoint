@@ -8,7 +8,7 @@ because Fly.io blocks outbound SMTP.
 - **Sender**: `Waypoint <onboarding@resend.dev>` — Resend's shared
   verified domain. Works instantly, but recipients see "via
   resend.dev" in most inbox clients.
-- **What's sent today**: three email jobs per tenant.
+- **What's sent today**: four email jobs per tenant.
   1. **Reminder** — one email per opted-in owner every Thursday
      at 08:00 in `REPORTING_TIMEZONE`, listing the status updates
      they owe that week. Only fires when they actually have
@@ -32,6 +32,10 @@ because Fly.io blocks outbound SMTP.
      `week_of` = Chicago date). The same predicate powers a live
      in-app red banner (not gated on email opt-in). Admins can
      Preview / Send now under Admin → Notifications.
+  4. **Announcement** — ad-hoc admin-composed subject + body,
+     sent on demand to the same `status_digest_recipients` roster
+     as the weekly digest. Manual only (no cron). Unsubscribe uses
+     the digest token and removes the address from that shared list.
 
 ## Fly.io secrets to set
 

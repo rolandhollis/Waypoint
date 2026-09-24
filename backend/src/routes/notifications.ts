@@ -6,6 +6,7 @@ import {
   removeDigestRecipient,
   runStatusReportDigest,
 } from "../notifications/statusDigest.js";
+import { runAnnouncement } from "../notifications/announcement.js";
 import {
   loadOverdueProjects,
   reportingTodayIso,
@@ -62,7 +63,7 @@ notificationsRouter.get("/unsubscribe", async (req, res) => {
       page(
         "Unsubscribed",
         result.notificationKind === DIGEST_UNSUB_KIND
-          ? "You won't receive further weekly digest emails."
+          ? "You won't receive further digest or announcement emails."
           : "You won't receive further reminder emails.",
       ),
     );
@@ -72,7 +73,7 @@ notificationsRouter.get("/unsubscribe", async (req, res) => {
     page(
       "Unsubscribed",
       result.notificationKind === DIGEST_UNSUB_KIND
-        ? `You won't receive further weekly digest emails at <strong>${escapeHtml(result.email)}</strong>.`
+        ? `You won't receive further digest or announcement emails at <strong>${escapeHtml(result.email)}</strong>.`
         : `You won't receive further reminder emails at <strong>${escapeHtml(result.email)}</strong>. You can re-enable them any time from your profile page in the app.`,
     ),
   );
@@ -159,6 +160,33 @@ notificationsRouter.post(
       dryRun: body.dry_run,
       scopeGroupId: req.groupId!,
       adminNote: body.admin_note,
+    });
+    res.json(result);
+  },
+);
+
+const runAnnouncementSchema = z.object({
+  dry_run: z.boolean().optional().default(false),
+  subject: z.string().trim().min(1).max(200),
+  body: z.string().trim().min(1).max(10_000),
+});
+
+/**
+ * Admin-only ad-hoc announcement to the status-digest recipient
+ * roster for the current group. Manual Preview / Send — no cron.
+ */
+notificationsRouter.post(
+  "/announcement/run",
+  authenticate,
+  groupScope,
+  requireAdmin,
+  async (req, res) => {
+    const body = runAnnouncementSchema.parse(req.body ?? {});
+    const result = await runAnnouncement({
+      dryRun: body.dry_run,
+      scopeGroupId: req.groupId!,
+      subject: body.subject,
+      body: body.body,
     });
     res.json(result);
   },

@@ -70,7 +70,7 @@ type UpdateRow = {
   is_new?: boolean;
 };
 
-type DigestRecipient = {
+export type DigestRecipient = {
   id: string;
   email: string;
   user_id: string | null;
@@ -119,6 +119,13 @@ type DigestSummary = {
   byPhase: PhaseSummaryRow[];
   byHealth: HealthSummaryRow[];
 };
+
+/** Digest / announcement roster for one or more groups. */
+export async function loadDigestRecipients(
+  scope?: GroupScheduleScope,
+): Promise<Map<string, DigestRecipient[]>> {
+  return loadRecipientsBatch(scope);
+}
 
 async function loadRecipientsBatch(scope?: GroupScheduleScope): Promise<Map<string, DigestRecipient[]>> {
   const { rows } = await query<{

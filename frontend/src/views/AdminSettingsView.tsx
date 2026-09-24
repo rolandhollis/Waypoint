@@ -7,7 +7,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDownAZ, CalendarClock, GripVertical, Mail, Send, Sparkles, Trash2 } from "lucide-react";
+import { ArrowDownAZ, CalendarClock, GripVertical, Mail, Megaphone, Send, Sparkles, Trash2, Users } from "lucide-react";
 import { api } from "../lib/api";
 import {
   useAiEstimatorHealth,
@@ -547,7 +547,9 @@ function NotificationsAdmin() {
   return (
     <div className="flex flex-col gap-4">
       <ReminderAdmin />
+      <DigestRecipientsAdmin />
       <DigestAdmin />
+      <AnnouncementAdmin />
       <OverdueCompletionAdmin />
       <AiEstimatorStatusRow />
     </div>
@@ -954,7 +956,7 @@ function parseEmailList(raw: string): { valid: string[]; invalid: string[] } {
   return { valid, invalid };
 }
 
-function DigestAdmin() {
+function DigestRecipientsAdmin() {
   const { confirm } = useAppDialog();
   const qc = useQueryClient();
   const recipients = useQuery({
@@ -984,35 +986,18 @@ function DigestAdmin() {
       api<void>(`/notifications/digest-recipients/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["digestRecipients"] }),
   });
-  const runDigest = useMutation({
-    mutationFn: (args: DigestRunArgs) =>
-      api<DigestRunResult>("/notifications/status-digest/run", {
-        method: "POST",
-        body: JSON.stringify(args),
-      }),
-  });
 
   const [mode, setMode] = useState<"user" | "email">("user");
   const [pickUserIds, setPickUserIds] = useState<string[]>([]);
   const [emailInput, setEmailInput] = useState("");
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailSuccess, setEmailSuccess] = useState<string | null>(null);
-  const [digestAdminNote, setDigestAdminNote] = useState("");
-
-  const digestNoteTrimmed = digestAdminNote.trim();
-  const digestRunArgs = (dry_run: boolean): DigestRunArgs => ({
-    dry_run,
-    admin_note: digestNoteTrimmed || undefined,
-  });
 
   const recipientEmails = useMemo(
     () => new Set((recipients.data ?? []).map((r) => r.email.toLowerCase())),
     [recipients.data],
   );
 
-  // Users the admin can pick from — members of this group whose
-  // email isn't already on the list. Alphabetized by name so the
-  // dropdown is stable across reloads.
   const pickableUsers = useMemo(() => {
     const list = users.data ?? [];
     return list
@@ -1109,8 +1094,179 @@ function DigestAdmin() {
     }
   }
 
+  return (
+    <section className="card-surface p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-wp-stone/40 text-wp-ink">
+          <Users size={16} />
+        </span>
+        <div>
+          <h2 className="text-base font-semibold text-wp-ink">
+            Email distribution list
+          </h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Shared roster for the weekly status digest and general announcements.
+            Add group members or paste ad-hoc addresses (comma, space, or newline separated).
+            Scoped to the group you're currently viewing.
+          </p>
+        </div>
+      </div>
+
+      <form onSubmit={handleAdd} className="mt-4 flex flex-wrap items-start gap-2">
+        <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
+          <button
+            type="button"
+            className={
+              "px-2.5 py-1.5 text-xs " +
+              (mode === "user" ? "bg-wp-red text-white" : "bg-white text-wp-ink hover:bg-wp-stone/30")
+            }
+            onClick={() => { setMode("user"); setEmailError(null); setEmailSuccess(null); }}
+          >
+            Add user
+          </button>
+          <button
+            type="button"
+            className={
+              "px-2.5 py-1.5 text-xs " +
+              (mode === "email" ? "bg-wp-red text-white" : "bg-white text-wp-ink hover:bg-wp-stone/30")
+            }
+            onClick={() => { setMode("email"); setEmailError(null); setEmailSuccess(null); }}
+          >
+            Ad-hoc email
+          </button>
+        </div>
+
+        {mode === "user" ? (
+          <MultiSelect
+            label="Select users"
+            options={pickableUserOptions}
+            value={pickUserIds}
+            onChange={setPickUserIds}
+            emptyMessage="Everyone in this group is already on the list"
+            widthClass="w-72"
+          />
+        ) : (
+          <textarea
+            className="input min-h-[4.5rem] min-w-[min(100%,20rem)] flex-1 text-sm"
+            placeholder={"alice@example.com, bob@example.com\ncarol@example.com"}
+            value={emailInput}
+            onChange={(e) => {
+              setEmailInput(e.target.value);
+              setEmailError(null);
+              setEmailSuccess(null);
+            }}
+            autoComplete="off"
+            rows={3}
+          />
+        )}
+
+        <button
+          type="submit"
+          className="btn-primary h-9"
+          disabled={
+            addUsers.isPending ||
+            addEmails.isPending ||
+            (mode === "user" ? pickUserIds.length === 0 : !emailAddReady)
+          }
+        >
+          {addUsers.isPending || addEmails.isPending
+            ? "Adding…"
+            : mode === "user" && pickUserIds.length > 1
+              ? `Add ${pickUserIds.length}`
+              : mode === "email" && newEmailsToAdd.length > 1
+                ? `Add ${newEmailsToAdd.length}`
+                : "Add"}
+        </button>
+      </form>
+      {emailError ? (
+        <p className="mt-2 text-xs text-red-700">{emailError}</p>
+      ) : null}
+      {emailSuccess ? (
+        <p className="mt-2 text-xs text-emerald-800">{emailSuccess}</p>
+      ) : null}
+      {mode === "email" && parsedEmails.valid.length > 0 ? (
+        <p className="mt-1 text-[11px] text-wp-slate">
+          {newEmailsToAdd.length} new address{newEmailsToAdd.length === 1 ? "" : "es"} ready to add
+          {parsedEmails.invalid.length > 0
+            ? ` · ${parsedEmails.invalid.length} invalid ignored`
+            : ""}
+        </p>
+      ) : null}
+
+      <MutationErrorBanner mutation={remove} className="mt-3" />
+
+      <div className="mt-3">
+        {recipients.isLoading ? (
+          <p className="text-xs text-wp-slate">Loading recipients…</p>
+        ) : (recipients.data ?? []).length === 0 ? (
+          <p className="rounded-md border border-dashed border-wp-stone px-3 py-2 text-xs text-wp-slate">
+            No recipients yet. Digest and announcement sends won't go out until at least one is added.
+          </p>
+        ) : (
+          <ul className="divide-y divide-wp-stone rounded-md border border-wp-stone">
+            {(recipients.data ?? []).map((r) => (
+              <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-wp-ink">
+                    {r.user ? r.user.name : r.email}
+                  </div>
+                  <div className="truncate text-xs text-wp-slate">
+                    {r.user ? r.user.email : "Ad-hoc address (no linked user)"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded text-wp-slate hover:bg-red-50 hover:text-red-700"
+                  aria-label={`Remove ${r.email}`}
+                  disabled={remove.isPending}
+                  onClick={async () => {
+                    if (
+                      !(await confirm({
+                        title: "Remove recipient?",
+                        description: `Remove ${r.email} from the distribution list?`,
+                        confirmLabel: "Remove",
+                        destructive: true,
+                      }))
+                    ) return;
+                    remove.mutate(r.id);
+                  }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function DigestAdmin() {
+  const { confirm } = useAppDialog();
+  const recipients = useQuery({
+    queryKey: ["digestRecipients"],
+    queryFn: () => api<DigestRecipient[]>("/notifications/digest-recipients"),
+  });
+  const runDigest = useMutation({
+    mutationFn: (args: DigestRunArgs) =>
+      api<DigestRunResult>("/notifications/status-digest/run", {
+        method: "POST",
+        body: JSON.stringify(args),
+      }),
+  });
+
+  const [digestAdminNote, setDigestAdminNote] = useState("");
+
+  const digestNoteTrimmed = digestAdminNote.trim();
+  const digestRunArgs = (dry_run: boolean): DigestRunArgs => ({
+    dry_run,
+    admin_note: digestNoteTrimmed || undefined,
+  });
+
   const busySend = runDigest.isPending;
   const lastRun = runDigest.data;
+  const recipientCount = recipients.data?.length ?? 0;
 
   return (
     <section className="card-surface p-4">
@@ -1123,7 +1279,8 @@ function DigestAdmin() {
             Weekly status-report digest
           </h2>
           <p className="mt-1 text-xs text-wp-slate">
-            Rolls up this week's <strong>submitted</strong> status updates and emails the roster below.
+            Rolls up this week's <strong>submitted</strong> status updates and emails the{" "}
+            <span className="font-medium text-wp-ink">Email distribution list</span> above.
             Saved drafts are excluded until owners click Submit. Runs automatically at the digest time on the{" "}
             <span className="font-medium text-wp-ink">Status schedule</span> tab; use these buttons to
             preview or send on demand. Skips silently when the group has zero completed updates or zero
@@ -1148,6 +1305,9 @@ function DigestAdmin() {
         </label>
         <p className="mt-1 text-[11px] text-wp-slate">
           Not included in scheduled sends — only when you use Preview or Send now below.
+          {recipientCount === 0
+            ? " No recipients on the distribution list yet."
+            : ` Currently ${recipientCount} recipient${recipientCount === 1 ? "" : "s"} on the list.`}
         </p>
       </div>
 
@@ -1164,13 +1324,13 @@ function DigestAdmin() {
         <button
           type="button"
           className="btn-primary inline-flex items-center gap-1.5"
-          disabled={busySend}
+          disabled={busySend || recipientCount === 0}
           onClick={async () => {
             if (
               !(await confirm({
                 title: "Send digest now?",
                 description:
-                  "Send the weekly digest to every recipient on this group's list, including anyone who already received one this week.",
+                  "Send the weekly digest to every recipient on this group's distribution list, including anyone who already received one this week.",
                 confirmLabel: "Send now",
               }))
             ) return;
@@ -1220,141 +1380,196 @@ function DigestAdmin() {
           </ul>
         </div>
       ) : null}
+    </section>
+  );
+}
 
-      <div className="mt-6 border-t border-wp-stone/60 pt-4">
-        <h3 className="text-sm font-semibold text-wp-ink">Digest recipients</h3>
-        <p className="mt-0.5 text-xs text-wp-slate">
-          Add anyone who should receive the Friday email — pick one or more group
-          members or paste ad-hoc addresses (comma, space, or newline separated).
-        </p>
+type AnnouncementRunResult = {
+  recipients: number;
+  sent: number;
+  errors: number;
+  dayOf: string;
+  dryRun: boolean;
+  subject: string;
+};
 
-        <form onSubmit={handleAdd} className="mt-3 flex flex-wrap items-start gap-2">
-          <div className="inline-flex overflow-hidden rounded-md border border-wp-stone">
-            <button
-              type="button"
-              className={
-                "px-2.5 py-1.5 text-xs " +
-                (mode === "user" ? "bg-wp-red text-white" : "bg-white text-wp-ink hover:bg-wp-stone/30")
-              }
-              onClick={() => { setMode("user"); setEmailError(null); setEmailSuccess(null); }}
-            >
-              Add user
-            </button>
-            <button
-              type="button"
-              className={
-                "px-2.5 py-1.5 text-xs " +
-                (mode === "email" ? "bg-wp-red text-white" : "bg-white text-wp-ink hover:bg-wp-stone/30")
-              }
-              onClick={() => { setMode("email"); setEmailError(null); setEmailSuccess(null); }}
-            >
-              Ad-hoc email
-            </button>
-          </div>
+type AnnouncementRunArgs = {
+  dry_run: boolean;
+  subject: string;
+  body: string;
+};
 
-          {mode === "user" ? (
-            <MultiSelect
-              label="Select users"
-              options={pickableUserOptions}
-              value={pickUserIds}
-              onChange={setPickUserIds}
-              emptyMessage="Everyone in this group is already on the list"
-              widthClass="w-72"
-            />
-          ) : (
-            <textarea
-              className="input min-h-[4.5rem] min-w-[min(100%,20rem)] flex-1 text-sm"
-              placeholder={"alice@example.com, bob@example.com\ncarol@example.com"}
-              value={emailInput}
-              onChange={(e) => {
-                setEmailInput(e.target.value);
-                setEmailError(null);
-                setEmailSuccess(null);
-              }}
-              autoComplete="off"
-              rows={3}
-            />
-          )}
+function announcementRunTitle(last: AnnouncementRunResult): string {
+  if (last.errors > 0 && last.sent === 0) {
+    return "Announcement send failed — check server logs and RESEND_API_KEY.";
+  }
+  if (last.errors > 0) {
+    return "Announcement sent with errors — some recipients may not have received email.";
+  }
+  if (last.dryRun) {
+    return "Preview complete — no emails sent.";
+  }
+  if (last.sent === 0 && last.recipients === 0) {
+    return "No recipients on the distribution list — nothing to send.";
+  }
+  if (last.sent === 0) return "No announcement emails sent.";
+  return `Announcement sent to ${last.sent} recipient${last.sent === 1 ? "" : "s"}.`;
+}
 
-          <button
-            type="submit"
-            className="btn-primary h-9"
-            disabled={
-              addUsers.isPending ||
-              addEmails.isPending ||
-              (mode === "user" ? pickUserIds.length === 0 : !emailAddReady)
-            }
-          >
-            {addUsers.isPending || addEmails.isPending
-              ? "Adding…"
-              : mode === "user" && pickUserIds.length > 1
-                ? `Add ${pickUserIds.length}`
-                : mode === "email" && newEmailsToAdd.length > 1
-                  ? `Add ${newEmailsToAdd.length}`
-                  : "Add"}
-          </button>
-        </form>
-        {emailError ? (
-          <p className="mt-2 text-xs text-red-700">{emailError}</p>
-        ) : null}
-        {emailSuccess ? (
-          <p className="mt-2 text-xs text-emerald-800">{emailSuccess}</p>
-        ) : null}
-        {mode === "email" && parsedEmails.valid.length > 0 ? (
-          <p className="mt-1 text-[11px] text-wp-slate">
-            {newEmailsToAdd.length} new address{newEmailsToAdd.length === 1 ? "" : "es"} ready to add
-            {parsedEmails.invalid.length > 0
-              ? ` · ${parsedEmails.invalid.length} invalid ignored`
-              : ""}
+function AnnouncementAdmin() {
+  const { confirm } = useAppDialog();
+  const recipients = useQuery({
+    queryKey: ["digestRecipients"],
+    queryFn: () => api<DigestRecipient[]>("/notifications/digest-recipients"),
+  });
+  const runAnnouncement = useMutation({
+    mutationFn: (args: AnnouncementRunArgs) =>
+      api<AnnouncementRunResult>("/notifications/announcement/run", {
+        method: "POST",
+        body: JSON.stringify(args),
+      }),
+  });
+
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+
+  const subjectTrimmed = subject.trim();
+  const bodyTrimmed = body.trim();
+  const ready = subjectTrimmed.length > 0 && bodyTrimmed.length > 0;
+  const recipientCount = recipients.data?.length ?? 0;
+  const busy = runAnnouncement.isPending;
+  const last = runAnnouncement.data;
+
+  return (
+    <section className="card-surface p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-800">
+          <Megaphone size={16} />
+        </span>
+        <div>
+          <h2 className="text-base font-semibold text-wp-ink">
+            General announcement
+          </h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Compose a one-off email to the{" "}
+            <span className="font-medium text-wp-ink">Email distribution list</span> above.
+            Manual only — no schedule. Scoped to the group you're currently viewing.
           </p>
-        ) : null}
-
-        <MutationErrorBanner mutation={remove} className="mt-3" />
-
-        <div className="mt-3">
-          {recipients.isLoading ? (
-            <p className="text-xs text-wp-slate">Loading recipients…</p>
-          ) : (recipients.data ?? []).length === 0 ? (
-            <p className="rounded-md border border-dashed border-wp-stone px-3 py-2 text-xs text-wp-slate">
-              No recipients yet. The Friday digest won't send until at least one is added.
-            </p>
-          ) : (
-            <ul className="divide-y divide-wp-stone rounded-md border border-wp-stone">
-              {(recipients.data ?? []).map((r) => (
-                <li key={r.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
-                  <div className="min-w-0">
-                    <div className="truncate font-medium text-wp-ink">
-                      {r.user ? r.user.name : r.email}
-                    </div>
-                    <div className="truncate text-xs text-wp-slate">
-                      {r.user ? r.user.email : "Ad-hoc address (no linked user)"}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="inline-flex h-7 w-7 items-center justify-center rounded text-wp-slate hover:bg-red-50 hover:text-red-700"
-                    aria-label={`Remove ${r.email}`}
-                    disabled={remove.isPending}
-                    onClick={async () => {
-                      if (
-                        !(await confirm({
-                          title: "Remove recipient?",
-                          description: `Remove ${r.email} from the digest list?`,
-                          confirmLabel: "Remove",
-                          destructive: true,
-                        }))
-                      ) return;
-                      remove.mutate(r.id);
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
         </div>
       </div>
+
+      <MutationErrorBanner mutation={runAnnouncement} className="mt-4" />
+
+      <div className="mt-4 space-y-3">
+        <label className="block text-xs font-medium text-wp-slate">
+          Subject
+          <input
+            type="text"
+            className="input mt-1 w-full text-sm"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            placeholder="e.g. Roadmap freeze next week"
+            maxLength={200}
+            disabled={busy}
+          />
+        </label>
+        <label className="block text-xs font-medium text-wp-slate">
+          Message
+          <textarea
+            className="input mt-1 min-h-[8rem] w-full text-sm"
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            placeholder="Write the announcement body. Blank lines start a new paragraph."
+            maxLength={10_000}
+            disabled={busy}
+          />
+        </label>
+        <p className="text-[11px] text-wp-slate">
+          {recipientCount === 0
+            ? "No recipients on the distribution list yet — add people in the section above."
+            : `Will go to ${recipientCount} recipient${recipientCount === 1 ? "" : "s"} on the distribution list.`}
+        </p>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn-secondary inline-flex items-center gap-1.5"
+          disabled={busy || !ready}
+          onClick={() =>
+            runAnnouncement.mutate({
+              dry_run: true,
+              subject: subjectTrimmed,
+              body: bodyTrimmed,
+            })
+          }
+        >
+          <Mail size={13} />
+          {busy && runAnnouncement.variables?.dry_run ? "Previewing…" : "Preview (dry run)"}
+        </button>
+        <button
+          type="button"
+          className="btn-primary inline-flex items-center gap-1.5"
+          disabled={busy || !ready || recipientCount === 0}
+          onClick={async () => {
+            if (
+              !(await confirm({
+                title: "Send announcement now?",
+                description: `Email “${subjectTrimmed}” to all ${recipientCount} distribution-list recipient${recipientCount === 1 ? "" : "s"} in this group.`,
+                confirmLabel: "Send now",
+              }))
+            )
+              return;
+            runAnnouncement.mutate({
+              dry_run: false,
+              subject: subjectTrimmed,
+              body: bodyTrimmed,
+            });
+          }}
+        >
+          <Send size={13} />
+          {busy && runAnnouncement.variables?.dry_run === false ? "Sending…" : "Send now"}
+        </button>
+      </div>
+
+      {last ? (
+        <div
+          className={
+            "mt-4 rounded-md border px-3 py-2 text-xs " +
+            notificationRunBannerClass(last.errors, last.sent, last.dryRun)
+          }
+          role="status"
+          aria-live="polite"
+        >
+          <div className="font-semibold">{announcementRunTitle(last)}</div>
+          <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
+            <li>
+              <span className="text-wp-slate">Day of</span>
+              <span className="ml-1 font-mono">{last.dayOf}</span>
+            </li>
+            <li className="col-span-2 sm:col-span-2">
+              <span className="text-wp-slate">Subject</span>
+              <span className="ml-1 font-medium">{last.subject}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Recipients</span>
+              <span className="ml-1 font-mono">{last.recipients}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">
+                {last.dryRun ? "Would send" : "Sent"}
+              </span>
+              <span className="ml-1 font-mono">{last.sent}</span>
+            </li>
+            {last.errors > 0 ? (
+              <li className="col-span-2 text-red-700">
+                <span>Errors</span>
+                <span className="ml-1 font-mono">{last.errors}</span>
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 }
