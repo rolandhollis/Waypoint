@@ -30,7 +30,7 @@ export const DEFAULT_TAB_LABELS: Record<TabLabelKey, string> = {
   kpis: "KPIs",
   phases: "Phases",
   simple_features: "Simple Features",
-  design: "Design",
+  design: "Design Tickets",
   feature_groups: "Feature Groups",
   game: "Game",
   admin: "Admin",
@@ -49,7 +49,7 @@ export const TAB_PAGE_DESCRIPTIONS: Partial<Record<TabLabelKey, string>> = {
   simple_features:
     "Small initiatives under 16 hours of work that are not tracked on the roadmap.",
   design:
-    "Design queue from this tab, roadmap design lanes, and Simple Features flagged needs design.",
+    "Who is designing what — person columns, ticket status, and a shared Unassigned / Completed pool.",
   feature_groups:
     "Rank proposed project features with stakeholders — group lists and priority tiers.",
   game: "Daily sports prediction — vote yes or no before 5pm Central. Expect mild irreverence.",
@@ -76,7 +76,7 @@ export const TAB_ROUTES: Record<TabLabelKey, string> = {
 };
 
 /** Always-visible primary nav tabs. Home (`/`) is brand-icon only, not a tab. */
-export const PRIMARY_NAV_KEYS: TabLabelKey[] = ["board", "roadmap", "status_report"];
+export const PRIMARY_NAV_KEYS: TabLabelKey[] = ["board", "roadmap", "status_report", "design"];
 
 
 export type NavDropdownSection = {
@@ -104,7 +104,7 @@ export const NAV_DROPDOWN_GROUPS: NavDropdownGroup[] = [
   {
     id: "queues",
     menuLabel: "Queues",
-    sections: [{ keys: ["simple_features", "design", "feature_groups"] }],
+    sections: [{ keys: ["simple_features", "feature_groups"] }],
   },
   {
     id: "reference",

@@ -826,6 +826,14 @@ export type FeatureGroupFeature = {
 
 export type DesignItemStatus = "next_up" | "in_design" | "completed" | "deleted";
 
+/** Card workflow status (colored pill) — independent of assignee column. */
+export type DesignTicketStatus = "not" | "on" | "risk" | "review" | "indev" | "done";
+
+export type DesignItemLink = {
+  label: string;
+  url: string;
+};
+
 export type DesignItem = {
   id: string;
   group_id: string;
@@ -834,6 +842,9 @@ export type DesignItem = {
   team_id: string | null;
   source: string;
   status: DesignItemStatus;
+  ticket_status: DesignTicketStatus;
+  jira_key: string | null;
+  links: DesignItemLink[];
   position: number;
   assigned_to: string | null;
   created_by: string;
@@ -847,6 +858,19 @@ export type DesignItem = {
   team_name: string | null;
   team_color: string | null;
   assignee_name: string | null;
+};
+
+/** Admin-managed person column on the Design Tickets board. */
+export type DesignBoardLane = {
+  id: string;
+  group_id: string;
+  user_id: string;
+  order: number;
+  created_at: string;
+  updated_at: string;
+  user_name: string;
+  user_color: string | null;
+  user_email: string;
 };
 
 export type PredictionQuestion = {

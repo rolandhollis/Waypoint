@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { query } from "../db/pool.js";
 import { loadGroupConstants } from "../lib/groupConstants.js";
 import { sendEmail } from "./email.js";
+import { emailBodyToHtml, emailBodyToPlainText } from "./emailHtml.js";
 import {
   DIGEST_UNSUB_KIND,
   loadDigestRecipients,
@@ -44,22 +45,6 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/** Plain text → simple HTML paragraphs (escaped). */
-function bodyToHtml(body: string): string {
-  const paragraphs = body
-    .trim()
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  if (!paragraphs.length) return "";
-  return paragraphs
-    .map(
-      (p) =>
-        `<p style="margin:0 0 12px;">${escapeHtml(p).replace(/\n/g, "<br>")}</p>`,
-    )
-    .join("");
-}
-
 function renderAnnouncement(input: {
   subject: string;
   body: string;
@@ -71,11 +56,13 @@ function renderAnnouncement(input: {
   const { subject, body, groupName, recipientName, appUrl, unsubscribeUrl } = input;
   const first = recipientName?.split(/\s+/)[0];
   const greeting = first ? `Hi ${first},` : "Hi,";
+  const bodyHtml = emailBodyToHtml(body);
+  const bodyText = emailBodyToPlainText(body);
 
   const text = [
     greeting,
     "",
-    body.trim(),
+    bodyText,
     "",
     `Open Waypoint: ${appUrl}`,
     "",
@@ -87,7 +74,7 @@ function renderAnnouncement(input: {
   const html = `
     <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:14px;line-height:1.5;color:#0f172a;max-width:520px;">
       <p>${escapeHtml(greeting)}</p>
-      ${bodyToHtml(body)}
+      <div>${bodyHtml}</div>
       <p style="margin-top:16px;"><a href="${appUrl}" style="display:inline-block;background:#DC2626;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;">Open Waypoint</a></p>
       <p style="color:#64748b;font-size:12px;margin-top:24px;">
         You're receiving this because an admin added your address to the ${escapeHtml(groupName)} digest list.
@@ -113,7 +100,7 @@ export async function runAnnouncement({
   const subjectText = subject.trim();
   const bodyText = body.trim();
   if (!subjectText) throw new Error("subject is required");
-  if (!bodyText) throw new Error("body is required");
+  if (!emailBodyToPlainText(bodyText)) throw new Error("body is required");
 
   const dayOf = reportingTodayIso();
   const appUrl = config.publicAppUrl.replace(/\/$/, "");

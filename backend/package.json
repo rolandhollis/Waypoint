@@ -10,7 +10,9 @@
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/db/seed.ts",
     "import-users": "tsx src/db/importUsers.ts",
-    "typecheck": "tsc --noEmit"
+    "import-design-tickets": "tsx scripts/import_design_tickets.ts",
+    "typecheck": "tsc --noEmit",
+    "import-design-tickets": "tsx scripts/import_design_tickets.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",

@@ -24,6 +24,7 @@ import type {
   Role,
   SimpleFeature,
   DesignItem,
+  DesignBoardLane,
   FeatureGroupSummary,
   PredictionHistoryEntry,
   PredictionTodayResponse,
@@ -232,6 +233,15 @@ export function useDesignItems() {
   return useQuery({
     queryKey: ["designItems"],
     queryFn: () => api<DesignItem[]>("/design-items"),
+    refetchInterval: POLL_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useDesignBoardLanes() {
+  return useQuery({
+    queryKey: ["designBoardLanes"],
+    queryFn: () => api<DesignBoardLane[]>("/design-board-lanes"),
     refetchInterval: POLL_MS,
     placeholderData: keepPreviousData,
   });

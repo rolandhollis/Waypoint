@@ -21,6 +21,7 @@ import {
   weekOfMondayForSchedule,
 } from "../lib/weeklyStatusSchedule.js";
 import { sendEmail } from "./email.js";
+import { emailBodyToHtml, emailBodyToPlainText } from "./emailHtml.js";
 import { makeUnsubscribeToken } from "./unsubscribe.js";
 
 /**
@@ -888,13 +889,14 @@ function renderDigest(input: {
   const digestSummary = buildDigestSummary(updates, missingByOwner);
 
   const greeting = recipientName ? `Hi ${recipientName.split(/\s+/)[0] ?? recipientName},` : "Hello,";
-  const noteText = adminNote?.trim() ?? "";
+  const noteRaw = adminNote?.trim() ?? "";
+  const notePlain = noteRaw ? emailBodyToPlainText(noteRaw) : "";
 
   const textLines: string[] = [];
   textLines.push(greeting);
   textLines.push("");
-  if (noteText) {
-    textLines.push(noteText);
+  if (notePlain) {
+    textLines.push(notePlain);
     textLines.push("");
   }
   textLines.push(`${groupName} status updates for the week of ${weekLabel}:`);
@@ -934,8 +936,8 @@ function renderDigest(input: {
     )
     .join("");
 
-  const noteHtml = noteText
-    ? `<div style="margin:16px 0;padding:12px 14px;border-left:3px solid #DC2626;background:#fef2f2;border-radius:0 8px 8px 0;color:#334155;">${escapeHtml(noteText).replace(/\n/g, "<br>")}</div>`
+  const noteHtml = notePlain
+    ? `<div style="margin:16px 0;padding:12px 14px;border-left:3px solid #DC2626;background:#fef2f2;border-radius:0 8px 8px 0;color:#334155;">${emailBodyToHtml(noteRaw)}</div>`
     : "";
 
   const missingHtml = renderMissingSectionHtml(missingByOwner, appUrl);

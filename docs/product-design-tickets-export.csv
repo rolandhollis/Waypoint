@@ -1,0 +1,28 @@
+id,person,order,title,sub,status,status_label,jira,links
+done-1,Completed,1,Merchant Tiles,"Initial version is complete, back-end still needs help.",done,Completed,,
+done-2,Completed,2,Re-size App Store Videos,Use the web to re-size these files.,done,Completed,,
+done-3,Completed,3,Event Page,Create a Lance Bass Event syncing with Marketing.,done,Completed,,
+done-4,Completed,4,App Week,Sync with Jenika for assets. Needed events assets finalized by Sept 16. Launched Sept 21.,done,Completed,,"[{""label"": ""Figma"", ""url"": ""https://www.figma.com/design/T2YEkaqntyZLTDzWA6r8l0/RMN_MKTG_AppWeek?node-id=4018-105&t=5MdnuQ2L65kQK9I8-1""}]"
+done-5,Completed,5,Travel Category Phase 1,Create lifestyle tiles for travel tiles and define entry point.,done,Completed,,
+done-6,Completed,6,Lance Bass,,done,Completed,,
+doug-1,Doug,1,Explore Shop Streak Branding,Explore a new branding that works in the tracker and across the app.,indev,In Development,,
+doug-2,Doug,2,Update Top of Feed Chips,"Removing search, adding exposure to all categories, and using chips in a better way.",on,On-track,,
+doug-3,Doug,3,Onboarding UXR,Align with Flor to create three different prototypes for testing onboarding.,on,On-track,FAL-1105,
+doug-4,Doug,4,Interstitial UXR,Align with Flor to create three different prototypes for testing interstitial.,not,Not started,FAL-1107,
+doug-5,Doug,5,Add Four Influencer Headshots to App,Add four influencer headshots to the app.,not,Not started,,"[{""label"": ""Headshots"", ""url"": ""#""}]"
+doug-6,Doug,6,Submit Kartik's performance review,,not,Not started,,
+isa-1,Isa,1,Website Logged Out State,Create a logged out state for a website leveraging existing components.,risk,At Risk,,"[{""label"": ""PRD"", ""url"": ""https://docs.google.com/document/d/1GIfBfmLKTxhVyc3TWb_1eaxQInuCjb0A3pGqPMXpW5A/edit?tab=t.0""}, {""label"": ""Cilla's Prototype"", ""url"": ""https://claude.ai/design/p/ac0b6c23-0ef3-44b0-9382-99ede445d124?via=share&file=CL+Macy%27s+anon+-+logged+in.dc.html""}]"
+isa-2,Completed,7,Rewards email update,Add the new shop street branding and language.,done,Completed,,
+isa-3,Isa,3,Clean up Design System,No details yet,on,On-track,,
+isa-4,Isa,4,Color Organization,Let's clean up our usage of color when it comes to representing CBO offers and bonus.,not,Not started,,
+isa-5,Isa,5,Login Modal for Web,Create a login modal for web leveraging the existing design system.,on,On-track,,
+jiajia-1,JiaJia,1,Quick Extension Update,Update the current extension design to reflect our new design system. Clean up typography and balance.,review,In Review,,
+jiajia-2,JiaJia,2,SERP Redesign,Please reimagine the SERP design and how it stands out amongst the competition.,indev,In Development,,
+jiajia-3,JiaJia,3,Encourage Users to Download Browser Extension,Add a container on the rewards page that promotes the idea of adding the browser extension.,not,Not started,FAL-917,
+jiajia-4,JiaJia,5,Blog on App,Create a layout for the app that supports our blog articles,not,Not started,,
+jiajia-5,JiaJia,6,MSE install video,Create a lottie animation video that shows users how to download the mobile safari extension.,indev,In Development,,
+un-1,Unassigned,1,Redesign RMN Website,Leverage new design system and mirror functionality from app.,not,Not started,,
+un-2,Unassigned,2,Revisit Search,"The offers and brands for you sections feel off related to the search intent here, UX team will revisit these to improve the experience.",not,Not started,,
+un-3,Unassigned,3,Rewards Share,Add a share mechanism to the rewards page that showcases a users shopping scorecard and a prompt to join the program.,not,Not started,,"[{""label"": ""View design"", ""url"": ""https://claude.ai/design/p/1b6890b6-a09a-4f3c-b3de-bd251a29b6b2?via=share&file=RMN+Rewards+Share+Flow.dc.html""}]"
+un-4,Unassigned,4,Birthday Bonus,Create a way to celebrate the users birthday. Possibly leverage the current $5 bonus modal and confetti; add a line item to transactions showing the birthday bonus with a new icon.,not,Not started,,
+un-5,JiaJia,4,Sales Calendar,Design a UI that showcases all our sales calendar efforts synced up with engineer's API.,on,On-track,,

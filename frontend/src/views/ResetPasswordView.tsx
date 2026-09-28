@@ -5,19 +5,22 @@ import { CheckCircle2, KeyRound } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { PasswordField, passwordIsValid } from "../components/PasswordField";
 
-type ProbeResponse = { live: boolean; ttlMinutes: number };
+type ProbeResponse = {
+  live: boolean;
+  purpose: "reset" | "invite" | null;
+  ttlMinutes: number;
+  name: string | null;
+  email: string | null;
+};
 
 /**
- * Landing page for the reset link mailed from /forgot-password.
- * Reads the token from the URL, probes the server to make sure
- * it's still redeemable (so we can show "this link expired"
- * without wasting a keystroke), and — on success — POSTs the new
- * password to /api/auth/reset-password.
+ * Landing page for set-password links mailed from:
+ *   * /forgot-password (purpose=reset)
+ *   * admin Create user invite (purpose=invite)
  *
- * Reuses the admin PasswordField so the checklist, generator, and
- * copy button behave identically to the admin-driven reset. The
- * server enforces the same policy so any hand-crafted payload gets
- * rejected with a friendly message.
+ * Reads the token from the URL, probes the server to make sure
+ * it's still redeemable, and POSTs the new password to
+ * /api/auth/reset-password. Copy adapts to invite vs reset.
  */
 export function ResetPasswordView() {
   const [params] = useSearchParams();
@@ -29,9 +32,6 @@ export function ResetPasswordView() {
   const [details, setDetails] = useState<string[] | null>(null);
   const [succeeded, setSucceeded] = useState(false);
 
-  // Probe up front so users don't waste time typing into a form
-  // backed by a dead link. Also gives us the TTL to display so the
-  // "30 minutes" phrasing in the email matches what shows here.
   const probe = useQuery<ProbeResponse>({
     queryKey: ["reset-probe", token],
     queryFn: () =>
@@ -39,6 +39,8 @@ export function ResetPasswordView() {
     enabled: !!token,
     staleTime: 5000,
   });
+
+  const isInvite = probe.data?.purpose === "invite";
 
   const submit = useMutation({
     mutationFn: () =>
@@ -48,19 +50,16 @@ export function ResetPasswordView() {
       }),
     onSuccess: () => {
       setSucceeded(true);
-      // Bounce to the login screen after a short beat so the user
-      // sees the confirmation and lands in a place they can sign in
-      // with the password they just chose.
       setTimeout(() => navigate("/login", { replace: true }), 1500);
     },
     onError: (err) => {
       if (err instanceof ApiError) {
-        setError(err.message || "Reset failed.");
+        setError(err.message || "Couldn't save password.");
         const d = (err.body as { details?: string[] } | undefined)?.details;
         setDetails(Array.isArray(d) ? d : null);
         return;
       }
-      setError((err as Error).message ?? "Reset failed.");
+      setError((err as Error).message ?? "Couldn't save password.");
       setDetails(null);
     },
   });
@@ -82,29 +81,39 @@ export function ResetPasswordView() {
   const canSubmit =
     clientValid && password === confirm && !submit.isPending && probe.data?.live;
 
-  // Small "why disabled" hint that shows the FIRST reason submit
-  // isn't clickable. The full policy checklist is right above (via
-  // PasswordField's own checklist), but a single-line summary next
-  // to the button saves people scrolling to figure out what's still
-  // missing. Kept intentionally terse.
   const disabledReason = submit.isPending
     ? null
     : !password
-      ? "Enter a new password."
+      ? "Enter a password."
       : !clientValid
         ? "Password doesn't meet all the requirements in the checklist above."
         : !confirm
-          ? "Confirm the new password to continue."
+          ? "Confirm the password to continue."
           : password !== confirm
             ? "Passwords don't match."
             : null;
+
+  const ttlLabel = (() => {
+    const mins = probe.data?.ttlMinutes ?? 0;
+    if (mins >= 60 * 24) {
+      const days = Math.round(mins / (60 * 24));
+      return `${days} day${days === 1 ? "" : "s"}`;
+    }
+    if (mins >= 60) {
+      const hours = Math.round(mins / 60);
+      return `${hours} hour${hours === 1 ? "" : "s"}`;
+    }
+    return `${mins || 30} minutes`;
+  })();
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-wp-stone/30 to-white">
       <div className="card-surface w-full max-w-md space-y-4 p-6">
         <div className="text-center">
           <div className="text-xl font-bold text-wp-red">Waypoint</div>
-          <p className="mt-1 text-sm text-wp-slate">Pick a new password</p>
+          <p className="mt-1 text-sm text-wp-slate">
+            {isInvite ? "Set your password" : "Pick a new password"}
+          </p>
         </div>
 
         {probe.isLoading ? (
@@ -112,12 +121,15 @@ export function ResetPasswordView() {
         ) : probe.data && !probe.data.live ? (
           <div className="space-y-3 text-sm">
             <div className="rounded-md border border-red-200 bg-red-50 px-3 py-3 text-red-900">
-              This reset link is invalid or has expired. Reset links only work
-              once and are good for {probe.data?.ttlMinutes ?? 30} minutes.
+              This link is invalid or has expired. Links only work once
+              and are good for a limited time.
             </div>
             <Link to="/forgot-password" className="btn-primary w-full justify-center">
-              Request a new link
+              Request a password reset
             </Link>
+            <p className="text-center text-xs text-wp-slate">
+              New account? Ask your admin to resend the invite from Users &amp; roles.
+            </p>
           </div>
         ) : succeeded ? (
           <div className="space-y-3 text-sm">
@@ -125,7 +137,9 @@ export function ResetPasswordView() {
               <div className="flex items-start gap-2">
                 <CheckCircle2 size={16} className="mt-0.5 shrink-0" />
                 <div>
-                  Password updated. Taking you to the sign-in screen…
+                  {isInvite
+                    ? "Password set. Taking you to the sign-in screen…"
+                    : "Password updated. Taking you to the sign-in screen…"}
                 </div>
               </div>
             </div>
@@ -133,8 +147,24 @@ export function ResetPasswordView() {
         ) : (
           <form onSubmit={onSubmit} className="space-y-4">
             <p className="text-sm text-wp-slate">
-              Choose a new password. All your existing sessions will be signed
-              out for safety.
+              {isInvite ? (
+                <>
+                  Welcome{probe.data?.name ? `, ${probe.data.name}` : ""}. Choose a
+                  password to finish creating your account
+                  {probe.data?.email ? (
+                    <>
+                      {" "}
+                      for <strong className="text-wp-ink">{probe.data.email}</strong>
+                    </>
+                  ) : null}
+                  .
+                </>
+              ) : (
+                <>
+                  Choose a new password. All your existing sessions will be signed
+                  out for safety. This link expires in {ttlLabel}.
+                </>
+              )}
             </p>
 
             <div>
@@ -142,7 +172,7 @@ export function ResetPasswordView() {
                 htmlFor="reset-password"
                 className="block text-xs font-medium text-wp-slate"
               >
-                New password
+                {isInvite ? "Password" : "New password"}
               </label>
               <div className="mt-1">
                 <PasswordField
@@ -161,7 +191,7 @@ export function ResetPasswordView() {
                 htmlFor="reset-confirm"
                 className="block text-xs font-medium text-wp-slate"
               >
-                Confirm new password
+                Confirm password
               </label>
               <input
                 id="reset-confirm"
@@ -195,7 +225,11 @@ export function ResetPasswordView() {
               className="btn-primary w-full justify-center"
             >
               <KeyRound size={14} />
-              {submit.isPending ? "Saving…" : "Save new password"}
+              {submit.isPending
+                ? "Saving…"
+                : isInvite
+                  ? "Set password & continue"
+                  : "Save new password"}
             </button>
             {disabledReason ? (
               <p className="text-center text-[11px] text-wp-slate">{disabledReason}</p>

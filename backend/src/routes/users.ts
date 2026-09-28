@@ -11,6 +11,7 @@ import {
   hashPassword,
   validatePassword,
 } from "../auth/password.js";
+import { sendUserInvite } from "../auth/passwordReset.js";
 import { deleteOtherSessionsForUser, deleteSessionsForUser } from "../auth/session.js";
 import { verifyPassword } from "../auth/password.js";
 import type { Role, UserRow } from "../types.js";
@@ -461,45 +462,20 @@ usersRouter.post("/password/generate", requireAdmin, (_req, res) => {
 
 const roleEnum = z.enum(["admin", "owner", "viewer"]);
 
-const createUserSchema = z
-  .object({
-    email: z.string().email().max(254),
-    name: z.string().min(1).max(120),
-    role: roleEnum,
-    color: z.string().max(32).optional(),
-    capacity: z.number().int().min(1).max(1000).nullable().optional(),
-    password: z.string().min(1).max(256).optional(),
-    generate_password: z.boolean().optional(),
-  })
-  .refine((v) => !(v.password && v.generate_password), {
-    message: "provide either `password` or `generate_password`, not both",
-  });
+const createUserSchema = z.object({
+  email: z.string().email().max(254),
+  name: z.string().min(1).max(120),
+  role: roleEnum,
+  color: z.string().max(32).optional(),
+  capacity: z.number().int().min(1).max(1000).nullable().optional(),
+});
 
 usersRouter.post("/", groupScope, requireAdmin, async (req, res) => {
   const body = createUserSchema.parse(req.body);
 
-  // Resolve the password up-front so we can validate before the
-  // INSERT — the response echoes the plaintext exactly once when
-  // requested by generate_password OR when the admin typed one; the
-  // UI relies on this to show the RevealPasswordCard.
-  let plaintext: string | null = null;
-  let echo = false;
-  if (body.generate_password) {
-    plaintext = generatePassword();
-    echo = true;
-  } else if (body.password) {
-    plaintext = body.password;
-    echo = true;
-  }
-
-  if (plaintext) {
-    const errs = validatePassword(plaintext, body.email);
-    if (errs.length) {
-      throw new HttpError(400, `password ${formatPasswordErrors(errs).join("; ")}`);
-    }
-  }
-
-  const password_hash = plaintext ? await hashPassword(plaintext) : null;
+  // Password-mode creates leave password_hash null and mail an
+  // invite link so the new user sets their own password. Mock mode
+  // skips the invite (no password login).
   const capacity = body.capacity === undefined ? 3 : body.capacity;
   const color = body.color ?? "#64748B";
 
@@ -514,9 +490,9 @@ usersRouter.post("/", groupScope, requireAdmin, async (req, res) => {
     created = await withTransaction(async (client) => {
       const { rows } = await client.query<UserRow>(
         `INSERT INTO users (email, name, role, color, capacity, password_hash, password_updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
+         VALUES ($1, $2, $3, $4, $5, NULL, NULL)
          RETURNING *`,
-        [body.email, body.name, body.role, color, capacity, password_hash],
+        [body.email, body.name, body.role, color, capacity],
       );
       const user = rows[0]!;
       await client.query(
@@ -556,14 +532,49 @@ usersRouter.post("/", groupScope, requireAdmin, async (req, res) => {
     throw err;
   }
 
+  let invite_sent = false;
+  if (config.authMode === "password") {
+    await sendUserInvite(created, {
+      ip: readClientIp(req),
+      userAgent: req.header("user-agent") ?? null,
+    });
+    invite_sent = true;
+  }
+
   res.status(201).json({
     user: scrubUser(created),
-    // Present only on the create-response so the admin gets one
-    // last chance to copy the plaintext before it disappears
-    // forever. Absent otherwise.
-    ...(echo && plaintext ? { generated_password: plaintext } : {}),
+    invite_sent,
   });
 });
+
+/**
+ * POST /users/:id/invite — remint and resend the set-password invite
+ * for a user who still has no password. Used when the original email
+ * was lost or expired.
+ */
+usersRouter.post(
+  "/:id/invite",
+  groupScope,
+  requireAdmin,
+  assertTargetInGroup,
+  async (req, res) => {
+    if (config.authMode !== "password") {
+      throw new HttpError(400, "auth mode does not use password login");
+    }
+    const existing = (req as Request & { targetUser: UserRow }).targetUser;
+    if (existing.password_hash) {
+      throw new HttpError(
+        400,
+        "this user already has a password — use Reset password instead",
+      );
+    }
+    await sendUserInvite(existing, {
+      ip: readClientIp(req),
+      userAgent: req.header("user-agent") ?? null,
+    });
+    res.status(204).end();
+  },
+);
 
 // -----------------------------------------------------------------
 // Update user (admin)
@@ -736,4 +747,10 @@ function isUniqueViolation(err: unknown): boolean {
   return (
     typeof err === "object" && err !== null && "code" in err && (err as { code: unknown }).code === "23505"
   );
+}
+
+function readClientIp(req: Request): string | null {
+  const xff = req.header("x-forwarded-for");
+  if (xff) return xff.split(",")[0]!.trim();
+  return req.socket?.remoteAddress ?? null;
 }

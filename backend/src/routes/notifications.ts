@@ -124,7 +124,7 @@ const runReminderJobSchema = z.object({
 
 const runDigestJobSchema = z.object({
   dry_run: z.boolean().optional().default(false),
-  admin_note: z.string().trim().max(2000).optional(),
+  admin_note: z.string().trim().max(20_000).optional(),
 });
 
 notificationsRouter.post(
@@ -168,7 +168,7 @@ notificationsRouter.post(
 const runAnnouncementSchema = z.object({
   dry_run: z.boolean().optional().default(false),
   subject: z.string().trim().min(1).max(200),
-  body: z.string().trim().min(1).max(10_000),
+  body: z.string().trim().min(1).max(20_000),
 });
 
 /**

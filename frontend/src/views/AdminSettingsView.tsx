@@ -36,6 +36,7 @@ import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
 import { MultiSelect } from "../components/MultiSelect";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
+import { RichTextEditor, isEmptyRichText } from "../components/RichTextEditor";
 import { ViewPageHeader } from "../components/ViewPageHeader";
 import { PasswordField } from "../components/PasswordField";
 import { passwordIsValid } from "../lib/password";
@@ -1259,9 +1260,10 @@ function DigestAdmin() {
   const [digestAdminNote, setDigestAdminNote] = useState("");
 
   const digestNoteTrimmed = digestAdminNote.trim();
+  const digestNoteReady = !isEmptyRichText(digestNoteTrimmed);
   const digestRunArgs = (dry_run: boolean): DigestRunArgs => ({
     dry_run,
-    admin_note: digestNoteTrimmed || undefined,
+    admin_note: digestNoteReady ? digestNoteTrimmed : undefined,
   });
 
   const busySend = runDigest.isPending;
@@ -1294,15 +1296,17 @@ function DigestAdmin() {
       <div className="mt-4">
         <label className="block text-xs font-medium text-wp-slate">
           Optional note for manual sends
-          <textarea
-            className="input mt-1 min-h-[4.5rem] text-sm"
-            value={digestAdminNote}
-            onChange={(e) => setDigestAdminNote(e.target.value)}
-            placeholder="Add a short message that appears at the top of the email when you preview or send manually. Leave blank for no note."
-            maxLength={2000}
-            disabled={busySend}
-          />
         </label>
+        <div className="mt-1">
+          <RichTextEditor
+            value={digestAdminNote}
+            onChange={setDigestAdminNote}
+            placeholder="Add a short message at the top of the email when you preview or send manually. Leave blank for no note."
+            minHeightClass="min-h-[4.5rem]"
+            disabled={busySend}
+            aria-label="Optional note for manual sends"
+          />
+        </div>
         <p className="mt-1 text-[11px] text-wp-slate">
           Not included in scheduled sends — only when you use Preview or Send now below.
           {recipientCount === 0
@@ -1435,7 +1439,7 @@ function AnnouncementAdmin() {
 
   const subjectTrimmed = subject.trim();
   const bodyTrimmed = body.trim();
-  const ready = subjectTrimmed.length > 0 && bodyTrimmed.length > 0;
+  const ready = subjectTrimmed.length > 0 && !isEmptyRichText(bodyTrimmed);
   const recipientCount = recipients.data?.length ?? 0;
   const busy = runAnnouncement.isPending;
   const last = runAnnouncement.data;
@@ -1475,15 +1479,17 @@ function AnnouncementAdmin() {
         </label>
         <label className="block text-xs font-medium text-wp-slate">
           Message
-          <textarea
-            className="input mt-1 min-h-[8rem] w-full text-sm"
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            placeholder="Write the announcement body. Blank lines start a new paragraph."
-            maxLength={10_000}
-            disabled={busy}
-          />
         </label>
+        <div className="mt-1">
+          <RichTextEditor
+            value={body}
+            onChange={setBody}
+            placeholder="Write the announcement. Use the toolbar for bold, italic, or underline."
+            minHeightClass="min-h-[8rem]"
+            disabled={busy}
+            aria-label="Announcement message"
+          />
+        </div>
         <p className="text-[11px] text-wp-slate">
           {recipientCount === 0
             ? "No recipients on the distribution list yet — add people in the section above."
@@ -2684,6 +2690,9 @@ function UsersAdmin() {
       qc.invalidateQueries({ queryKey: ["teams"] });
     },
   });
+  const resendInvite = useMutation({
+    mutationFn: (id: string) => api<void>(`/users/${id}/invite`, { method: "POST" }),
+  });
   const handleDelete = async (u: User) => {
     if (
       !(await confirm({
@@ -2712,6 +2721,7 @@ function UsersAdmin() {
       <MutationErrorBanner mutation={patchRole} className="mt-3" />
       <MutationErrorBanner mutation={patchCapacity} className="mt-3" />
       <MutationErrorBanner mutation={delUser} className="mt-3" />
+      <MutationErrorBanner mutation={resendInvite} className="mt-3" />
       <ul className="mt-3 divide-y divide-wp-stone">
         {users.data?.map((u) => (
           <li key={u.id} className="flex items-center gap-3 py-2">
@@ -2745,9 +2755,9 @@ function UsersAdmin() {
                   {isPasswordMode && !u.password_updated_at ? (
                     <span
                       className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
-                      title="This user has no password set and cannot sign in until one is created."
+                      title="Invite sent — they haven't set a password yet and cannot sign in."
                     >
-                      No password
+                      Invite pending
                     </span>
                   ) : null}
                 </div>
@@ -2783,13 +2793,26 @@ function UsersAdmin() {
               <option value="viewer">viewer</option>
             </select>
             {isPasswordMode ? (
-              <button
-                type="button"
-                className="btn-secondary text-xs"
-                onClick={() => setResettingUser(u)}
-              >
-                Reset password
-              </button>
+              !u.password_updated_at ? (
+                <button
+                  type="button"
+                  className="btn-secondary text-xs"
+                  disabled={resendInvite.isPending}
+                  onClick={() => resendInvite.mutate(u.id)}
+                >
+                  {resendInvite.isPending && resendInvite.variables === u.id
+                    ? "Sending…"
+                    : "Resend invite"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-secondary text-xs"
+                  onClick={() => setResettingUser(u)}
+                >
+                  Reset password
+                </button>
+              )
             ) : null}
             {(() => {
               const isSelf = me.data?.id === u.id;
@@ -3198,10 +3221,7 @@ function NewUserDialog({
   const [role, setRole] = useState<User["role"]>("owner");
   const [color, setColor] = useAutoColor(USER_PALETTE, existingColors);
   const [capacity, setCapacity] = useState<string>("3");
-  const [password, setPassword] = useState("");
-  // The response includes generated_password exactly once. Cache it
-  // here so the reveal card can render before the dialog is closed.
-  const [reveal, setReveal] = useState<{ password: string; email: string } | null>(null);
+  const [inviteSentTo, setInviteSentTo] = useState<string | null>(null);
 
   const create = useMutation({
     mutationFn: async () => {
@@ -3213,31 +3233,35 @@ function NewUserDialog({
         color,
         capacity: Number.isFinite(capNum as number) ? capNum : 3,
       };
-      if (isPasswordMode) {
-        body.password = password;
-      }
-      return api<{ user: User; generated_password?: string }>("/users", {
+      return api<{ user: User; invite_sent?: boolean }>("/users", {
         method: "POST",
         body: JSON.stringify(body),
       });
     },
     onSuccess: (res) => {
       onCreated();
-      if (res.generated_password) {
-        setReveal({ password: res.generated_password, email: res.user.email });
+      if (res.invite_sent) {
+        setInviteSentTo(res.user.email);
       } else {
-        // No password (mock mode) → nothing to reveal, just close.
         onClose();
       }
     },
   });
 
-  // Reveal-mode UI: same dialog frame, but showing the one-time
-  // password + a single Close action.
-  if (reveal) {
+  if (inviteSentTo) {
     return (
-      <DialogFrame onClose={onClose} title="User created">
-        <RevealPasswordCard password={reveal.password} email={reveal.email} variant="created" />
+      <DialogFrame onClose={onClose} title="Invite sent">
+        <div className="space-y-3 text-sm text-wp-ink">
+          <p>
+            An account was created for{" "}
+            <strong>{inviteSentTo}</strong>. They'll get an email with a
+            link to set their password and finish signing up.
+          </p>
+          <p className="text-xs text-wp-slate">
+            The invite link is good for 7 days. You can resend it from the
+            user row if needed.
+          </p>
+        </div>
         <div className="mt-4 flex justify-end">
           <button type="button" className="btn-primary" onClick={onClose}>
             Done
@@ -3249,8 +3273,7 @@ function NewUserDialog({
 
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const nameValid = name.trim().length > 0;
-  const passwordValid = !isPasswordMode || passwordIsValid(password, email);
-  const canSubmit = emailValid && nameValid && passwordValid && !create.isPending;
+  const canSubmit = emailValid && nameValid && !create.isPending;
 
   return (
     <DialogFrame onClose={onClose} title="Create user">
@@ -3329,10 +3352,10 @@ function NewUserDialog({
         </div>
 
         {isPasswordMode ? (
-          <div>
-            <div className="mb-1 text-xs font-medium text-wp-slate">Password</div>
-            <PasswordField value={password} onChange={setPassword} email={email} />
-          </div>
+          <p className="rounded-md border border-wp-stone bg-wp-stone/20 px-3 py-2 text-xs text-wp-slate">
+            We'll email them a link to set their own password. No password
+            is created by the admin.
+          </p>
         ) : (
           <p className="rounded-md border border-wp-stone bg-wp-stone/20 px-3 py-2 text-xs text-wp-slate">
             The server is running in mock auth mode, so no password is required.
@@ -3346,7 +3369,13 @@ function NewUserDialog({
             Cancel
           </button>
           <button type="submit" className="btn-primary" disabled={!canSubmit}>
-            {create.isPending ? "Creating…" : "Create user"}
+            {create.isPending
+              ? isPasswordMode
+                ? "Sending invite…"
+                : "Creating…"
+              : isPasswordMode
+                ? "Create & send invite"
+                : "Create user"}
           </button>
         </div>
       </form>

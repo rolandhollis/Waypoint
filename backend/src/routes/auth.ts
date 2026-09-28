@@ -21,8 +21,7 @@ import {
 import {
   consumePasswordResetToken,
   hashResetToken,
-  isResetTokenLive,
-  RESET_TOKEN_TTL_MS,
+  probeResetToken,
   requestPasswordReset,
 } from "../auth/passwordReset.js";
 import type { UserRow } from "../types.js";
@@ -259,7 +258,7 @@ authRouter.post("/reset-password", async (req, res) => {
   );
   const user = rows[0] ?? null;
   if (!user) {
-    res.status(400).json({ error: "This reset link is invalid or has expired. Request a new one." });
+    res.status(400).json({ error: "This link is invalid or has expired. Request a new one." });
     return;
   }
 
@@ -280,7 +279,7 @@ authRouter.post("/reset-password", async (req, res) => {
   if (!consumed || consumed.userId !== user.id) {
     // Race with a concurrent redemption. Vanishingly rare but
     // possible if the user double-clicks the link.
-    res.status(400).json({ error: "This reset link is no longer valid. Request a new one." });
+    res.status(400).json({ error: "This link is no longer valid. Request a new one." });
     return;
   }
 
@@ -332,8 +331,8 @@ authRouter.get("/reset-password/probe", async (req, res) => {
     return;
   }
   const token = typeof req.query.token === "string" ? req.query.token : "";
-  const live = await isResetTokenLive(token);
-  res.json({ live, ttlMinutes: Math.round(RESET_TOKEN_TTL_MS / 60000) });
+  const probe = await probeResetToken(token);
+  res.json(probe);
 });
 
 function readClientIp(req: import("express").Request): string | null {

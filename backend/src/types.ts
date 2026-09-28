@@ -621,6 +621,14 @@ export type FeatureGroupFeatureRow = {
 
 export type DesignItemStatus = "next_up" | "in_design" | "completed" | "deleted";
 
+/** Card workflow status (colored pill) — independent of assignee column. */
+export type DesignTicketStatus = "not" | "on" | "risk" | "review" | "indev" | "done";
+
+export type DesignItemLink = {
+  label: string;
+  url: string;
+};
+
 export type DesignItemRow = {
   id: string;
   group_id: string;
@@ -629,6 +637,9 @@ export type DesignItemRow = {
   team_id: string | null;
   source: string;
   status: DesignItemStatus;
+  ticket_status: DesignTicketStatus;
+  jira_key: string | null;
+  links: DesignItemLink[];
   position: number;
   assigned_to: string | null;
   created_by: string;
