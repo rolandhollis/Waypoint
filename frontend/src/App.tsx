@@ -29,14 +29,17 @@ import { OverdueCompletionBanner } from "./components/OverdueCompletionBanner";
 import { ReminderBanner } from "./components/ReminderBanner";
 import { TopNav } from "./components/TopNav";
 import { AbSdkProvider } from "./lib/abSdk";
-import { boolFromText, rawTextByLabel, useJiffPageContent } from "./lib/jiffcontent";
+import { boolFromText, imageByLabel, rawTextByLabel, useJiffPageContent } from "./lib/jiffcontent";
 import { UserSwitcher } from "./components/UserSwitcher";
 import { GroupSwitcher } from "./components/GroupSwitcher";
 import { JcLocaleSwitcher } from "./components/JcLocaleSwitcher";
+import { DocumentFaviconSync } from "./components/DocumentFaviconSync";
 import {
   consumePostLoginRedirect,
   stashPostLoginRedirect,
 } from "./lib/postLoginRedirect";
+
+const DEFAULT_NAVBAR_LOGO = "/brand/icon-light-transparent.png";
 
 export function App() {
   const health = useHealth();
@@ -101,23 +104,36 @@ export function App() {
   }, [isPasswordMode, me.isLoading, me.data, location.pathname, location.search]);
 
   if (health.isLoading || !health.data) {
-    return <FullscreenMessage title="Loading…" />;
+    return (
+      <>
+        <DocumentFaviconSync />
+        <FullscreenMessage title="Loading…" />
+      </>
+    );
   }
 
   // Password mode: dedicated /login route. Everything else redirects
   // to it until /users/me returns a user.
   if (isPasswordMode) {
     if (me.isLoading) {
-      return <FullscreenMessage title="Signing in…" />;
+      return (
+        <>
+          <DocumentFaviconSync />
+          <FullscreenMessage title="Signing in…" />
+        </>
+      );
     }
     if (!me.data) {
       return (
-        <Routes>
-          <Route path="/login" element={<LoginView />} />
-          <Route path="/forgot-password" element={<ForgotPasswordView />} />
-          <Route path="/reset-password" element={<ResetPasswordView />} />
-          <Route path="*" element={<Navigate to="/login" replace state={{ from: location }} />} />
-        </Routes>
+        <>
+          <DocumentFaviconSync />
+          <Routes>
+            <Route path="/login" element={<LoginView />} />
+            <Route path="/forgot-password" element={<ForgotPasswordView />} />
+            <Route path="/reset-password" element={<ResetPasswordView />} />
+            <Route path="*" element={<Navigate to="/login" replace state={{ from: location }} />} />
+          </Routes>
+        </>
       );
     }
   }
@@ -126,6 +142,7 @@ export function App() {
   if (isMockMode && (!mockUserId || !me.data)) {
     return (
       <>
+        <DocumentFaviconSync />
         <MockAuthBanner />
         <MockLoginScreen />
       </>
@@ -136,24 +153,33 @@ export function App() {
   // authenticated the browser session; /users/me is the source of
   // truth.
   if (!isMockMode && !isPasswordMode && me.isLoading) {
-    return <FullscreenMessage title="Signing in…" />;
+    return (
+      <>
+        <DocumentFaviconSync />
+        <FullscreenMessage title="Signing in…" />
+      </>
+    );
   }
   if (!isMockMode && !isPasswordMode && !me.data) {
     return (
-      <FullscreenMessage
-        title="You're not authorized"
-        body={
-          <>
-            You're signed in via <code>{health.data.auth}</code> but your account
-            is not provisioned in this app. Ask an admin to add you, then reload.
-          </>
-        }
-      />
+      <>
+        <DocumentFaviconSync />
+        <FullscreenMessage
+          title="You're not authorized"
+          body={
+            <>
+              You're signed in via <code>{health.data.auth}</code> but your account
+              is not provisioned in this app. Ask an admin to add you, then reload.
+            </>
+          }
+        />
+      </>
     );
   }
 
   return (
     <AbSdkProvider userId={me.data?.id ?? null}>
+      <DocumentFaviconSync />
       <div className="min-h-screen flex flex-col">
       {isMockMode ? <MockAuthBanner /> : null}
       <AbPreviewBanner />
@@ -289,6 +315,9 @@ function TopBar() {
   const showGroupSwitcher = boolFromText(rawTextByLabel(cmsItems, "navbar_show_group_switcher"), true);
   const showUserSwitcher = boolFromText(rawTextByLabel(cmsItems, "navbar_show_user_switcher"), true);
   const announcement = rawTextByLabel(cmsItems, "navbar_announcement");
+  const logo = imageByLabel(cmsItems, "navbar_logo");
+  const logoSrc = logo?.url || DEFAULT_NAVBAR_LOGO;
+  const logoAlt = logo?.alt && logo.alt !== "Image" ? logo.alt : "";
 
   return (
     <header className="flex items-center justify-between border-b border-wp-stone bg-white px-5 py-2.5">
@@ -296,11 +325,12 @@ function TopBar() {
         <div className="flex items-center gap-2">
           <Link to="/" className="flex items-center gap-2 hover:opacity-90">
             <img
-              src="/brand/icon-light-transparent.png"
-              alt=""
+              src={logoSrc}
+              alt={logoAlt}
               width={28}
               height={28}
-              className="h-7 w-7"
+              className="h-7 w-7 object-contain"
+              data-jiff-label="navbar_logo"
             />
             <span className="text-lg font-bold text-wp-red">{appName}</span>
           </Link>

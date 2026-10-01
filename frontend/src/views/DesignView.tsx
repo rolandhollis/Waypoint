@@ -22,13 +22,18 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  Calendar,
   Check,
   GripVertical,
   HelpCircle,
+  Octagon,
   Plus,
   Trash2,
+  X,
 } from "lucide-react";
+import { format } from "date-fns";
 import { KanbanItemCreateModal } from "../components/KanbanItemCreateModal";
+import { DesignDetailPanel } from "../components/DesignDetailPanel";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
 import { UserAvatar } from "../components/UserAvatar";
 import { ViewPageHeader } from "../components/ViewPageHeader";
@@ -223,10 +228,10 @@ export function DesignView() {
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showAddLane, setShowAddLane] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeDragType, setActiveDragType] = useState<"ticket" | "lane" | null>(null);
   const activeDragTypeRef = useRef<"ticket" | "lane" | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const dragSnapshotRef = useRef<DesignItem[] | null>(null);
   const laneSnapshotRef = useRef<DesignBoardLane[] | null>(null);
 
@@ -247,6 +252,13 @@ export function DesignView() {
     () => partitionBoard(all, lanes, roster),
     [all, lanes, roster],
   );
+  const siblingIds = useMemo(() => {
+    return [
+      ...board.unassigned.map((i) => i.id),
+      ...board.personColumns.flatMap((u) => (board.byAssignee.get(u.id) ?? []).map((i) => i.id)),
+      ...board.completed.map((i) => i.id),
+    ];
+  }, [board]);
   const activeItem =
     activeDragType === "ticket" && activeId
       ? all.find((f) => f.id === activeId)
@@ -279,7 +291,10 @@ export function DesignView() {
         prev ? [row, ...prev.filter((f) => f.id !== row.id)] : [row],
       );
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ["designItems"] }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["designItems"] });
+      qc.invalidateQueries({ queryKey: ["designItemHistory"] });
+    },
   });
 
   const patchMutation = useMutation({
@@ -288,7 +303,16 @@ export function DesignView() {
       body: Partial<
         Pick<
           DesignItem,
-          "name" | "description" | "team_id" | "assigned_to" | "ticket_status" | "jira_key" | "links"
+          | "name"
+          | "description"
+          | "team_id"
+          | "assigned_to"
+          | "ticket_status"
+          | "jira_key"
+          | "links"
+          | "due_date"
+          | "is_blocked"
+          | "blocked_reason"
         >
       >;
     }) =>
@@ -301,7 +325,10 @@ export function DesignView() {
         prev ? prev.map((f) => (f.id === row.id ? row : f)) : [row],
       );
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ["designItems"] }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["designItems"] });
+      qc.invalidateQueries({ queryKey: ["designItemHistory"] });
+    },
   });
 
   const boardLayoutMutation = useMutation({
@@ -316,12 +343,18 @@ export function DesignView() {
         qc.setQueryData(["designItems"], dragSnapshotRef.current);
       }
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ["designItems"] }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["designItems"] });
+      qc.invalidateQueries({ queryKey: ["designItemHistory"] });
+    },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api(`/design-items/${id}`, { method: "DELETE" }),
-    onSettled: () => qc.invalidateQueries({ queryKey: ["designItems"] }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["designItems"] });
+      qc.invalidateQueries({ queryKey: ["designItemHistory"] });
+    },
   });
 
   const createLaneMutation = useMutation({
@@ -567,6 +600,7 @@ export function DesignView() {
     ) {
       return;
     }
+    if (selectedId === row.id) setSelectedId(null);
     deleteMutation.mutate(row.id);
   }
 
@@ -597,6 +631,10 @@ export function DesignView() {
   const laneUserIds = board.laneUserIds;
   const availableLaneUsers = roster.filter((u) => !laneUserIds.has(u.id));
   const laneSortableIds = board.personColumns.map((c) => laneSortableId(c.laneId));
+  const selectedItem = selectedId ? all.find((i) => i.id === selectedId) ?? null : null;
+  const selectedCanWrite =
+    !!selectedItem && canWrite && selectedItem.status !== "completed";
+  const selectedCanDelete = !!selectedItem && canWrite;
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-wp-bg">
@@ -746,13 +784,8 @@ export function DesignView() {
                   </span>
                 }
                 canWrite={canWrite}
-                expandedId={expandedId}
-                onToggleExpand={(id) => setExpandedId((cur) => (cur === id ? null : id))}
-                onPatch={(id, body) => patchMutation.mutate({ id, body })}
-                onDelete={handleDelete}
-                patchPending={patchMutation.isPending}
-                userOptions={userOptions}
-                teamOptions={teamOptions}
+                selectedId={selectedId}
+                onOpen={setSelectedId}
                 footer="Assign someone — or drag a ticket here to clear ownership."
               />
 
@@ -766,14 +799,9 @@ export function DesignView() {
                     items={board.byAssignee.get(user.id) ?? []}
                     canWrite={canWrite}
                     isAdmin={isAdmin}
-                    expandedId={expandedId}
-                    onToggleExpand={(id) => setExpandedId((cur) => (cur === id ? null : id))}
-                    onPatch={(id, body) => patchMutation.mutate({ id, body })}
-                    onDelete={handleDelete}
+                    selectedId={selectedId}
+                    onOpen={setSelectedId}
                     onDeleteLane={() => handleDeleteLane(user)}
-                    patchPending={patchMutation.isPending}
-                    userOptions={userOptions}
-                    teamOptions={teamOptions}
                   />
                 ))}
               </SortableContext>
@@ -804,13 +832,8 @@ export function DesignView() {
                   </span>
                 }
                 canWrite={canWrite}
-                expandedId={expandedId}
-                onToggleExpand={(id) => setExpandedId((cur) => (cur === id ? null : id))}
-                onPatch={(id, body) => patchMutation.mutate({ id, body })}
-                onDelete={handleDelete}
-                patchPending={patchMutation.isPending}
-                userOptions={userOptions}
-                teamOptions={teamOptions}
+                selectedId={selectedId}
+                onOpen={setSelectedId}
                 footer="Drag here to complete. Assignee is kept for history."
                 completedColumn
               />
@@ -820,8 +843,6 @@ export function DesignView() {
                 <TicketCard
                   item={activeItem}
                   index={1}
-                  expanded={false}
-                  canWrite={false}
                   dragging
                 />
               ) : activeLane ? (
@@ -832,6 +853,26 @@ export function DesignView() {
               ) : null}
             </DragOverlay>
           </DndContext>
+
+          {selectedItem ? (
+            <DesignDetailPanel
+              item={selectedItem}
+              onClose={() => setSelectedId(null)}
+              onOpenTicket={setSelectedId}
+              siblingIds={siblingIds}
+              canWrite={selectedCanWrite}
+              canDelete={selectedCanDelete}
+              patchPending={patchMutation.isPending}
+              onPatch={(id, body) => patchMutation.mutate({ id, body })}
+              onDelete={() => handleDelete(selectedItem)}
+              userOptions={
+                board.personColumns.length
+                  ? board.personColumns
+                  : userOptions
+              }
+              teamOptions={teamOptions}
+            />
+          ) : null}
         </div>
       </div>
     </div>
@@ -916,14 +957,9 @@ function SortablePersonColumn({
   items,
   canWrite,
   isAdmin,
-  expandedId,
-  onToggleExpand,
-  onPatch,
-  onDelete,
+  selectedId,
+  onOpen,
   onDeleteLane,
-  patchPending,
-  userOptions,
-  teamOptions,
 }: {
   user: PersonColumnUser;
   droppableId: string;
@@ -931,22 +967,9 @@ function SortablePersonColumn({
   items: DesignItem[];
   canWrite: boolean;
   isAdmin: boolean;
-  expandedId: string | null;
-  onToggleExpand: (id: string) => void;
-  onPatch: (
-    id: string,
-    body: Partial<
-      Pick<
-        DesignItem,
-        "name" | "description" | "team_id" | "assigned_to" | "ticket_status" | "jira_key" | "links"
-      >
-    >,
-  ) => void;
-  onDelete: (row: DesignItem) => void;
+  selectedId: string | null;
+  onOpen: (id: string) => void;
   onDeleteLane: () => void;
-  patchPending: boolean;
-  userOptions: MentionableUser[];
-  teamOptions: { id: string; name: string }[];
 }) {
   const {
     attributes,
@@ -976,14 +999,9 @@ function SortablePersonColumn({
         avatar={<UserAvatar name={user.name} color={user.color} size={28} />}
         canWrite={canWrite}
         isAdmin={isAdmin}
-        expandedId={expandedId}
-        onToggleExpand={onToggleExpand}
-        onPatch={onPatch}
-        onDelete={onDelete}
+        selectedId={selectedId}
+        onOpen={onOpen}
         onDeleteLane={onDeleteLane}
-        patchPending={patchPending}
-        userOptions={userOptions}
-        teamOptions={teamOptions}
         laneDragHandle={
           isAdmin
             ? {
@@ -1005,14 +1023,9 @@ function PersonColumn({
   avatar,
   canWrite,
   isAdmin = false,
-  expandedId,
-  onToggleExpand,
-  onPatch,
-  onDelete,
+  selectedId,
+  onOpen,
   onDeleteLane,
-  patchPending,
-  userOptions,
-  teamOptions,
   footer,
   completedColumn = false,
   laneDragHandle,
@@ -1024,22 +1037,9 @@ function PersonColumn({
   avatar: ReactNode;
   canWrite: boolean;
   isAdmin?: boolean;
-  expandedId: string | null;
-  onToggleExpand: (id: string) => void;
-  onPatch: (
-    id: string,
-    body: Partial<
-      Pick<
-        DesignItem,
-        "name" | "description" | "team_id" | "assigned_to" | "ticket_status" | "jira_key" | "links"
-      >
-    >,
-  ) => void;
-  onDelete: (row: DesignItem) => void;
+  selectedId: string | null;
+  onOpen: (id: string) => void;
   onDeleteLane?: () => void;
-  patchPending: boolean;
-  userOptions: MentionableUser[];
-  teamOptions: { id: string; name: string }[];
   footer?: string;
   completedColumn?: boolean;
   laneDragHandle?: {
@@ -1095,15 +1095,10 @@ function PersonColumn({
               key={item.id}
               item={item}
               index={idx + 1}
-              expanded={expandedId === item.id}
+              selected={selectedId === item.id}
               canWrite={canWrite && !completedColumn}
               canWriteCompleted={canWrite && completedColumn}
-              onToggleExpand={() => onToggleExpand(item.id)}
-              onPatch={onPatch}
-              onDelete={() => onDelete(item)}
-              patchPending={patchPending}
-              userOptions={userOptions}
-              teamOptions={teamOptions}
+              onOpen={() => onOpen(item.id)}
             />
           ))}
           {items.length === 0 ? (
@@ -1125,35 +1120,17 @@ function PersonColumn({
 function SortableTicket({
   item,
   index,
-  expanded,
+  selected,
   canWrite,
   canWriteCompleted,
-  onToggleExpand,
-  onPatch,
-  onDelete,
-  patchPending,
-  userOptions,
-  teamOptions,
+  onOpen,
 }: {
   item: DesignItem;
   index: number;
-  expanded: boolean;
+  selected: boolean;
   canWrite: boolean;
   canWriteCompleted?: boolean;
-  onToggleExpand: () => void;
-  onPatch: (
-    id: string,
-    body: Partial<
-      Pick<
-        DesignItem,
-        "name" | "description" | "team_id" | "assigned_to" | "ticket_status" | "jira_key" | "links"
-      >
-    >,
-  ) => void;
-  onDelete: () => void;
-  patchPending: boolean;
-  userOptions: MentionableUser[];
-  teamOptions: { id: string; name: string }[];
+  onOpen: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
@@ -1171,16 +1148,9 @@ function SortableTicket({
       <TicketCard
         item={item}
         index={index}
-        expanded={expanded}
-        canWrite={canWrite}
-        canDelete={canWrite || !!canWriteCompleted}
+        selected={selected}
         dragProps={canWrite || canWriteCompleted ? { ...attributes, ...listeners } : undefined}
-        onToggleExpand={onToggleExpand}
-        onPatch={onPatch}
-        onDelete={onDelete}
-        patchPending={patchPending}
-        userOptions={userOptions}
-        teamOptions={teamOptions}
+        onOpen={onOpen}
       />
     </div>
   );
@@ -1189,56 +1159,28 @@ function SortableTicket({
 function TicketCard({
   item,
   index,
-  expanded,
-  canWrite,
-  canDelete,
+  selected,
   dragProps,
-  onToggleExpand,
-  onPatch,
-  onDelete,
-  patchPending,
-  userOptions,
-  teamOptions,
+  onOpen,
   dragging,
 }: {
   item: DesignItem;
   index: number;
-  expanded: boolean;
-  canWrite: boolean;
-  canDelete?: boolean;
+  selected?: boolean;
   dragProps?: Record<string, unknown>;
-  onToggleExpand?: () => void;
-  onPatch?: (
-    id: string,
-    body: Partial<
-      Pick<
-        DesignItem,
-        "name" | "description" | "team_id" | "assigned_to" | "ticket_status" | "jira_key" | "links"
-      >
-    >,
-  ) => void;
-  onDelete?: () => void;
-  patchPending?: boolean;
-  userOptions?: MentionableUser[];
-  teamOptions?: { id: string; name: string }[];
+  onOpen?: () => void;
   dragging?: boolean;
 }) {
   const status = TICKET_STATUS_META[item.ticket_status] ?? TICKET_STATUS_META.not;
   const done = item.status === "completed" || item.ticket_status === "done";
   const stubLabel = `No.${String(index).padStart(2, "0")}`;
 
-  const [editName, setEditName] = useState(item.name);
-  const [editDesc, setEditDesc] = useState(item.description);
-  const [editStatus, setEditStatus] = useState(item.ticket_status);
-  const [editAssignee, setEditAssignee] = useState(item.assigned_to ?? "");
-  const [editTeam, setEditTeam] = useState(item.team_id ?? "");
-  const [editJira, setEditJira] = useState(item.jira_key ?? "");
-
   return (
     <article
       className={cn(
         "flex overflow-hidden rounded-lg border border-wp-stone bg-white shadow-sm",
         dragging && "shadow-lg ring-2 ring-wp-red/20",
+        selected && "ring-2 ring-wp-red/35",
       )}
     >
       <div
@@ -1256,164 +1198,98 @@ function TicketCard({
           {stubLabel}
         </span>
       </div>
-      <div className="min-w-0 flex-1">
-        <button
-          type="button"
-          className="w-full px-3 py-2.5 text-left"
-          onClick={onToggleExpand}
-          disabled={!onToggleExpand}
+      <button
+        type="button"
+        className="min-w-0 flex-1 px-3 py-2.5 text-left"
+        onClick={onOpen}
+        disabled={!onOpen}
+      >
+        <h3
+          className={cn(
+            "text-sm font-semibold leading-snug text-wp-ink",
+            done && "text-wp-slate line-through",
+          )}
         >
-          <h3
+          {item.name}
+        </h3>
+        {item.description.trim() ? (
+          <p className="mt-1 line-clamp-2 text-xs italic leading-relaxed text-wp-slate">
+            {item.description.trim()}
+          </p>
+        ) : null}
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span
             className={cn(
-              "text-sm font-semibold leading-snug text-wp-ink",
-              done && "text-wp-slate line-through",
+              "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+              status.className,
             )}
           >
-            {item.name}
-          </h3>
-          {item.description.trim() ? (
-            <p className="mt-1 line-clamp-2 text-xs italic leading-relaxed text-wp-slate">
-              {item.description.trim()}
-            </p>
-          ) : null}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <span
-              className={cn(
-                "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold",
-                status.className,
-              )}
-            >
-              {status.label}
+            {status.label}
+          </span>
+          {item.jira_key ? (
+            <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-800">
+              {item.jira_key}
             </span>
-            {item.jira_key ? (
-              <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-800">
-                {item.jira_key}
-              </span>
-            ) : null}
-            {item.team_name ? (
-              <span className="chip text-[10px]">{item.team_name}</span>
-            ) : null}
-          </div>
-          {(item.links ?? []).length > 0 ? (
-            <ul className="mt-1.5 space-y-0.5">
-              {item.links.map((l) => (
-                <li key={`${l.label}-${l.url}`}>
-                  <a
-                    href={l.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[10px] font-medium text-wp-red hover:underline"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {l.label}
-                  </a>
-                </li>
-              ))}
-            </ul>
           ) : null}
-        </button>
-
-        {expanded && canWrite && onPatch ? (
-          <form
-            className="space-y-2 border-t border-wp-stone px-3 py-2.5 text-xs"
-            onClick={(e) => e.stopPropagation()}
-            onSubmit={(e) => {
-              e.preventDefault();
-              onPatch(item.id, {
-                name: editName.trim(),
-                description: editDesc.trim(),
-                ticket_status: editStatus,
-                assigned_to: editAssignee || null,
-                team_id: editTeam || null,
-                jira_key: editJira.trim() || null,
-              });
-            }}
-          >
-            <input
-              className="input w-full text-sm"
-              value={editName}
-              onChange={(e) => setEditName(e.target.value)}
-              required
-            />
-            <textarea
-              className="input min-h-[64px] w-full"
-              value={editDesc}
-              onChange={(e) => setEditDesc(e.target.value)}
-              rows={3}
-            />
-            <div className="grid grid-cols-2 gap-2">
-              <label className="block">
-                <span className="text-wp-slate">Status</span>
-                <select
-                  className="input mt-0.5 w-full"
-                  value={editStatus}
-                  onChange={(e) => setEditStatus(e.target.value as DesignTicketStatus)}
-                >
-                  {(Object.keys(TICKET_STATUS_META) as DesignTicketStatus[]).map((k) => (
-                    <option key={k} value={k}>
-                      {TICKET_STATUS_META[k].label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="text-wp-slate">Assignee</span>
-                <select
-                  className="input mt-0.5 w-full"
-                  value={editAssignee}
-                  onChange={(e) => setEditAssignee(e.target.value)}
-                >
-                  <option value="">Unassigned</option>
-                  {(userOptions ?? []).map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="text-wp-slate">Product area</span>
-                <select
-                  className="input mt-0.5 w-full"
-                  value={editTeam}
-                  onChange={(e) => setEditTeam(e.target.value)}
-                >
-                  <option value="">—</option>
-                  {(teamOptions ?? []).map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="text-wp-slate">Jira key</span>
-                <input
-                  className="input mt-0.5 w-full"
-                  value={editJira}
-                  onChange={(e) => setEditJira(e.target.value)}
-                  placeholder="FAL-1105"
-                />
-              </label>
-            </div>
-            <div className="flex items-center justify-between gap-2 pt-1">
-              <button type="submit" className="btn-primary text-xs" disabled={patchPending}>
-                {patchPending ? "Saving…" : "Save"}
-              </button>
-              {canDelete && onDelete ? (
-                <button
-                  type="button"
-                  className="btn-ghost !p-1.5 text-wp-slate hover:text-wp-red"
-                  onClick={onDelete}
-                  aria-label="Delete ticket"
-                >
-                  <Trash2 size={14} />
-                </button>
+          {item.team_name ? (
+            <span className="chip text-[10px]">{item.team_name}</span>
+          ) : null}
+        </div>
+        {(item.due_date || item.is_blocked) ? (
+          <div className="mt-2 flex items-center justify-between text-xs text-wp-slate">
+            <div className="flex items-center gap-2">
+              {item.due_date ? (
+                <span className="inline-flex items-center gap-1">
+                  <Calendar size={11} />
+                  {format(new Date(`${item.due_date}T00:00:00`), "MMM d")}
+                </span>
               ) : null}
             </div>
-          </form>
+            <div className="flex items-center gap-2">
+              {item.is_blocked ? (
+                <span
+                  className="relative inline-flex size-3.5 items-center justify-center text-red-700"
+                  title={
+                    item.blocked_reason?.trim()
+                      ? `Blocked: ${item.blocked_reason.trim()}`
+                      : "Blocked"
+                  }
+                  aria-label={
+                    item.blocked_reason?.trim()
+                      ? `Blocked: ${item.blocked_reason.trim()}`
+                      : "Blocked"
+                  }
+                >
+                  <Octagon size={14} className="fill-red-600 text-red-700" />
+                  <X
+                    size={8}
+                    strokeWidth={3}
+                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white"
+                    aria-hidden
+                  />
+                </span>
+              ) : null}
+            </div>
+          </div>
         ) : null}
-      </div>
+        {(item.links ?? []).length > 0 ? (
+          <ul className="mt-1.5 space-y-0.5">
+            {item.links.map((l) => (
+              <li key={`${l.label}-${l.url}`}>
+                <a
+                  href={l.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[10px] font-medium text-wp-red hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {l.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </button>
     </article>
   );
 }

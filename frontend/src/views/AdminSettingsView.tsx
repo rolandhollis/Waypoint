@@ -2845,7 +2845,6 @@ function UsersAdmin() {
       {creating ? (
         <NewUserDialog
           isPasswordMode={isPasswordMode}
-          existingColors={(users.data ?? []).map((u) => u.color).filter((c): c is string => !!c)}
           onClose={() => setCreating(false)}
           onCreated={() => {
             qc.invalidateQueries({ queryKey: ["users"] });
@@ -3204,22 +3203,19 @@ function UnassignedUsersPanel() {
 
 function NewUserDialog({
   isPasswordMode,
-  existingColors,
   onClose,
   onCreated,
 }: {
   isPasswordMode: boolean;
-  /** Colors already used by existing users in this group — feeds the
-   *  autopicker so the default color for a new user doesn't collide
-   *  with an existing avatar. */
-  existingColors: string[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<User["role"]>("owner");
-  const [color, setColor] = useAutoColor(USER_PALETTE, existingColors);
+  const [color] = useState(
+    () => USER_PALETTE[Math.floor(Math.random() * USER_PALETTE.length)]!,
+  );
   const [capacity, setCapacity] = useState<string>("3");
   const [inviteSentTo, setInviteSentTo] = useState<string | null>(null);
 
@@ -3285,31 +3281,33 @@ function NewUserDialog({
         }}
         className="space-y-4"
       >
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block">
-            <span className="text-xs font-medium text-wp-slate">Name</span>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-              required
-              className="input mt-1 w-full"
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs font-medium text-wp-slate">Email</span>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              className="input mt-1 w-full"
-            />
-          </label>
-        </div>
+        <label className="block">
+          <span className="text-xs font-medium text-wp-slate">Email</span>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoFocus
+            required
+            placeholder="name@company.com"
+            autoComplete="off"
+            className="input mt-1 w-full"
+          />
+        </label>
 
-        <div className="grid grid-cols-3 gap-3">
+        <label className="block">
+          <span className="text-xs font-medium text-wp-slate">Name</span>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+            placeholder="Full name"
+            className="input mt-1 w-full"
+          />
+        </label>
+
+        <div className="grid grid-cols-2 gap-3">
           <label className="block">
             <span className="text-xs font-medium text-wp-slate">Role</span>
             <select
@@ -3334,27 +3332,12 @@ function NewUserDialog({
               className="input mt-1 w-full"
             />
           </label>
-          <label className="block">
-            <span className="text-xs font-medium text-wp-slate">Color</span>
-            <div className="mt-1 flex flex-wrap items-center gap-1.5">
-              {USER_PALETTE.map((c) => (
-                <button
-                  type="button"
-                  key={c}
-                  className={`h-6 w-6 rounded-full border ${color === c ? "ring-2 ring-wp-red ring-offset-1" : "border-wp-stone"}`}
-                  style={{ background: c }}
-                  onClick={() => setColor(c)}
-                  aria-label={`Pick ${c}`}
-                />
-              ))}
-            </div>
-          </label>
         </div>
 
         {isPasswordMode ? (
           <p className="rounded-md border border-wp-stone bg-wp-stone/20 px-3 py-2 text-xs text-wp-slate">
-            We'll email them a link to set their own password. No password
-            is created by the admin.
+            We'll email them a link to set their own password. Avatar color is
+            assigned automatically.
           </p>
         ) : (
           <p className="rounded-md border border-wp-stone bg-wp-stone/20 px-3 py-2 text-xs text-wp-slate">

@@ -60,7 +60,9 @@ export function AuditEventBody({
 
   if (entry.kind === "create") return <>created this item.</>;
   if (entry.kind === "archive") return <>archived this item.</>;
+  if (entry.kind === "delete") return <>deleted this item.</>;
   if (entry.kind === "restore") return <>restored this item.</>;
+  if (entry.kind === "complete") return <>marked this item completed.</>;
   if (entry.kind === "celebrate") return <>celebrated this item.</>;
 
   if (entry.kind === "move") {
@@ -149,12 +151,44 @@ export function AuditEventBody({
     return <>edited {label}.</>;
   }
 
-  if (field === "owner_id") {
+  if (field === "owner_id" || field === "assigned_to") {
     const fromName = isBlank(from) ? null : users.find((u) => u.id === from)?.name ?? String(from);
     const toName = isBlank(to) ? null : users.find((u) => u.id === to)?.name ?? String(to);
     if (fromName == null && toName != null) return <>set {label} to {strong(toName)}.</>;
     if (fromName != null && toName == null) return <>cleared {label}.</>;
     return <>changed {label} from {strong(fromName ?? "—")} to {strong(toName ?? "—")}.</>;
+  }
+
+  if (field === "team_id") {
+    const fromName = isBlank(from) ? null : teams.find((t) => t.id === from)?.name ?? String(from);
+    const toName = isBlank(to) ? null : teams.find((t) => t.id === to)?.name ?? String(to);
+    if (fromName == null && toName != null) return <>set {label} to {strong(toName)}.</>;
+    if (fromName != null && toName == null) return <>cleared {label}.</>;
+    return <>changed {label} from {strong(fromName ?? "—")} to {strong(toName ?? "—")}.</>;
+  }
+
+  if (field === "ticket_status") {
+    const statusLabel = (v: unknown) => {
+      const key = String(v ?? "");
+      const map: Record<string, string> = {
+        not: "Not started",
+        on: "On-track",
+        risk: "At Risk",
+        review: "In Review",
+        indev: "In Development",
+        done: "Completed",
+      };
+      return map[key] ?? key;
+    };
+    if (isBlank(to)) return <>cleared {label}.</>;
+    if (isBlank(from)) return <>set {label} to {strong(statusLabel(to))}.</>;
+    return <>changed {label} from {strong(statusLabel(from))} to {strong(statusLabel(to))}.</>;
+  }
+
+  if (field === "links") {
+    if (isBlank(to)) return <>cleared {label}.</>;
+    if (isBlank(from)) return <>set {label}.</>;
+    return <>updated {label}.</>;
   }
 
   if (field === "parent_id") {
@@ -267,8 +301,15 @@ export function AuditEventBody({
 
 export const FIELD_LABELS: Record<string, string> = {
   title: "title",
+  name: "name",
   description: "description",
   owner_id: "owner",
+  assigned_to: "assignee",
+  team_id: "product area",
+  ticket_status: "status",
+  jira_key: "Jira key",
+  links: "links",
+  due_date: "due date",
   teams: "teams",
   tags: "tags",
   kpis: "KPIs",
@@ -300,7 +341,9 @@ export function auditEventTitle(entry: {
   if (entry.kind === "move" || entry.action === "move") return "Lane move";
   if (entry.action === "create") return "Created";
   if (entry.action === "archive") return "Archived";
+  if (entry.action === "delete") return "Deleted";
   if (entry.action === "restore") return "Restored";
+  if (entry.action === "complete") return "Completed";
   if (entry.action === "celebrate" || entry.kind === "celebrate") return "Celebrated";
   if (entry.action === "edit" && entry.field) {
     if (entry.field.startsWith("deadline:")) return "Deadline updated";

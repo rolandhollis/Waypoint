@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 import { query, withTransaction } from "../db/pool.js";
 import { requireWrite } from "../middleware/auth.js";
@@ -20,6 +21,72 @@ type DesignItemDto = DesignItemRow & {
   team_color: string | null;
   assignee_name: string | null;
 };
+
+type DesignAuditAction = "create" | "edit" | "complete" | "delete" | "restore";
+
+const AUDITED_FIELDS = [
+  "name",
+  "description",
+  "team_id",
+  "assigned_to",
+  "ticket_status",
+  "jira_key",
+  "links",
+  "due_date",
+  "is_blocked",
+  "blocked_reason",
+] as const;
+type AuditedField = (typeof AUDITED_FIELDS)[number];
+
+async function recordDesignAudit(
+  client: PoolClient,
+  args: {
+    designItemId: string;
+    userId: string | null;
+    action: DesignAuditAction;
+    field?: string | null;
+    from?: unknown;
+    to?: unknown;
+  },
+) {
+  await client.query(
+    `INSERT INTO design_item_audit_events
+       (design_item_id, user_id, action, field, from_value, to_value)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)`,
+    [
+      args.designItemId,
+      args.userId,
+      args.action,
+      args.field ?? null,
+      args.from === undefined ? null : JSON.stringify(args.from),
+      args.to === undefined ? null : JSON.stringify(args.to),
+    ],
+  );
+}
+
+function valuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return a === b;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return String(a) === String(b);
+}
+
+function auditedSnapshot(row: DesignItemRow): Record<AuditedField, unknown> {
+  return {
+    name: row.name,
+    description: row.description,
+    team_id: row.team_id,
+    assigned_to: row.assigned_to,
+    ticket_status: row.ticket_status,
+    jira_key: row.jira_key,
+    links: normalizeLinks(row.links),
+    due_date: row.due_date ?? null,
+    is_blocked: row.is_blocked ?? false,
+    blocked_reason: row.blocked_reason ?? null,
+  };
+}
 
 const TICKET_STATUSES = ["not", "on", "risk", "review", "indev", "done"] as const;
 
@@ -50,6 +117,9 @@ function mapDto(row: DesignItemDto): DesignItemDto {
     links: normalizeLinks(row.links),
     jira_key: row.jira_key ?? null,
     ticket_status: (row.ticket_status ?? "not") as DesignTicketStatus,
+    due_date: row.due_date ?? null,
+    is_blocked: row.is_blocked ?? false,
+    blocked_reason: row.blocked_reason ?? null,
   };
 }
 
@@ -101,16 +171,6 @@ async function fetchDto(id: string): Promise<DesignItemDto | undefined> {
   return rows[0] ? mapDto(rows[0]) : undefined;
 }
 
-async function assertAssigneeInGroup(userId: string, groupId: string) {
-  const { rows } = await query<{ id: string }>(
-    `SELECT u.id FROM users u
-      JOIN user_groups ug ON ug.user_id = u.id AND ug.group_id = $2
-     WHERE u.id = $1`,
-    [userId, groupId],
-  );
-  if (!rows[0]) throw new HttpError(400, "assignee not found in this group");
-}
-
 designItemsRouter.get("/", async (req, res) => {
   const { rows } = await query<DesignItemDto>(LIST_SQL, [req.groupId!]);
   res.json(rows.map(mapDto));
@@ -124,6 +184,9 @@ const createSchema = z.object({
   ticket_status: z.enum(TICKET_STATUSES).optional(),
   jira_key: z.string().trim().max(64).nullable().optional(),
   links: z.array(linkSchema).max(20).optional(),
+  due_date: z.string().nullable().optional(),
+  is_blocked: z.boolean().optional(),
+  blocked_reason: z.string().max(500).nullable().optional(),
 });
 
 designItemsRouter.post("/", requireWrite, async (req, res) => {
@@ -165,16 +228,25 @@ designItemsRouter.post("/", requireWrite, async (req, res) => {
       ? null
       : body.jira_key?.trim() || null;
     const links = body.links ?? [];
+    const dueDate = body.due_date === undefined
+      ? null
+      : body.due_date?.trim() || null;
+    const isBlocked = body.is_blocked ?? false;
+    const blockedReason = isBlocked
+      ? (body.blocked_reason?.trim() || null)
+      : null;
 
     const { rows } = await client.query<DesignItemRow>(
       `INSERT INTO design_items (
          group_id, name, description, team_id, source,
          status, ticket_status, jira_key, links,
+         due_date, is_blocked, blocked_reason,
          position, assigned_to, created_by
        ) VALUES (
          $1, $2, $3, $4, 'Design Tab',
          'in_design', $5, $6, $7::jsonb,
-         0, $8, $9
+         $8, $9, $10,
+         0, $11, $12
        )
        RETURNING *`,
       [
@@ -185,11 +257,20 @@ designItemsRouter.post("/", requireWrite, async (req, res) => {
         ticketStatus,
         jiraKey,
         JSON.stringify(links),
+        dueDate,
+        isBlocked,
+        blockedReason,
         body.assigned_to ?? null,
         req.user!.id,
       ],
     );
-    return rows[0];
+    const created = rows[0]!;
+    await recordDesignAudit(client, {
+      designItemId: created.id,
+      userId: req.user!.id,
+      action: "create",
+    });
+    return created;
   });
 
   const dto = await fetchDto(result!.id);
@@ -212,6 +293,9 @@ const patchSchema = z.object({
   ticket_status: z.enum(TICKET_STATUSES).optional(),
   jira_key: z.string().trim().max(64).nullable().optional(),
   links: z.array(linkSchema).max(20).optional(),
+  due_date: z.string().nullable().optional(),
+  is_blocked: z.boolean().optional(),
+  blocked_reason: z.string().max(500).nullable().optional(),
 });
 
 designItemsRouter.patch("/:id", requireWrite, async (req, res) => {
@@ -219,85 +303,151 @@ designItemsRouter.patch("/:id", requireWrite, async (req, res) => {
   const groupId = req.groupId!;
   const itemId = String(req.params.id);
 
-  const { rows: existingRows } = await query<{ assigned_to: string | null }>(
-    `SELECT assigned_to FROM design_items
-      WHERE id = $1 AND group_id = $2 AND status IN ('next_up', 'in_design')`,
-    [itemId, groupId],
-  );
-  if (!existingRows[0]) throw new HttpError(404, "design item not found or not editable");
-  const previousAssignee = existingRows[0].assigned_to;
-
-  if (body.team_id) {
-    const { rows: teamRows } = await query<{ id: string }>(
-      `SELECT id FROM teams WHERE id = $1 AND group_id = $2`,
-      [body.team_id, groupId],
+  const updated = await withTransaction(async (client) => {
+    const { rows: existingRows } = await client.query<DesignItemRow>(
+      `SELECT * FROM design_items
+        WHERE id = $1 AND group_id = $2 AND status IN ('next_up', 'in_design')
+        FOR UPDATE`,
+      [itemId, groupId],
     );
-    if (!teamRows[0]) throw new HttpError(400, "team not found in this group");
-  }
-  if (body.assigned_to) {
-    await assertAssigneeInGroup(body.assigned_to, groupId);
-  }
+    if (!existingRows[0]) throw new HttpError(404, "design item not found or not editable");
+    const existing = existingRows[0];
+    const previousAssignee = existing.assigned_to;
 
-  const fields: string[] = [];
-  const values: unknown[] = [];
-  for (const [k, v] of Object.entries(body)) {
-    if (v === undefined) continue;
-    if (k === "name" && typeof v === "string") {
-      const trimmed = v.trim();
-      if (!trimmed) throw new HttpError(400, "name is required");
-      values.push(trimmed);
-      fields.push(`name = $${values.length}`);
-      continue;
+    if (body.team_id) {
+      const { rows: teamRows } = await client.query<{ id: string }>(
+        `SELECT id FROM teams WHERE id = $1 AND group_id = $2`,
+        [body.team_id, groupId],
+      );
+      if (!teamRows[0]) throw new HttpError(400, "team not found in this group");
     }
-    if (k === "description" && typeof v === "string") {
-      values.push(v.trim());
-      fields.push(`description = $${values.length}`);
-      continue;
+    if (body.assigned_to) {
+      const { rows: userRows } = await client.query<{ id: string }>(
+        `SELECT u.id FROM users u
+          JOIN user_groups ug ON ug.user_id = u.id AND ug.group_id = $2
+         WHERE u.id = $1`,
+        [body.assigned_to, groupId],
+      );
+      if (!userRows[0]) throw new HttpError(400, "assignee not found in this group");
     }
-    if (k === "jira_key") {
-      const trimmed = typeof v === "string" ? v.trim() : "";
-      values.push(trimmed || null);
-      fields.push(`jira_key = $${values.length}`);
-      continue;
-    }
-    if (k === "links") {
-      values.push(JSON.stringify(v));
-      fields.push(`links = $${values.length}::jsonb`);
-      continue;
-    }
-    values.push(v);
-    fields.push(`${k} = $${values.length}`);
-  }
 
-  if (!fields.length) {
-    const dto = await fetchDto(itemId);
-    if (!dto || dto.group_id !== groupId) throw new HttpError(404, "design item not found");
-    res.json(dto);
-    return;
-  }
+    const fields: string[] = [];
+    const values: unknown[] = [];
+    const nextValues: Partial<Record<AuditedField, unknown>> = {};
 
-  values.push(itemId, groupId);
-  const { rows: updated } = await query<DesignItemRow>(
-    `UPDATE design_items
-        SET ${fields.join(", ")}, updated_at = NOW()
-      WHERE id = $${values.length - 1}
-        AND group_id = $${values.length}
-        AND status IN ('next_up', 'in_design')
-      RETURNING *`,
-    values,
-  );
-  if (!updated[0]) throw new HttpError(404, "design item not found or not editable");
+    for (const [k, v] of Object.entries(body)) {
+      if (v === undefined) continue;
+      if (k === "name" && typeof v === "string") {
+        const trimmed = v.trim();
+        if (!trimmed) throw new HttpError(400, "name is required");
+        values.push(trimmed);
+        fields.push(`name = $${values.length}`);
+        nextValues.name = trimmed;
+        continue;
+      }
+      if (k === "description" && typeof v === "string") {
+        const trimmed = v.trim();
+        values.push(trimmed);
+        fields.push(`description = $${values.length}`);
+        nextValues.description = trimmed;
+        continue;
+      }
+      if (k === "jira_key") {
+        const trimmed = typeof v === "string" ? v.trim() : "";
+        const normalized = trimmed || null;
+        values.push(normalized);
+        fields.push(`jira_key = $${values.length}`);
+        nextValues.jira_key = normalized;
+        continue;
+      }
+      if (k === "due_date") {
+        const normalized =
+          typeof v === "string" ? (v.trim() || null) : v === null ? null : null;
+        values.push(normalized);
+        fields.push(`due_date = $${values.length}`);
+        nextValues.due_date = normalized;
+        continue;
+      }
+      if (k === "is_blocked") {
+        const next = Boolean(v);
+        values.push(next);
+        fields.push(`is_blocked = $${values.length}`);
+        nextValues.is_blocked = next;
+        // Clearing the flag also clears the reason (same as product items).
+        if (!next && body.blocked_reason === undefined) {
+          values.push(null);
+          fields.push(`blocked_reason = $${values.length}`);
+          nextValues.blocked_reason = null;
+        }
+        continue;
+      }
+      if (k === "blocked_reason") {
+        const normalized =
+          typeof v === "string" ? (v.trim() || null) : v === null ? null : null;
+        values.push(normalized);
+        fields.push(`blocked_reason = $${values.length}`);
+        nextValues.blocked_reason = normalized;
+        continue;
+      }
+      if (k === "links") {
+        const normalized = normalizeLinks(v);
+        values.push(JSON.stringify(normalized));
+        fields.push(`links = $${values.length}::jsonb`);
+        nextValues.links = normalized;
+        continue;
+      }
+      values.push(v);
+      fields.push(`${k} = $${values.length}`);
+      if ((AUDITED_FIELDS as readonly string[]).includes(k)) {
+        nextValues[k as AuditedField] = v;
+      }
+    }
 
-  const dto = await fetchDto(updated[0].id);
-  const newAssignee = updated[0].assigned_to;
+    if (!fields.length) {
+      return { row: existing, previousAssignee, changed: false as const };
+    }
+
+    values.push(itemId, groupId);
+    const { rows } = await client.query<DesignItemRow>(
+      `UPDATE design_items
+          SET ${fields.join(", ")}, updated_at = NOW()
+        WHERE id = $${values.length - 1}
+          AND group_id = $${values.length}
+          AND status IN ('next_up', 'in_design')
+        RETURNING *`,
+      values,
+    );
+    if (!rows[0]) throw new HttpError(404, "design item not found or not editable");
+
+    const before = auditedSnapshot(existing);
+    for (const field of AUDITED_FIELDS) {
+      if (!(field in nextValues)) continue;
+      const from = before[field];
+      const to = nextValues[field];
+      if (valuesEqual(from, to)) continue;
+      await recordDesignAudit(client, {
+        designItemId: itemId,
+        userId: req.user!.id,
+        action: "edit",
+        field,
+        from,
+        to,
+      });
+    }
+
+    return { row: rows[0], previousAssignee, changed: true as const };
+  });
+
+  const dto = await fetchDto(updated.row.id);
+  const newAssignee = updated.row.assigned_to;
   if (
     body.assigned_to !== undefined &&
     newAssignee &&
-    newAssignee !== previousAssignee &&
+    newAssignee !== updated.previousAssignee &&
     newAssignee !== req.user!.id
   ) {
     fireDesignAssignmentEmail({
-      designItemId: updated[0].id,
+      designItemId: updated.row.id,
       assigneeUserId: newAssignee,
       assignerUserId: req.user!.id,
       groupId,
@@ -375,13 +525,10 @@ designItemsRouter.post("/board-layout", requireWrite, async (req, res) => {
   const groupId = req.groupId!;
 
   await withTransaction(async (client) => {
-    const { rows: existing } = await client.query<{
-      id: string;
-      status: string;
-      assigned_to: string | null;
-    }>(
-      `SELECT id, status, assigned_to FROM design_items
-        WHERE group_id = $1 AND status IN ('next_up', 'in_design', 'completed')`,
+    const { rows: existing } = await client.query<DesignItemRow>(
+      `SELECT * FROM design_items
+        WHERE group_id = $1 AND status IN ('next_up', 'in_design', 'completed')
+        FOR UPDATE`,
       [groupId],
     );
     const byId = new Map(existing.map((r) => [r.id, r]));
@@ -415,6 +562,7 @@ designItemsRouter.post("/board-layout", requireWrite, async (req, res) => {
         const id = col.item_ids[i]!;
         const prev = byId.get(id)!;
         const nextAssignee = col.assigned_to;
+        const wasCompleted = prev.status === "completed";
         await client.query(
           `UPDATE design_items
               SET status = 'in_design',
@@ -429,6 +577,35 @@ designItemsRouter.post("/board-layout", requireWrite, async (req, res) => {
             WHERE id = $4 AND group_id = $5`,
           [nextAssignee, i, prev.status, id, groupId],
         );
+
+        if (wasCompleted) {
+          await recordDesignAudit(client, {
+            designItemId: id,
+            userId: req.user!.id,
+            action: "restore",
+          });
+          if (prev.ticket_status === "done") {
+            await recordDesignAudit(client, {
+              designItemId: id,
+              userId: req.user!.id,
+              action: "edit",
+              field: "ticket_status",
+              from: "done",
+              to: "on",
+            });
+          }
+        }
+        if (!valuesEqual(prev.assigned_to, nextAssignee)) {
+          await recordDesignAudit(client, {
+            designItemId: id,
+            userId: req.user!.id,
+            action: "edit",
+            field: "assigned_to",
+            from: prev.assigned_to,
+            to: nextAssignee,
+          });
+        }
+
         if (
           nextAssignee &&
           nextAssignee !== prev.assigned_to &&
@@ -447,6 +624,8 @@ designItemsRouter.post("/board-layout", requireWrite, async (req, res) => {
     // Completed column — keep assignee, mark done
     for (let i = 0; i < body.completed_ids.length; i++) {
       const id = body.completed_ids[i]!;
+      const prev = byId.get(id)!;
+      const alreadyCompleted = prev.status === "completed";
       await client.query(
         `UPDATE design_items
             SET status = 'completed',
@@ -457,6 +636,23 @@ designItemsRouter.post("/board-layout", requireWrite, async (req, res) => {
           WHERE id = $2 AND group_id = $3`,
         [i, id, groupId],
       );
+      if (!alreadyCompleted) {
+        await recordDesignAudit(client, {
+          designItemId: id,
+          userId: req.user!.id,
+          action: "complete",
+        });
+        if (prev.ticket_status !== "done") {
+          await recordDesignAudit(client, {
+            designItemId: id,
+            userId: req.user!.id,
+            action: "edit",
+            field: "ticket_status",
+            from: prev.ticket_status,
+            to: "done",
+          });
+        }
+      }
     }
   });
 
@@ -466,41 +662,90 @@ designItemsRouter.post("/board-layout", requireWrite, async (req, res) => {
 
 designItemsRouter.post("/:id/complete", requireWrite, async (req, res) => {
   const groupId = req.groupId!;
-  const { rows: updated } = await query<DesignItemRow>(
-    `UPDATE design_items
-        SET status = 'completed',
-            completed_at = NOW(),
-            ticket_status = 'done',
-            updated_at = NOW()
-      WHERE id = $1
-        AND group_id = $2
-        AND status IN ('next_up', 'in_design')
-      RETURNING *`,
-    [req.params.id, groupId],
-  );
-  if (!updated[0]) {
-    throw new HttpError(404, "design item not found or not active");
-  }
+  const updated = await withTransaction(async (client) => {
+    const { rows } = await client.query<DesignItemRow>(
+      `UPDATE design_items
+          SET status = 'completed',
+              completed_at = NOW(),
+              ticket_status = 'done',
+              updated_at = NOW()
+        WHERE id = $1
+          AND group_id = $2
+          AND status IN ('next_up', 'in_design')
+        RETURNING *`,
+      [req.params.id, groupId],
+    );
+    if (!rows[0]) {
+      throw new HttpError(404, "design item not found or not active");
+    }
+    await recordDesignAudit(client, {
+      designItemId: rows[0].id,
+      userId: req.user!.id,
+      action: "complete",
+    });
+    return rows[0];
+  });
 
-  const dto = await fetchDto(updated[0].id);
+  const dto = await fetchDto(updated.id);
   res.json(dto);
 });
 
 designItemsRouter.delete("/:id", requireWrite, async (req, res) => {
   const groupId = req.groupId!;
-  const { rows: updated } = await query<DesignItemRow>(
-    `UPDATE design_items
-        SET status = 'deleted',
-            deleted_at = NOW(),
-            updated_at = NOW()
-      WHERE id = $1
-        AND group_id = $2
-        AND status IN ('next_up', 'in_design', 'completed')
-      RETURNING *`,
-    [req.params.id, groupId],
+  const deletedId = await withTransaction(async (client) => {
+    const { rows } = await client.query<DesignItemRow>(
+      `UPDATE design_items
+          SET status = 'deleted',
+              deleted_at = NOW(),
+              updated_at = NOW()
+        WHERE id = $1
+          AND group_id = $2
+          AND status IN ('next_up', 'in_design', 'completed')
+        RETURNING *`,
+      [req.params.id, groupId],
+    );
+    if (!rows[0]) {
+      throw new HttpError(404, "design item not found or already archived");
+    }
+    await recordDesignAudit(client, {
+      designItemId: rows[0].id,
+      userId: req.user!.id,
+      action: "delete",
+    });
+    return rows[0].id;
+  });
+  res.json({ deleted: deletedId });
+});
+
+/**
+ * GET /design-items/:id/history — chronological audit trail for one ticket.
+ */
+designItemsRouter.get("/:id/history", async (req, res) => {
+  const groupId = req.groupId!;
+  const itemId = String(req.params.id);
+  const { rows: ownership } = await query<{ id: string }>(
+    `SELECT id FROM design_items WHERE id = $1 AND group_id = $2`,
+    [itemId, groupId],
   );
-  if (!updated[0]) {
-    throw new HttpError(404, "design item not found or already archived");
-  }
-  res.json({ deleted: updated[0].id });
+  if (!ownership[0]) throw new HttpError(404, "design item not found");
+
+  const { rows } = await query<{
+    id: string;
+    design_item_id: string;
+    user_id: string | null;
+    timestamp: Date;
+    kind: string;
+    field: string | null;
+    from_value: unknown;
+    to_value: unknown;
+  }>(
+    `SELECT id, design_item_id, user_id, "timestamp",
+            action AS kind,
+            field, from_value, to_value
+       FROM design_item_audit_events
+      WHERE design_item_id = $1
+      ORDER BY "timestamp" ASC`,
+    [itemId],
+  );
+  res.json(rows);
 });

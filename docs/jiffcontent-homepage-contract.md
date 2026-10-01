@@ -75,6 +75,12 @@ Still placement-driven (not the homepage page):
 - `navbar_component` — `brand.navbar` to show app nav
 - `navbar_enabled`, `navbar_show_group_switcher`, `navbar_show_user_switcher`
 - `navbar_announcement`
+- `navbar_logo` (**image**) — navbar brand mark; falls back to `/brand/icon-light-transparent.png`
+- `favicon` (**image**) — primary browser tab icon (replaces static `/favicon.*` when published)
+- `favicon_dark` (**image**, optional) — dark-mode tab icon (`prefers-color-scheme: dark`)
+- `apple_touch_icon` (**image**, optional) — iOS home-screen icon; falls back to `favicon` when set
+
+Favicons stay on the static `index.html` assets until a successful published fetch provides at least one of the image labels above.
 
 ## Notes
 

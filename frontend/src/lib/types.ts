@@ -462,7 +462,7 @@ export type ProjectComment = {
   updated_at: string;
 };
 
-export type AuditAction = "create" | "edit" | "move" | "archive" | "restore";
+export type AuditAction = "create" | "edit" | "move" | "archive" | "restore" | "complete" | "delete" | "celebrate";
 
 /**
  * Row returned by GET /projects/:id/history. Union of the legacy
@@ -480,6 +480,18 @@ export type ProjectTimelineEntry = {
   kind: AuditAction;
   from_swim_lane_id: string | null;
   to_swim_lane_id: string | null;
+  field: string | null;
+  from_value: unknown;
+  to_value: unknown;
+};
+
+/** Chronological audit row for a Design Tickets card. */
+export type DesignTimelineEntry = {
+  id: string;
+  design_item_id: string;
+  user_id: string | null;
+  timestamp: string;
+  kind: AuditAction | string;
   field: string | null;
   from_value: unknown;
   to_value: unknown;
@@ -845,6 +857,11 @@ export type DesignItem = {
   ticket_status: DesignTicketStatus;
   jira_key: string | null;
   links: DesignItemLink[];
+  /** Calendar due date (YYYY-MM-DD). Null when unset. */
+  due_date: string | null;
+  /** PM-controlled blocked marker; reason shown on hover. */
+  is_blocked: boolean;
+  blocked_reason: string | null;
   position: number;
   assigned_to: string | null;
   created_by: string;

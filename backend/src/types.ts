@@ -640,6 +640,11 @@ export type DesignItemRow = {
   ticket_status: DesignTicketStatus;
   jira_key: string | null;
   links: DesignItemLink[];
+  /** Calendar due date (YYYY-MM-DD). Null when unset. */
+  due_date: string | null;
+  /** PM-controlled blocked marker; reason shown on hover. */
+  is_blocked: boolean;
+  blocked_reason: string | null;
   position: number;
   assigned_to: string | null;
   created_by: string;
