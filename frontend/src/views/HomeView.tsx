@@ -1,5 +1,4 @@
 import { useMemo, type ReactNode } from "react";
-import { ViewPageHeader } from "../components/ViewPageHeader";
 import { AbHomeActivityChartSlot } from "../components/AbHomeActivityChart";
 import { AbHomeHero } from "../components/AbHomeHero";
 import { BrandProjectsOverview } from "../components/BrandProjectsOverview";
@@ -18,11 +17,8 @@ import {
 
 function HomeShell({ children, busy }: { children?: ReactNode; busy?: boolean }) {
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <ViewPageHeader tabKey="home" />
-      <div className="relative flex-1 overflow-auto" aria-busy={busy || undefined}>
-        {children}
-      </div>
+    <div className="relative h-full overflow-auto" aria-busy={busy || undefined}>
+      {children}
     </div>
   );
 }
