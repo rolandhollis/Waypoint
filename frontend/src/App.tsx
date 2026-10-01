@@ -329,13 +329,11 @@ function TopBar() {
             <img
               src={logoSrc}
               alt={logoAlt}
-              width={28}
               height={28}
-              className="h-7 w-7 object-contain"
+              className="h-7 w-auto max-w-[10rem] object-contain object-left"
               data-jiff-label="navbar_logo"
               data-jiff-type="image"
             />
-            <span className="text-lg font-bold text-wp-red">{appName}</span>
           </Link>
           {announcement ? (
             <span
