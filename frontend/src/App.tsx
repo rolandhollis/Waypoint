@@ -317,12 +317,14 @@ function TopBar() {
   const announcement = rawTextByLabel(cmsItems, "navbar_announcement");
   const logo = imageByLabel(cmsItems, "navbar_logo");
   const logoSrc = logo?.url || DEFAULT_NAVBAR_LOGO;
-  const logoAlt = logo?.alt && logo.alt !== "Image" ? logo.alt : "";
+  const logoAlt = logo?.alt?.trim() && logo.alt !== "Image"
+    ? logo.alt.trim()
+    : appName;
 
   return (
     <header className="flex items-center justify-between border-b border-wp-stone bg-white px-5 py-2.5">
       <div className="flex items-center gap-6">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" data-jiff-page="shell">
           <Link to="/" className="flex items-center gap-2 hover:opacity-90">
             <img
               src={logoSrc}
@@ -331,11 +333,16 @@ function TopBar() {
               height={28}
               className="h-7 w-7 object-contain"
               data-jiff-label="navbar_logo"
+              data-jiff-type="image"
             />
             <span className="text-lg font-bold text-wp-red">{appName}</span>
           </Link>
           {announcement ? (
-            <span className="rounded-md border border-wp-stone bg-wp-stone/30 px-2 py-0.5 text-xs text-wp-slate">
+            <span
+              className="rounded-md border border-wp-stone bg-wp-stone/30 px-2 py-0.5 text-xs text-wp-slate"
+              data-jiff-label="navbar_announcement"
+              data-jiff-type="raw_text"
+            >
               {announcement}
             </span>
           ) : null}
