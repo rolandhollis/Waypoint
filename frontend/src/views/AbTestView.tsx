@@ -60,7 +60,13 @@ const boardCollision: CollisionDetection = (args) => {
     );
     return closestCenter({ ...args, droppableContainers: laneContainers });
   }
-  return closestCorners(args);
+  // Prefer ticket / column droppables over the outer lane sortable
+  // wrapper so cross-column drops land on the target stage.
+  const ticketContainers = args.droppableContainers.filter((c) => {
+    const id = String(c.id);
+    return !id.startsWith("lane:");
+  });
+  return closestCorners({ ...args, droppableContainers: ticketContainers });
 };
 
 function partitionBoard(items: AbTestItem[], lanes: AbTestBoardLane[]) {
@@ -376,15 +382,15 @@ export function AbTestView() {
       qc.setQueryData(["abTestItems"], snapshot);
       return;
     }
-    if (parseLaneSortableId(String(over.id))) {
-      qc.setQueryData(["abTestItems"], snapshot);
-      return;
-    }
 
     const current = qc.getQueryData<AbTestItem[]>(["abTestItems"]) ?? snapshot;
     const { byLane } = partitionBoard(current, lanes);
     const activeItemId = String(active.id);
     const overId = String(over.id);
+    const overLaneId =
+      (over.data.current as { laneId?: string } | undefined)?.laneId ??
+      parseLaneSortableId(overId) ??
+      (overId.startsWith("col:") ? overId.slice("col:".length) : null);
 
     let fromLane: string | null = null;
     let fromIndex = -1;
@@ -404,19 +410,20 @@ export function AbTestView() {
 
     let toLane: string | null = null;
     let toIndex = 0;
-    if (overId.startsWith("col:")) {
-      toLane = overId.slice("col:".length);
-      toIndex = (byLane.get(toLane) ?? []).length;
-    } else {
-      for (const lane of lanes) {
-        const list = byLane.get(lane.id) ?? [];
-        const idx = list.findIndex((i) => i.id === overId);
-        if (idx >= 0) {
-          toLane = lane.id;
-          toIndex = idx;
-          break;
-        }
+    // Prefer dropping onto another ticket (insert at that index).
+    for (const lane of lanes) {
+      const list = byLane.get(lane.id) ?? [];
+      const idx = list.findIndex((i) => i.id === overId);
+      if (idx >= 0) {
+        toLane = lane.id;
+        toIndex = idx;
+        break;
       }
+    }
+    // Empty column / column chrome / lane sortable wrapper → append.
+    if (!toLane && overLaneId && byLane.has(overLaneId)) {
+      toLane = overLaneId;
+      toIndex = (byLane.get(toLane) ?? []).length;
     }
     if (!toLane) {
       qc.setQueryData(["abTestItems"], snapshot);
@@ -926,7 +933,7 @@ function SortableTicket({
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: item.id,
-    data: { type: "ticket" },
+    data: { type: "ticket", laneId: item.lane_id },
     disabled: !canWrite,
   });
   const style = {
