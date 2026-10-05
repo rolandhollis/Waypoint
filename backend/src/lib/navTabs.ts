@@ -9,6 +9,7 @@ export const TAB_LABEL_KEYS = [
   "phases",
   "simple_features",
   "design",
+  "ab_testing",
   "feature_groups",
   "game",
   "admin",

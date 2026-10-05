@@ -656,6 +656,37 @@ export type DesignItemRow = {
   simple_feature_id: string | null;
 };
 
+export type AbTestBoardLaneRow = {
+  id: string;
+  group_id: string;
+  name: string;
+  order: number;
+  is_terminal: boolean;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type AbTestItemRow = {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string;
+  team_id: string | null;
+  lane_id: string;
+  jira_key: string | null;
+  links: DesignItemLink[];
+  due_date: string | null;
+  is_blocked: boolean;
+  blocked_reason: string | null;
+  position: number;
+  assigned_to: string | null;
+  created_by: string;
+  created_at: Date;
+  updated_at: Date;
+  completed_at: Date | null;
+  deleted_at: Date | null;
+};
+
 export type PredictionQuestionRow = {
   id: string;
   group_id: string;

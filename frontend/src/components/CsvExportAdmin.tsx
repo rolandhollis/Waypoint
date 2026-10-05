@@ -2,6 +2,12 @@ import { useMemo, useState } from "react";
 import { Download, ListChecks, Search } from "lucide-react";
 import { useKpis, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
 import { defaultExportFilename, downloadCsv, projectsToCsv } from "../lib/csvExport";
+import {
+  defaultJpdExportFilename,
+  defaultJpdSampleFilename,
+  jpdSampleCsv,
+  projectsToJpdCsv,
+} from "../lib/jpdCsvExport";
 import type { Project } from "../lib/types";
 
 /**
@@ -10,14 +16,17 @@ import type { Project } from "../lib/types";
  *  1. Idle — a single button (`Load items to export`) so the tab
  *     lands quietly instead of dumping the full workspace inventory.
  *  2. Review — every project rendered as a checkable card; typing
- *     in the search box filters by title/description. The `Export N
- *     items` button generates a CSV of only the currently-checked
- *     rows and triggers a browser download.
+ *     in the search box filters by title/description. Export buttons
+ *     generate a CSV of only the currently-checked rows.
  *
- * All processing is client-side; no round-trip to the backend. The
- * column set is a superset of the importer's, so an export can be
- * re-imported without edits — useful for "export → tweak in Excel
- * → re-import" bulk edits.
+ * Two download flavours:
+ *   * Waypoint CSV — round-trips through this app's importer.
+ *   * Jira Product Discovery CSV — Summary / Description / Issue Type
+ *     (Idea) plus optional fields for the SHOP Polaris importer.
+ *
+ * Nothing is downloaded until you pick rows and click export. Use
+ * "Select 5 for test" or "Download dummy JPD sample" before a
+ * full-workspace dump.
  */
 
 type Phase =
@@ -63,10 +72,8 @@ export function CsvExportAdmin() {
   );
 
   function beginReview() {
-    // Default to every currently-loaded item checked, matching the
-    // importer's "checked by default" convention.
-    const checked = new Set<string>(allItems.map((p) => p.id));
-    setPhase({ kind: "reviewing", checked });
+    // Start with nothing checked so a full-database dump is explicit.
+    setPhase({ kind: "reviewing", checked: new Set() });
     setSearch("");
   }
 
@@ -93,9 +100,13 @@ export function CsvExportAdmin() {
     });
   }
 
+  function selectedProjects(): Project[] {
+    if (phase.kind !== "reviewing") return [];
+    return allItems.filter((p) => phase.checked.has(p.id));
+  }
+
   function exportCsv() {
-    if (phase.kind !== "reviewing") return;
-    const selected = allItems.filter((p) => phase.checked.has(p.id));
+    const selected = selectedProjects();
     if (selected.length === 0) return;
     const csv = projectsToCsv(selected, {
       users: users.data ?? [],
@@ -106,29 +117,60 @@ export function CsvExportAdmin() {
     downloadCsv(defaultExportFilename(), csv);
   }
 
+  function exportJpdCsv() {
+    const selected = selectedProjects();
+    if (selected.length === 0) return;
+    const csv = projectsToJpdCsv(selected, {
+      users: users.data ?? [],
+      teams: teams.data ?? [],
+      kpis: kpis.data ?? [],
+      lanes: lanes.data ?? [],
+      allProjects: allItems,
+    });
+    downloadCsv(defaultJpdExportFilename(), csv);
+  }
+
+  function exportJpdSample() {
+    downloadCsv(defaultJpdSampleFilename(), jpdSampleCsv());
+  }
+
   return (
     <section className="card-surface p-4">
       <h2 className="text-base font-semibold">Export CSV</h2>
       <p className="mt-1 text-xs text-wp-slate">
-        Download a CSV snapshot of the current workspace. Columns are a superset of the
-        importer's, so exports round-trip back through Import CSV without edits.
+        Download a CSV of selected items. Waypoint CSV round-trips here; Jira Product
+        Discovery CSV is for SHOP ideas (Summary → idea title, Issue Type = Idea,
+        Brand = RMN, SHOP Pod → Pod select field, Project target = end date).
+        On import: map SHOP Pod → Pod, never map anything to Jira Team.
+        Start with the dummy sample or a handful of real rows — do not select all
+        until the JPD mapping looks right.
       </p>
 
       {phase.kind === "idle" ? (
         <div className="mt-4 flex flex-col items-start gap-2">
-          <button
-            type="button"
-            className="btn-primary inline-flex items-center gap-2"
-            onClick={beginReview}
-            disabled={projects.isLoading || allItems.length === 0}
-          >
-            <ListChecks size={14} />
-            Load items to export
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-primary inline-flex items-center gap-2"
+              onClick={beginReview}
+              disabled={projects.isLoading || allItems.length === 0}
+            >
+              <ListChecks size={14} />
+              Load items to export
+            </button>
+            <button
+              type="button"
+              className="btn-ghost inline-flex items-center gap-2 text-xs"
+              onClick={exportJpdSample}
+            >
+              <Download size={14} />
+              Download dummy JPD sample
+            </button>
+          </div>
           <div className="text-xs text-wp-slate">
             {projects.isLoading
               ? "Loading projects…"
-              : `${allItems.length} item${allItems.length === 1 ? "" : "s"} available.`}
+              : `${allItems.length} item${allItems.length === 1 ? "" : "s"} available. Dummy sample is 3 fake ideas and does not read the database.`}
           </div>
         </div>
       ) : null}
@@ -144,6 +186,13 @@ export function CsvExportAdmin() {
           onToggle={toggleRow}
           onSetAll={setAll}
           onExport={exportCsv}
+          onExportJpd={exportJpdCsv}
+          onSelectTestFive={() => {
+            setPhase((prev) => {
+              if (prev.kind !== "reviewing") return prev;
+              return { ...prev, checked: new Set(allItems.slice(0, 5).map((p) => p.id)) };
+            });
+          }}
           onCancel={() => setPhase({ kind: "idle" })}
         />
       ) : null}
@@ -161,9 +210,14 @@ function ReviewList(props: {
   onToggle: (id: string) => void;
   onSetAll: (scope: "all" | "filtered", checked: boolean) => void;
   onExport: () => void;
+  onExportJpd: () => void;
+  onSelectTestFive: () => void;
   onCancel: () => void;
 }) {
-  const { checked, allItems, filteredItems, laneNameById, search, onSearch, onToggle, onSetAll, onExport, onCancel } = props;
+  const {
+    checked, allItems, filteredItems, laneNameById, search, onSearch, onToggle,
+    onSetAll, onExport, onExportJpd, onSelectTestFive, onCancel,
+  } = props;
   const total = allItems.length;
   const filteredCount = filteredItems.length;
   const checkedCount = checked.size;
@@ -199,6 +253,14 @@ function ReviewList(props: {
               <span aria-hidden className="text-wp-stone">|</span>
             </>
           ) : null}
+          <button
+            type="button"
+            className="text-xs text-wp-ink underline decoration-dotted underline-offset-2"
+            onClick={onSelectTestFive}
+          >
+            Select 5 for test
+          </button>
+          <span aria-hidden className="text-wp-stone">|</span>
           <button
             type="button"
             className="text-xs text-wp-ink underline decoration-dotted underline-offset-2"
@@ -277,15 +339,26 @@ function ReviewList(props: {
         <button type="button" className="btn-ghost text-xs" onClick={onCancel}>
           Cancel
         </button>
-        <button
-          type="button"
-          className="btn-primary inline-flex items-center gap-2"
-          onClick={onExport}
-          disabled={checkedCount === 0}
-        >
-          <Download size={14} />
-          {`Export ${checkedCount} ${checkedCount === 1 ? "item" : "items"}`}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn-ghost inline-flex items-center gap-2 text-xs"
+            onClick={onExport}
+            disabled={checkedCount === 0}
+          >
+            <Download size={14} />
+            {`Waypoint CSV (${checkedCount})`}
+          </button>
+          <button
+            type="button"
+            className="btn-primary inline-flex items-center gap-2"
+            onClick={onExportJpd}
+            disabled={checkedCount === 0}
+          >
+            <Download size={14} />
+            {`Jira Product Discovery CSV (${checkedCount})`}
+          </button>
+        </div>
       </div>
     </div>
   );

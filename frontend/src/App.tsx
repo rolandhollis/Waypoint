@@ -15,6 +15,7 @@ import { AdminSettingsView } from "./views/AdminSettingsView";
 import { PhasesView } from "./views/PhasesView";
 import { SimpleFeaturesView } from "./views/SimpleFeaturesView";
 import { DesignView } from "./views/DesignView";
+import { AbTestView } from "./views/AbTestView";
 import { FeatureGroupsView } from "./views/FeatureGroupsView";
 import { FeatureGroupDetailView } from "./views/FeatureGroupDetailView";
 import { GameView } from "./views/GameView";
@@ -200,6 +201,7 @@ export function App() {
           <Route path="/phases" element={<PhasesView />} />
           <Route path="/simple-features" element={<SimpleFeaturesView />} />
           <Route path="/design" element={<DesignView />} />
+          <Route path="/ab-testing" element={<AbTestView />} />
           <Route path="/feature-groups" element={<FeatureGroupsView />} />
           <Route path="/feature-groups/:groupId" element={<FeatureGroupDetailView />} />
           <Route path="/game" element={<GameView />} />

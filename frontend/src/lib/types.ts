@@ -890,6 +890,54 @@ export type DesignBoardLane = {
   user_email: string;
 };
 
+export type AbTestBoardLane = {
+  id: string;
+  group_id: string;
+  name: string;
+  order: number;
+  is_terminal: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AbTestItem = {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string;
+  team_id: string | null;
+  lane_id: string;
+  lane_name: string;
+  lane_is_terminal: boolean;
+  jira_key: string | null;
+  links: DesignItemLink[];
+  due_date: string | null;
+  is_blocked: boolean;
+  blocked_reason: string | null;
+  position: number;
+  assigned_to: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  deleted_at: string | null;
+  creator_name: string;
+  team_name: string | null;
+  team_color: string | null;
+  assignee_name: string | null;
+};
+
+export type AbTestTimelineEntry = {
+  id: string;
+  ab_test_item_id: string;
+  user_id: string | null;
+  timestamp: string;
+  kind: AuditAction | string;
+  field: string | null;
+  from_value: unknown;
+  to_value: unknown;
+};
+
 export type PredictionQuestion = {
   id: string;
   group_id: string;

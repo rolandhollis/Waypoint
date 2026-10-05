@@ -13,6 +13,7 @@ export const TAB_LABEL_KEYS = [
   "phases",
   "simple_features",
   "design",
+  "ab_testing",
   "feature_groups",
   "game",
   "admin",
@@ -31,6 +32,7 @@ export const DEFAULT_TAB_LABELS: Record<TabLabelKey, string> = {
   phases: "Phases",
   simple_features: "Simple Features",
   design: "Design Tickets",
+  ab_testing: "A/B Testing",
   feature_groups: "Feature Groups",
   game: "Game",
   admin: "Admin",
@@ -50,6 +52,8 @@ export const TAB_PAGE_DESCRIPTIONS: Partial<Record<TabLabelKey, string>> = {
     "Small initiatives under 16 hours of work that are not tracked on the roadmap.",
   design:
     "Who is designing what — person columns, ticket status, and a shared Unassigned / Completed pool.",
+  ab_testing:
+    "Experiment pipeline — named swim lanes you can add, rename, reorder, and delete. Assignee stays on the card.",
   feature_groups:
     "Rank proposed project features with stakeholders — group lists and priority tiers.",
   game: "Daily sports prediction — vote yes or no before 5pm Central. Expect mild irreverence.",
@@ -70,13 +74,20 @@ export const TAB_ROUTES: Record<TabLabelKey, string> = {
   phases: "/phases",
   simple_features: "/simple-features",
   design: "/design",
+  ab_testing: "/ab-testing",
   feature_groups: "/feature-groups",
   game: "/game",
   admin: "/admin",
 };
 
 /** Always-visible primary nav tabs. Home (`/`) is brand-icon only, not a tab. */
-export const PRIMARY_NAV_KEYS: TabLabelKey[] = ["board", "roadmap", "status_report", "design"];
+export const PRIMARY_NAV_KEYS: TabLabelKey[] = [
+  "board",
+  "roadmap",
+  "status_report",
+  "design",
+  "ab_testing",
+];
 
 
 export type NavDropdownSection = {

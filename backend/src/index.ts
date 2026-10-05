@@ -34,6 +34,8 @@ import { digestRecipientsRouter } from "./routes/digestRecipients.js";
 import { auditRouter } from "./routes/audit.js";
 import { designItemsRouter } from "./routes/designItems.js";
 import { designBoardLanesRouter } from "./routes/designBoardLanes.js";
+import { abTestItemsRouter } from "./routes/abTestItems.js";
+import { abTestBoardLanesRouter } from "./routes/abTestBoardLanes.js";
 import { simpleFeaturesRouter } from "./routes/simpleFeatures.js";
 import { featureGroupsRouter } from "./routes/featureGroups.js";
 import { predictionGameRouter } from "./routes/predictionGame.js";
@@ -129,6 +131,8 @@ app.use("/api/simple-features", authenticate, groupScope, simpleFeaturesRouter);
 app.use("/api/feature-groups", authenticate, groupScope, featureGroupsRouter);
 app.use("/api/design-items", authenticate, groupScope, designItemsRouter);
 app.use("/api/design-board-lanes", authenticate, groupScope, designBoardLanesRouter);
+app.use("/api/ab-test-items", authenticate, groupScope, abTestItemsRouter);
+app.use("/api/ab-test-board-lanes", authenticate, groupScope, abTestBoardLanesRouter);
 app.use("/api/prediction-game", authenticate, groupScope, predictionGameRouter);
 
 // Notifications router carries both public (unsubscribe) and admin

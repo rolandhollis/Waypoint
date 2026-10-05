@@ -26,6 +26,9 @@ import type {
   DesignItem,
   DesignBoardLane,
   DesignTimelineEntry,
+  AbTestItem,
+  AbTestBoardLane,
+  AbTestTimelineEntry,
   FeatureGroupSummary,
   PredictionHistoryEntry,
   PredictionTodayResponse,
@@ -252,6 +255,32 @@ export function useDesignItemHistory(id: string | undefined) {
   return useQuery({
     queryKey: ["designItemHistory", id],
     queryFn: () => api<DesignTimelineEntry[]>(`/design-items/${id}/history`),
+    enabled: !!id,
+  });
+}
+
+export function useAbTestItems() {
+  return useQuery({
+    queryKey: ["abTestItems"],
+    queryFn: () => api<AbTestItem[]>("/ab-test-items"),
+    refetchInterval: POLL_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useAbTestBoardLanes() {
+  return useQuery({
+    queryKey: ["abTestBoardLanes"],
+    queryFn: () => api<AbTestBoardLane[]>("/ab-test-board-lanes"),
+    refetchInterval: POLL_MS,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useAbTestItemHistory(id: string | undefined) {
+  return useQuery({
+    queryKey: ["abTestItemHistory", id],
+    queryFn: () => api<AbTestTimelineEntry[]>(`/ab-test-items/${id}/history`),
     enabled: !!id,
   });
 }

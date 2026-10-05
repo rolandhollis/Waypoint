@@ -59,7 +59,7 @@ export function projectsToCsv(
   for (const p of projects) {
     rows.push(COLUMNS.map((col) => cellFor(col, p, { userById, teamById, kpiById, laneById })));
   }
-  return rows.map(toCsvRow).join("\r\n") + "\r\n";
+  return rows.map(serializeCsvRow).join("\r\n") + "\r\n";
 }
 
 /**
@@ -155,11 +155,11 @@ function cellFor(col: typeof COLUMNS[number], p: Project, l: Lookups): string {
 /** Serialize one row honouring RFC-4180 quoting: cells containing
  *  `,`, `"`, `\r`, or `\n` are wrapped in quotes with internal `"`
  *  doubled. Cheap, allocation-light, no library required. */
-function toCsvRow(cells: string[]): string {
-  return cells.map(quoteCell).join(",");
+export function serializeCsvRow(cells: string[]): string {
+  return cells.map(quoteCsvCell).join(",");
 }
 
-function quoteCell(cell: string): string {
+export function quoteCsvCell(cell: string): string {
   if (cell === "") return "";
   const needsQuoting = /[",\r\n]/.test(cell);
   if (!needsQuoting) return cell;

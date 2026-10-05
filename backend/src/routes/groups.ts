@@ -6,6 +6,7 @@ import { HttpError } from "../middleware/error.js";
 import type { AppConstants, GroupRow, Role } from "../types.js";
 import { deriveConstants } from "../lib/groupConstants.js";
 import { isTabLabelKey } from "../lib/navTabs.js";
+import { seedDefaultAbTestLanes } from "../lib/abTestLanes.js";
 
 /**
  * Groups (tenants) CRUD + membership management.
@@ -111,6 +112,8 @@ groupsRouter.post("/", requireSuperUser, async (req, res) => {
          ($1, 'XXL', 90, 4)`,
       [group.id],
     );
+
+    await seedDefaultAbTestLanes(client, group.id);
 
     return group;
   });
@@ -282,6 +285,7 @@ const tabLabelsPatchSchema = z
     phases: tabLabelValueSchema.optional(),
     simple_features: tabLabelValueSchema.optional(),
     design: tabLabelValueSchema.optional(),
+    ab_testing: tabLabelValueSchema.optional(),
     feature_groups: tabLabelValueSchema.optional(),
     game: tabLabelValueSchema.optional(),
     admin: tabLabelValueSchema.optional(),
