@@ -1664,7 +1664,10 @@ export function GanttTimeline(props: Props) {
                 the card width there. Same rationale applies to the
                 body row below. */}
             <div className="sticky top-0 z-20 flex min-w-max bg-white">
-              <div className="sticky left-0 z-30 flex bg-white shrink-0">
+              <div
+                className="sticky left-0 z-30 flex bg-white shrink-0"
+                data-roadmap-label-column="true"
+              >
                 <div
                   className="border-b border-wp-stone bg-wp-stone/40 shrink-0"
                   style={{ width: resolvedLabelColumnPx, height: HEADER_HEIGHT }}
@@ -1706,7 +1709,10 @@ export function GanttTimeline(props: Props) {
                 (cardWidth - labelWidth), which is exactly the
                 "labels scroll off-screen" bug this row exhibited. */}
             <div className="flex min-w-max">
-              <div className="sticky left-0 z-10 flex bg-white shrink-0">
+              <div
+                className="sticky left-0 z-10 flex bg-white shrink-0"
+                data-roadmap-label-column="true"
+              >
                 <div className="shrink-0" style={{ width: resolvedLabelColumnPx }}>
                   {labelBody}
                 </div>

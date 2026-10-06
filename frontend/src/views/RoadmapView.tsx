@@ -30,6 +30,8 @@ import { RoadmapQuartersView } from "../components/RoadmapQuartersView";
 import { RoadmapCompactView } from "../components/RoadmapCompactView";
 import { ViewPageHeader } from "../components/ViewPageHeader";
 
+let copyRoadmapClipboardMod: typeof import("../lib/copyRoadmapToClipboard") | null = null;
+
 export function RoadmapView() {
   const projects = useProjects();
   const { alert } = useAppDialog();
@@ -100,6 +102,13 @@ export function RoadmapView() {
     const t = window.setTimeout(() => setToast(null), 6000);
     return () => window.clearTimeout(t);
   }, [toast]);
+  // Warm the html-to-image chunk so Copy image can invoke
+  // clipboard.write in the click turn, with no import await.
+  useEffect(() => {
+    void import("../lib/copyRoadmapToClipboard").then((m) => {
+      copyRoadmapClipboardMod = m;
+    });
+  }, []);
   // Roadmap Gantt's left label column width is user-controlled via
   // a divider between the label and chart columns. The persisted
   // value lives in the zustand store (survives reloads); we mirror
@@ -430,16 +439,8 @@ export function RoadmapView() {
     }
   }
 
-  async function handleCopyImage() {
+  function handleCopyImage() {
     if (copyingImage) return;
-    // Find the Gantt's outer scroll card — it wraps both the label
-    // column and the visible chart area without any surrounding
-    // page chrome. The data attribute is applied in GanttTimeline
-    // on the same element that carries `scrollRef` in the sticky
-    // layout branch, which is exactly the "capture what's visible"
-    // root the copy button targets. Scoped to `exportRef` so a
-    // future embed of the Gantt elsewhere on the page (e.g. a
-    // preview modal) doesn't accidentally get picked up first.
     const root = exportRef.current?.querySelector<HTMLElement>(
       '[data-roadmap-capture-root="true"]',
     );
@@ -451,33 +452,40 @@ export function RoadmapView() {
       return;
     }
     setCopyingImage(true);
-    try {
-      // Dynamic-import so html-to-image (~200kB gzipped) doesn't
-      // land in the initial bundle for users who never click the
-      // button. Roadmap is the app's most-hit tab, so the initial
-      // render cost matters more than the ~200ms lazy fetch on
-      // first click.
-      const { copyRoadmapToClipboard } = await import("../lib/copyRoadmapToClipboard");
-      const stamp = new Date().toISOString().slice(0, 10);
-      const result = await copyRoadmapToClipboard(root, `roadmap-${stamp}`);
-      if (result.status === "clipboard") {
-        setToast({ message: "Copied roadmap to clipboard.", variant: "success" });
-      } else {
-        setToast({
-          message: "Clipboard image copy isn't supported in this browser. Downloaded a PNG instead.",
-          variant: "info",
+    const stamp = new Date().toISOString().slice(0, 10);
+    // Do not await import() before starting the copy — that drops
+    // the click's user-activation and Chrome/Safari then block
+    // clipboard.write. The module is prefetched on mount.
+    const copy = copyRoadmapClipboardMod?.copyRoadmapToClipboard;
+    const run = copy
+      ? copy(root, `roadmap-${stamp}`)
+      : import("../lib/copyRoadmapToClipboard").then((m) => {
+          copyRoadmapClipboardMod = m;
+          return m.copyRoadmapToClipboard(root, `roadmap-${stamp}`);
         });
-      }
-    } catch (err) {
-      console.error("Copy roadmap image failed", err);
-      const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
-      setToast({
-        message: `Clipboard copy failed${detail}. Try again or use Export PDF.`,
-        variant: "error",
-      });
-    } finally {
-      setCopyingImage(false);
-    }
+    void run
+      .then((result) => {
+        if (result.status === "clipboard") {
+          setToast({ message: "Copied roadmap to clipboard.", variant: "success" });
+        } else {
+          const httpHint = typeof window !== "undefined" && !window.isSecureContext
+            ? " Image copy needs http://localhost:5173 (or HTTPS). waypoint.local over HTTP cannot put images on the clipboard."
+            : "";
+          setToast({
+            message: `Couldn't copy the image to the clipboard, so a PNG was downloaded instead.${httpHint}`,
+            variant: "info",
+          });
+        }
+      })
+      .catch((err) => {
+        console.error("Copy roadmap image failed", err);
+        const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
+        setToast({
+          message: `Clipboard copy failed${detail}. Try again or use Export PDF.`,
+          variant: "error",
+        });
+      })
+      .finally(() => setCopyingImage(false));
   }
 
   if (projects.isLoading) return <div className="p-6 text-sm text-wp-slate">Loading roadmap…</div>;
@@ -797,21 +805,15 @@ export function RoadmapView() {
                 <Link2 size={12} />
                 Copy link
               </button>
-              {/* Copy the currently-visible roadmap surface (label
-                  column + visible dates, no scrollbar chrome) to
-                  the OS clipboard as a PNG so the user can paste
-                  straight into Google Slides / Docs / Keynote.
-                  Falls back to downloading the PNG in browsers
-                  that block clipboard image writes (Firefox
-                  without ClipboardItem, plain-HTTP contexts).
-                  See `copyRoadmapToClipboard.ts` for the capture
-                  contract — this button is the only caller. */}
+              {/* Copy the on-screen date window (label column +
+                  visible dates) at full board height, no scrollbar
+                  chrome. See `copyRoadmapToClipboard.ts`. */}
               <button
                 type="button"
                 className="btn-secondary !py-1 !text-xs"
                 onClick={handleCopyImage}
                 disabled={copyingImage}
-                title="Copy the currently-visible roadmap as a PNG to your clipboard (falls back to a download if the browser blocks it)"
+                title="Copy the on-screen dates (full height) as a PNG to your clipboard (falls back to a download if the browser blocks it)"
               >
                 {copyingImage ? (
                   <Loader2 size={12} className="animate-spin" />
