@@ -213,12 +213,13 @@ designItemsRouter.post("/", requireWrite, async (req, res) => {
       if (!userRows[0]) throw new HttpError(400, "assignee not found in this group");
     }
 
-    // New tickets land at top of their assignee (or unassigned) column.
+    // New tickets land at top of Parking Lot (in_design + null assignee)
+    // or at the top of the chosen person column.
     await client.query(
       `UPDATE design_items
           SET position = position + 1, updated_at = NOW()
         WHERE group_id = $1
-          AND status IN ('next_up', 'in_design')
+          AND status = 'in_design'
           AND assigned_to IS NOT DISTINCT FROM $2::uuid`,
       [groupId, body.assigned_to ?? null],
     );
@@ -290,6 +291,8 @@ const patchSchema = z.object({
   description: z.string().max(10000).optional(),
   team_id: z.string().uuid().nullable().optional(),
   assigned_to: z.string().uuid().nullable().optional(),
+  /** Lifecycle column: next_up = Backlog, in_design = Parking Lot / person. */
+  status: z.enum(["next_up", "in_design"]).optional(),
   ticket_status: z.enum(TICKET_STATUSES).optional(),
   jira_key: z.string().trim().max(64).nullable().optional(),
   links: z.array(linkSchema).max(20).optional(),
@@ -329,6 +332,17 @@ designItemsRouter.patch("/:id", requireWrite, async (req, res) => {
         [body.assigned_to, groupId],
       );
       if (!userRows[0]) throw new HttpError(400, "assignee not found in this group");
+    }
+
+    // Backlog is unowned next_up; person / Parking Lot are in_design.
+    if (body.status === "next_up" && body.assigned_to === undefined) {
+      body.assigned_to = null;
+    }
+    if (body.assigned_to) {
+      body.status = body.status ?? "in_design";
+      if (body.status === "next_up") {
+        throw new HttpError(400, "Backlog items cannot have an assignee");
+      }
     }
 
     const fields: string[] = [];
@@ -507,13 +521,17 @@ designItemsRouter.post("/layout", requireWrite, async (req, res) => {
 
 /**
  * Person-column board layout. Each column lists item ids top→bottom.
- * Items may move between assignees, into Unassigned, or into Completed
- * (and back). Assignee is preserved when completing.
+ * Fixed columns:
+ *   - Parking Lot: assigned_to null + status in_design
+ *   - Backlog:     assigned_to null + status next_up
+ * Person columns use assigned_to = user id + status in_design.
+ * Assignee is preserved when completing.
  */
 const boardLayoutSchema = z.object({
   columns: z.array(
     z.object({
       assigned_to: z.string().uuid().nullable(),
+      status: z.enum(["next_up", "in_design"]).default("in_design"),
       item_ids: z.array(z.string().uuid()),
     }),
   ),
@@ -556,8 +574,15 @@ designItemsRouter.post("/board-layout", requireWrite, async (req, res) => {
       if (!byId.has(id)) throw new HttpError(400, `unknown design item ${id}`);
     }
 
-    // Active person / unassigned columns
+    // Active Parking Lot / Backlog / person columns
     for (const col of body.columns) {
+      // Person columns are always in_design; Backlog is next_up + null.
+      const nextStatus =
+        col.assigned_to != null
+          ? "in_design"
+          : col.status === "next_up"
+            ? "next_up"
+            : "in_design";
       for (let i = 0; i < col.item_ids.length; i++) {
         const id = col.item_ids[i]!;
         const prev = byId.get(id)!;
@@ -565,17 +590,17 @@ designItemsRouter.post("/board-layout", requireWrite, async (req, res) => {
         const wasCompleted = prev.status === "completed";
         await client.query(
           `UPDATE design_items
-              SET status = 'in_design',
-                  assigned_to = $1,
-                  position = $2,
+              SET status = $1,
+                  assigned_to = $2,
+                  position = $3,
                   completed_at = NULL,
                   ticket_status = CASE
-                    WHEN $3::text = 'completed' AND ticket_status = 'done' THEN 'on'
+                    WHEN $4::text = 'completed' AND ticket_status = 'done' THEN 'on'
                     ELSE ticket_status
                   END,
                   updated_at = NOW()
-            WHERE id = $4 AND group_id = $5`,
-          [nextAssignee, i, prev.status, id, groupId],
+            WHERE id = $5 AND group_id = $6`,
+          [nextStatus, nextAssignee, i, prev.status, id, groupId],
         );
 
         if (wasCompleted) {

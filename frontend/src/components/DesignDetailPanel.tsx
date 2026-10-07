@@ -48,6 +48,9 @@ const TICKET_STATUS_META: Record<
   },
 };
 
+const LANE_PARKING = "__parking__";
+const LANE_BACKLOG = "__backlog__";
+
 export type DesignItemPatch = Partial<
   Pick<
     DesignItem,
@@ -55,6 +58,7 @@ export type DesignItemPatch = Partial<
     | "description"
     | "team_id"
     | "assigned_to"
+    | "status"
     | "ticket_status"
     | "links"
     | "due_date"
@@ -62,6 +66,12 @@ export type DesignItemPatch = Partial<
     | "blocked_reason"
   >
 >;
+
+function laneSelectValue(item: DesignItem): string {
+  if (item.assigned_to) return item.assigned_to;
+  if (item.status === "next_up") return LANE_BACKLOG;
+  return LANE_PARKING;
+}
 
 /**
  * Right-side detail drawer for a Design Tickets board card — same
@@ -100,7 +110,7 @@ export function DesignDetailPanel({
   const [editName, setEditName] = useState(item.name);
   const [editDesc, setEditDesc] = useState(item.description);
   const [editStatus, setEditStatus] = useState(item.ticket_status);
-  const [editAssignee, setEditAssignee] = useState(item.assigned_to ?? "");
+  const [editLane, setEditLane] = useState(laneSelectValue(item));
   const [editTeam, setEditTeam] = useState(item.team_id ?? "");
   const [editWorkTicketUrl, setEditWorkTicketUrl] = useState(getWorkTicketUrl(item.links));
   const [editingWorkLink, setEditingWorkLink] = useState(false);
@@ -110,7 +120,7 @@ export function DesignDetailPanel({
     setEditName(item.name);
     setEditDesc(item.description);
     setEditStatus(item.ticket_status);
-    setEditAssignee(item.assigned_to ?? "");
+    setEditLane(laneSelectValue(item));
     setEditTeam(item.team_id ?? "");
     setEditWorkTicketUrl(getWorkTicketUrl(item.links));
     setEditingWorkLink(false);
@@ -121,6 +131,7 @@ export function DesignDetailPanel({
     item.description,
     item.ticket_status,
     item.assigned_to,
+    item.status,
     item.team_id,
     item.links,
     item.due_date,
@@ -264,7 +275,11 @@ export function DesignDetailPanel({
                   >
                     {statusMeta.label}
                   </span>
-                  {item.assignee_name ? <span>{item.assignee_name}</span> : <span>Parking Lot</span>}
+                  {item.assignee_name ? (
+                    <span>{item.assignee_name}</span>
+                  ) : (
+                    <span>{item.status === "next_up" ? "Backlog" : "Parking Lot"}</span>
+                  )}
                   {item.team_name ? <span>· {item.team_name}</span> : null}
                 </div>
                 <div>
@@ -328,11 +343,17 @@ export function DesignDetailPanel({
                   ) {
                     return;
                   }
+                  const lanePatch =
+                    editLane === LANE_BACKLOG
+                      ? { assigned_to: null as string | null, status: "next_up" as const }
+                      : editLane === LANE_PARKING
+                        ? { assigned_to: null as string | null, status: "in_design" as const }
+                        : { assigned_to: editLane, status: "in_design" as const };
                   onPatch(item.id, {
                     name: editName.trim(),
                     description: editDesc.trim(),
                     ticket_status: editStatus,
-                    assigned_to: editAssignee || null,
+                    ...lanePatch,
                     team_id: editTeam || null,
                     links: withWorkTicketUrl(item.links, editWorkTicketUrl),
                     due_date: editDue.trim() || null,
@@ -374,13 +395,14 @@ export function DesignDetailPanel({
                     </select>
                   </label>
                   <label className="block">
-                    <span className="text-xs font-medium text-wp-slate">Assignee</span>
+                    <span className="text-xs font-medium text-wp-slate">Swim lane</span>
                     <select
                       className="input mt-1 w-full"
-                      value={editAssignee}
-                      onChange={(e) => setEditAssignee(e.target.value)}
+                      value={editLane}
+                      onChange={(e) => setEditLane(e.target.value)}
                     >
-                      <option value="">Parking Lot</option>
+                      <option value={LANE_PARKING}>Parking Lot</option>
+                      <option value={LANE_BACKLOG}>Backlog</option>
                       {userOptions.map((u) => (
                         <option key={u.id} value={u.id}>
                           {u.name}
@@ -514,8 +536,11 @@ export function DesignDetailPanel({
                     <dd className="mt-0.5 text-wp-ink">{statusMeta.label}</dd>
                   </div>
                   <div>
-                    <dt className="font-medium text-wp-slate">Assignee</dt>
-                    <dd className="mt-0.5 text-wp-ink">{item.assignee_name ?? "Parking Lot"}</dd>
+                    <dt className="font-medium text-wp-slate">Swim lane</dt>
+                    <dd className="mt-0.5 text-wp-ink">
+                      {item.assignee_name
+                        ?? (item.status === "next_up" ? "Backlog" : "Parking Lot")}
+                    </dd>
                   </div>
                   <div>
                     <dt className="font-medium text-wp-slate">Product area</dt>

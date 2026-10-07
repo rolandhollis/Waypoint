@@ -26,6 +26,7 @@ import {
   Check,
   GripVertical,
   Inbox,
+  ListTodo,
   Octagon,
   Pencil,
   Plus,
@@ -53,12 +54,14 @@ import {
 import { normalizeHttpUrl, withWorkTicketUrl } from "../lib/designLinks";
 import type { DesignBoardLane, DesignItem, DesignTicketStatus } from "../lib/types";
 
-/** Fixed leftmost column — unowned tickets / parking lot. */
-const PARKING_LOT_COL = "col:unassigned";
+/** Fixed leftmost column — new / unowned tickets. */
+const PARKING_LOT_COL = "col:parking";
+const BACKLOG_COL = "col:backlog";
 const COMPLETED_COL = "col:completed";
 const PARKING_LOT_LABEL = "Parking Lot";
+const BACKLOG_LABEL = "Backlog";
 
-type ColumnKey = string; // user uuid | PARKING_LOT_COL | COMPLETED_COL
+type ColumnKey = string; // user uuid | PARKING_LOT_COL | BACKLOG_COL | COMPLETED_COL
 
 type PersonColumnUser = MentionableUser & { laneId: string };
 
@@ -134,8 +137,10 @@ function resolveLaneIdFromOver(
 
 function colKeyForItem(item: DesignItem, laneUserIds: Set<string>): ColumnKey {
   if (item.status === "completed") return COMPLETED_COL;
-  if (!item.assigned_to || !laneUserIds.has(item.assigned_to)) return PARKING_LOT_COL;
-  return item.assigned_to;
+  if (item.assigned_to && laneUserIds.has(item.assigned_to)) return item.assigned_to;
+  // Unowned: Backlog is next_up; everything else lands in Parking Lot.
+  if (item.status === "next_up") return BACKLOG_COL;
+  return PARKING_LOT_COL;
 }
 
 function isActiveStatus(status: DesignItem["status"]) {
@@ -153,18 +158,24 @@ function partitionBoard(
     .filter((i) => i.status === "completed")
     .sort((a, b) => a.position - b.position || (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
 
-  const byAssignee = new Map<string | null, DesignItem[]>();
+  const byAssignee = new Map<string, DesignItem[]>();
+  const parkingLot: DesignItem[] = [];
+  const backlog: DesignItem[] = [];
   for (const item of active) {
-    // Assignees without a swim lane land in Parking Lot for display.
-    const key =
-      item.assigned_to && laneUserIds.has(item.assigned_to) ? item.assigned_to : null;
-    const list = byAssignee.get(key) ?? [];
-    list.push(item);
-    byAssignee.set(key, list);
+    if (item.assigned_to && laneUserIds.has(item.assigned_to)) {
+      const list = byAssignee.get(item.assigned_to) ?? [];
+      list.push(item);
+      byAssignee.set(item.assigned_to, list);
+      continue;
+    }
+    if (item.status === "next_up") backlog.push(item);
+    else parkingLot.push(item);
   }
   for (const list of byAssignee.values()) {
     list.sort((a, b) => a.position - b.position);
   }
+  parkingLot.sort((a, b) => a.position - b.position);
+  backlog.sort((a, b) => a.position - b.position);
 
   const rosterById = new Map(roster.map((u) => [u.id, u]));
   const personColumns: PersonColumnUser[] = lanes.map((lane) => {
@@ -183,7 +194,8 @@ function partitionBoard(
   return {
     personColumns,
     laneUserIds,
-    unassigned: byAssignee.get(null) ?? [],
+    parkingLot,
+    backlog,
     byAssignee,
     completed,
     activeCount: active.length,
@@ -192,22 +204,35 @@ function partitionBoard(
 }
 
 type BoardLayoutBody = {
-  columns: Array<{ assigned_to: string | null; item_ids: string[] }>;
+  columns: Array<{
+    assigned_to: string | null;
+    status: "next_up" | "in_design";
+    item_ids: string[];
+  }>;
   completed_ids: string[];
 };
 
 function buildLayoutPayload(
   personColumns: PersonColumnUser[],
-  byAssignee: Map<string | null, DesignItem[]>,
+  parkingLot: DesignItem[],
+  backlog: DesignItem[],
+  byAssignee: Map<string, DesignItem[]>,
   completed: DesignItem[],
 ): BoardLayoutBody {
   const columns: BoardLayoutBody["columns"] = [
     {
       assigned_to: null,
-      item_ids: (byAssignee.get(null) ?? []).map((i) => i.id),
+      status: "in_design",
+      item_ids: parkingLot.map((i) => i.id),
+    },
+    {
+      assigned_to: null,
+      status: "next_up",
+      item_ids: backlog.map((i) => i.id),
     },
     ...personColumns.map((u) => ({
-      assigned_to: u.id,
+      assigned_to: u.id as string | null,
+      status: "in_design" as const,
       item_ids: (byAssignee.get(u.id) ?? []).map((i) => i.id),
     })),
   ];
@@ -260,7 +285,8 @@ export function DesignView() {
   );
   const siblingIds = useMemo(() => {
     return [
-      ...board.unassigned.map((i) => i.id),
+      ...board.parkingLot.map((i) => i.id),
+      ...board.backlog.map((i) => i.id),
       ...board.personColumns.flatMap((u) => (board.byAssignee.get(u.id) ?? []).map((i) => i.id)),
       ...board.completed.map((i) => i.id),
     ];
@@ -315,6 +341,7 @@ export function DesignView() {
           | "description"
           | "team_id"
           | "assigned_to"
+          | "status"
           | "ticket_status"
           | "links"
           | "due_date"
@@ -432,14 +459,25 @@ export function DesignView() {
       target.status = "completed";
       target.ticket_status = "done";
       target.completed_at = target.completed_at ?? new Date().toISOString();
+    } else if (toCol === BACKLOG_COL) {
+      target.status = "next_up";
+      target.assigned_to = null;
+      target.assignee_name = null;
+      target.completed_at = null;
+      if (target.ticket_status === "done") target.ticket_status = "on";
+    } else if (toCol === PARKING_LOT_COL) {
+      target.status = "in_design";
+      target.assigned_to = null;
+      target.assignee_name = null;
+      target.completed_at = null;
+      if (target.ticket_status === "done") target.ticket_status = "on";
     } else {
       target.status = "in_design";
       target.completed_at = null;
       if (target.ticket_status === "done") target.ticket_status = "on";
-      target.assigned_to = toCol === PARKING_LOT_COL ? null : toCol;
+      target.assigned_to = toCol;
       const user = roster.find((u) => u.id === target.assigned_to);
-      target.assignee_name =
-        user?.name ?? (toCol === PARKING_LOT_COL ? null : target.assignee_name);
+      target.assignee_name = user?.name ?? target.assignee_name;
     }
 
     const part = partitionBoard(renumbered, lanes, roster);
@@ -461,7 +499,8 @@ export function DesignView() {
       });
     };
 
-    applyOrder(part.unassigned, "in_design", null);
+    applyOrder(part.parkingLot, "in_design", null);
+    applyOrder(part.backlog, "next_up", null);
     for (const u of part.personColumns) {
       applyOrder(part.byAssignee.get(u.id) ?? [], "in_design", u.id);
     }
@@ -487,7 +526,13 @@ export function DesignView() {
     } else if (toCol === PARKING_LOT_COL) {
       reorderWithin(
         (i) =>
-          isActiveStatus(i.status) &&
+          i.status === "in_design" &&
+          (!i.assigned_to || !board.laneUserIds.has(i.assigned_to)),
+      );
+    } else if (toCol === BACKLOG_COL) {
+      reorderWithin(
+        (i) =>
+          i.status === "next_up" &&
           (!i.assigned_to || !board.laneUserIds.has(i.assigned_to)),
       );
     } else {
@@ -585,7 +630,12 @@ export function DesignView() {
 
     let toCol: ColumnKey;
     let overItemId: string | null = null;
-    if (overId === PARKING_LOT_COL || overId === COMPLETED_COL || overId.startsWith("col:user:")) {
+    if (
+      overId === PARKING_LOT_COL ||
+      overId === BACKLOG_COL ||
+      overId === COMPLETED_COL ||
+      overId.startsWith("col:user:")
+    ) {
       toCol = overId.startsWith("col:user:") ? overId.slice("col:user:".length) : overId;
     } else {
       const overItem = (qc.getQueryData<DesignItem[]>(["designItems"]) ?? snapshot).find(
@@ -606,7 +656,13 @@ export function DesignView() {
     }
 
     const part = partitionBoard(moved, lanes, roster);
-    const payload = buildLayoutPayload(part.personColumns, part.byAssignee, part.completed);
+    const payload = buildLayoutPayload(
+      part.personColumns,
+      part.parkingLot,
+      part.backlog,
+      part.byAssignee,
+      part.completed,
+    );
     boardLayoutMutation.mutate(payload);
   }
 
@@ -677,7 +733,7 @@ export function DesignView() {
         <div className="flex h-full flex-col gap-3 p-4 md:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="max-w-2xl text-xs text-wp-slate">
-              New tickets start in {PARKING_LOT_LABEL}. Drag them onto a person column to assign, or into Completed when done.
+              New tickets start in {PARKING_LOT_LABEL}. Drag into {BACKLOG_LABEL}, onto a person column to assign, or into Completed when done.
               {isAdmin
                 ? " Admins can drag swim lanes to reorder, rename a lane, add a lane with +, or delete a lane."
                 : " Card status is separate — use the pill on each ticket."}
@@ -815,8 +871,8 @@ export function DesignView() {
               <PersonColumn
                 droppableId={PARKING_LOT_COL}
                 title={PARKING_LOT_LABEL}
-                count={board.unassigned.length}
-                items={board.unassigned}
+                count={board.parkingLot.length}
+                items={board.parkingLot}
                 avatar={
                   <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-amber-100 text-amber-800">
                     <Inbox size={15} />
@@ -825,7 +881,23 @@ export function DesignView() {
                 canWrite={canWrite}
                 selectedId={selectedId}
                 onOpen={setSelectedId}
-                footer="New tickets land here. Drag onto a person to assign, or drag here to clear ownership."
+                footer="New tickets land here. Drag to Backlog, a person column, or Completed."
+              />
+
+              <PersonColumn
+                droppableId={BACKLOG_COL}
+                title={BACKLOG_LABEL}
+                count={board.backlog.length}
+                items={board.backlog}
+                avatar={
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-sky-100 text-sky-800">
+                    <ListTodo size={15} />
+                  </span>
+                }
+                canWrite={canWrite}
+                selectedId={selectedId}
+                onOpen={setSelectedId}
+                footer="Prioritized work waiting to be assigned. Drag onto a person to start."
               />
 
               <SortableContext items={laneSortableIds} strategy={horizontalListSortingStrategy}>

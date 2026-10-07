@@ -215,13 +215,13 @@ designBoardLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
     const movingCount = movingRows.length;
 
     if (movingCount > 0) {
-      // Make room at the top of Unassigned.
+      // Make room at the top of Parking Lot (in_design + null assignee).
       await client.query(
         `UPDATE design_items
             SET position = position + $1, updated_at = NOW()
           WHERE group_id = $2
             AND assigned_to IS NULL
-            AND status IN ('next_up', 'in_design')
+            AND status = 'in_design'
             AND deleted_at IS NULL`,
         [movingCount, groupId],
       );
@@ -230,6 +230,7 @@ designBoardLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
         await client.query(
           `UPDATE design_items
               SET assigned_to = NULL,
+                  status = 'in_design',
                   position = $1,
                   updated_at = NOW()
             WHERE id = $2`,
