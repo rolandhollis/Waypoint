@@ -25,8 +25,9 @@ import {
   Calendar,
   Check,
   GripVertical,
-  HelpCircle,
+  Inbox,
   Octagon,
+  Pencil,
   Plus,
   Trash2,
   X,
@@ -49,12 +50,15 @@ import {
   useTeams,
   type MentionableUser,
 } from "../lib/queries";
+import { normalizeHttpUrl, withWorkTicketUrl } from "../lib/designLinks";
 import type { DesignBoardLane, DesignItem, DesignTicketStatus } from "../lib/types";
 
-const UNASSIGNED_COL = "col:unassigned";
+/** Fixed leftmost column — unowned tickets / parking lot. */
+const PARKING_LOT_COL = "col:unassigned";
 const COMPLETED_COL = "col:completed";
+const PARKING_LOT_LABEL = "Parking Lot";
 
-type ColumnKey = string; // user uuid | UNASSIGNED_COL | COMPLETED_COL
+type ColumnKey = string; // user uuid | PARKING_LOT_COL | COMPLETED_COL
 
 type PersonColumnUser = MentionableUser & { laneId: string };
 
@@ -130,7 +134,7 @@ function resolveLaneIdFromOver(
 
 function colKeyForItem(item: DesignItem, laneUserIds: Set<string>): ColumnKey {
   if (item.status === "completed") return COMPLETED_COL;
-  if (!item.assigned_to || !laneUserIds.has(item.assigned_to)) return UNASSIGNED_COL;
+  if (!item.assigned_to || !laneUserIds.has(item.assigned_to)) return PARKING_LOT_COL;
   return item.assigned_to;
 }
 
@@ -151,7 +155,7 @@ function partitionBoard(
 
   const byAssignee = new Map<string | null, DesignItem[]>();
   for (const item of active) {
-    // Assignees without a swim lane land in Unassigned for display.
+    // Assignees without a swim lane land in Parking Lot for display.
     const key =
       item.assigned_to && laneUserIds.has(item.assigned_to) ? item.assigned_to : null;
     const list = byAssignee.get(key) ?? [];
@@ -168,7 +172,9 @@ function partitionBoard(
     return {
       id: lane.user_id,
       laneId: lane.id,
-      name: fromRoster?.name ?? lane.user_name,
+      // Column title is the editable lane name; avatar / assignee
+      // still resolve against the linked user for color + email.
+      name: lane.name || fromRoster?.name || lane.user_name,
       email: fromRoster?.email ?? lane.user_email,
       color: fromRoster?.color ?? lane.user_color ?? "#94a3b8",
     };
@@ -224,7 +230,7 @@ export function DesignView() {
   const canWrite = useCanWrite();
   const isAdmin = useIsAdmin();
   const qc = useQueryClient();
-  const { confirm } = useAppDialog();
+  const { confirm, prompt } = useAppDialog();
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showAddLane, setShowAddLane] = useState(false);
@@ -238,8 +244,8 @@ export function DesignView() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [teamId, setTeamId] = useState("");
-  const [assignedTo, setAssignedTo] = useState("");
   const [ticketStatus, setTicketStatus] = useState<DesignTicketStatus>("not");
+  const [workTicketUrl, setWorkTicketUrl] = useState("");
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -276,16 +282,18 @@ export function DesignView() {
           name: name.trim(),
           description: description.trim(),
           team_id: teamId || null,
-          assigned_to: assignedTo || null,
+          // New tickets always land in Parking Lot; assign by dragging.
+          assigned_to: null,
           ticket_status: ticketStatus,
+          links: withWorkTicketUrl([], workTicketUrl),
         }),
       }),
     onSuccess: (row) => {
       setName("");
       setDescription("");
       setTeamId("");
-      setAssignedTo("");
       setTicketStatus("not");
+      setWorkTicketUrl("");
       setShowCreateModal(false);
       qc.setQueryData<DesignItem[]>(["designItems"], (prev) =>
         prev ? [row, ...prev.filter((f) => f.id !== row.id)] : [row],
@@ -308,7 +316,6 @@ export function DesignView() {
           | "team_id"
           | "assigned_to"
           | "ticket_status"
-          | "jira_key"
           | "links"
           | "due_date"
           | "is_blocked"
@@ -384,6 +391,20 @@ export function DesignView() {
     onSettled: () => qc.invalidateQueries({ queryKey: ["designBoardLanes"] }),
   });
 
+  const patchLaneMutation = useMutation({
+    mutationFn: (v: { id: string; name: string }) =>
+      api<DesignBoardLane>(`/design-board-lanes/${v.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: v.name }),
+      }),
+    onSuccess: (lane) => {
+      qc.setQueryData<DesignBoardLane[]>(["designBoardLanes"], (prev) =>
+        prev ? prev.map((l) => (l.id === lane.id ? lane : l)) : prev,
+      );
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["designBoardLanes"] }),
+  });
+
   const deleteLaneMutation = useMutation({
     mutationFn: (id: string) =>
       api<{ deleted: string; tickets_moved: number }>(`/design-board-lanes/${id}`, {
@@ -415,10 +436,10 @@ export function DesignView() {
       target.status = "in_design";
       target.completed_at = null;
       if (target.ticket_status === "done") target.ticket_status = "on";
-      target.assigned_to = toCol === UNASSIGNED_COL ? null : toCol;
+      target.assigned_to = toCol === PARKING_LOT_COL ? null : toCol;
       const user = roster.find((u) => u.id === target.assigned_to);
       target.assignee_name =
-        user?.name ?? (toCol === UNASSIGNED_COL ? null : target.assignee_name);
+        user?.name ?? (toCol === PARKING_LOT_COL ? null : target.assignee_name);
     }
 
     const part = partitionBoard(renumbered, lanes, roster);
@@ -463,7 +484,7 @@ export function DesignView() {
 
     if (toCol === COMPLETED_COL) {
       reorderWithin((i) => i.status === "completed");
-    } else if (toCol === UNASSIGNED_COL) {
+    } else if (toCol === PARKING_LOT_COL) {
       reorderWithin(
         (i) =>
           isActiveStatus(i.status) &&
@@ -564,7 +585,7 @@ export function DesignView() {
 
     let toCol: ColumnKey;
     let overItemId: string | null = null;
-    if (overId === UNASSIGNED_COL || overId === COMPLETED_COL || overId.startsWith("col:user:")) {
+    if (overId === PARKING_LOT_COL || overId === COMPLETED_COL || overId.startsWith("col:user:")) {
       toCol = overId.startsWith("col:user:") ? overId.slice("col:user:".length) : overId;
     } else {
       const overItem = (qc.getQueryData<DesignItem[]>(["designItems"]) ?? snapshot).find(
@@ -604,14 +625,27 @@ export function DesignView() {
     deleteMutation.mutate(row.id);
   }
 
+  async function handleRenameLane(col: PersonColumnUser) {
+    const next = await prompt({
+      title: "Rename swim lane",
+      description: "Shown as the column title on the Design Tickets board. Tickets stay assigned to the same person.",
+      defaultValue: col.name,
+      confirmLabel: "Save",
+    });
+    if (next === null) return;
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === col.name) return;
+    patchLaneMutation.mutate({ id: col.laneId, name: trimmed });
+  }
+
   async function handleDeleteLane(col: PersonColumnUser) {
     const ticketCount = (board.byAssignee.get(col.id) ?? []).length;
     if (
       !(await confirm({
-        title: `Delete ${col.name}'s swim lane?`,
+        title: `Delete “${col.name}”?`,
         description:
           ticketCount > 0
-            ? `${ticketCount} active ticket${ticketCount === 1 ? "" : "s"} will move to the top of Unassigned. Completed tickets keep their assignee for history, but this column will disappear.`
+            ? `${ticketCount} active ticket${ticketCount === 1 ? "" : "s"} will move to the top of ${PARKING_LOT_LABEL}. Completed tickets keep their assignee for history, but this column will disappear.`
             : "This removes the column from the board. You can add it again later.",
         confirmLabel: "Delete lane",
         destructive: true,
@@ -643,9 +677,9 @@ export function DesignView() {
         <div className="flex h-full flex-col gap-3 p-4 md:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="max-w-2xl text-xs text-wp-slate">
-              Columns are people (plus Unassigned and Completed). Drag tickets to reassign or finish.
+              New tickets start in {PARKING_LOT_LABEL}. Drag them onto a person column to assign, or into Completed when done.
               {isAdmin
-                ? " Admins can drag swim lanes to reorder, add a lane with +, or delete a lane."
+                ? " Admins can drag swim lanes to reorder, rename a lane, add a lane with +, or delete a lane."
                 : " Card status is separate — use the pill on each ticket."}
             </p>
             <div className="flex items-center gap-3">
@@ -661,8 +695,8 @@ export function DesignView() {
                     setName("");
                     setDescription("");
                     setTeamId("");
-                    setAssignedTo("");
                     setTicketStatus("not");
+                    setWorkTicketUrl("");
                     setShowCreateModal(true);
                   }}
                 >
@@ -678,6 +712,7 @@ export function DesignView() {
           <MutationErrorBanner mutation={deleteMutation} />
           <MutationErrorBanner mutation={createLaneMutation} />
           <MutationErrorBanner mutation={reorderLanesMutation} />
+          <MutationErrorBanner mutation={patchLaneMutation} />
           <MutationErrorBanner mutation={deleteLaneMutation} />
 
           {showCreateModal ? (
@@ -697,28 +732,13 @@ export function DesignView() {
               nameFieldId="di-name"
               descriptionFieldId="di-desc"
               mutation={createMutation}
-              canSubmit={name.trim().length > 0}
+              canSubmit={
+                name.trim().length > 0 &&
+                (!workTicketUrl.trim() || !!normalizeHttpUrl(workTicketUrl))
+              }
               onSubmit={() => createMutation.mutate()}
               extraFields={
                 <>
-                  <div className="min-w-[180px]">
-                    <label className="text-xs font-medium text-wp-slate" htmlFor="di-assign">
-                      Assigned to
-                    </label>
-                    <select
-                      id="di-assign"
-                      className="input mt-1 w-full"
-                      value={assignedTo}
-                      onChange={(e) => setAssignedTo(e.target.value)}
-                    >
-                      <option value="">— Unassigned —</option>
-                      {board.personColumns.map((u) => (
-                        <option key={u.id} value={u.id}>
-                          {u.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
                   <div className="min-w-[160px]">
                     <label className="text-xs font-medium text-wp-slate" htmlFor="di-tstatus">
                       Status
@@ -735,6 +755,25 @@ export function DesignView() {
                         </option>
                       ))}
                     </select>
+                    <p className="mt-1 text-[10px] text-wp-slate">
+                      Starts in {PARKING_LOT_LABEL}. Drag onto a person column to assign.
+                    </p>
+                  </div>
+                  <div className="min-w-[220px] flex-1">
+                    <label className="text-xs font-medium text-wp-slate" htmlFor="di-work-link">
+                      Work ticket link
+                    </label>
+                    <input
+                      id="di-work-link"
+                      type="url"
+                      className="input mt-1 w-full"
+                      value={workTicketUrl}
+                      onChange={(e) => setWorkTicketUrl(e.target.value)}
+                      placeholder="https://…"
+                    />
+                    {workTicketUrl.trim() && !normalizeHttpUrl(workTicketUrl) ? (
+                      <p className="mt-1 text-[10px] text-red-600">Enter a valid http(s) URL.</p>
+                    ) : null}
                   </div>
                 </>
               }
@@ -774,19 +813,19 @@ export function DesignView() {
           >
             <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-2">
               <PersonColumn
-                droppableId={UNASSIGNED_COL}
-                title="Unassigned"
+                droppableId={PARKING_LOT_COL}
+                title={PARKING_LOT_LABEL}
                 count={board.unassigned.length}
                 items={board.unassigned}
                 avatar={
-                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-sky-100 text-sky-700">
-                    <HelpCircle size={15} />
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-amber-100 text-amber-800">
+                    <Inbox size={15} />
                   </span>
                 }
                 canWrite={canWrite}
                 selectedId={selectedId}
                 onOpen={setSelectedId}
-                footer="Assign someone — or drag a ticket here to clear ownership."
+                footer="New tickets land here. Drag onto a person to assign, or drag here to clear ownership."
               />
 
               <SortableContext items={laneSortableIds} strategy={horizontalListSortingStrategy}>
@@ -801,7 +840,8 @@ export function DesignView() {
                     isAdmin={isAdmin}
                     selectedId={selectedId}
                     onOpen={setSelectedId}
-                    onDeleteLane={() => handleDeleteLane(user)}
+                    onRename={() => void handleRenameLane(user)}
+                    onDeleteLane={() => void handleDeleteLane(user)}
                   />
                 ))}
               </SortableContext>
@@ -959,6 +999,7 @@ function SortablePersonColumn({
   isAdmin,
   selectedId,
   onOpen,
+  onRename,
   onDeleteLane,
 }: {
   user: PersonColumnUser;
@@ -969,6 +1010,7 @@ function SortablePersonColumn({
   isAdmin: boolean;
   selectedId: string | null;
   onOpen: (id: string) => void;
+  onRename: () => void;
   onDeleteLane: () => void;
 }) {
   const {
@@ -1001,6 +1043,7 @@ function SortablePersonColumn({
         isAdmin={isAdmin}
         selectedId={selectedId}
         onOpen={onOpen}
+        onRename={onRename}
         onDeleteLane={onDeleteLane}
         laneDragHandle={
           isAdmin
@@ -1025,6 +1068,7 @@ function PersonColumn({
   isAdmin = false,
   selectedId,
   onOpen,
+  onRename,
   onDeleteLane,
   footer,
   completedColumn = false,
@@ -1039,6 +1083,7 @@ function PersonColumn({
   isAdmin?: boolean;
   selectedId: string | null;
   onOpen: (id: string) => void;
+  onRename?: () => void;
   onDeleteLane?: () => void;
   footer?: string;
   completedColumn?: boolean;
@@ -1076,12 +1121,23 @@ function PersonColumn({
         <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-white px-1.5 text-[11px] font-semibold text-wp-slate shadow-sm">
           {count}
         </span>
+        {isAdmin && onRename ? (
+          <button
+            type="button"
+            className="btn-ghost !p-1 text-wp-slate hover:text-wp-ink"
+            title={`Rename ${title}`}
+            aria-label={`Rename ${title}`}
+            onClick={onRename}
+          >
+            <Pencil size={13} />
+          </button>
+        ) : null}
         {isAdmin && onDeleteLane ? (
           <button
             type="button"
             className="btn-ghost !p-1 text-wp-slate hover:text-red-600"
-            title={`Delete ${title}'s swim lane`}
-            aria-label={`Delete ${title}'s swim lane`}
+            title={`Delete ${title}`}
+            aria-label={`Delete ${title}`}
             onClick={onDeleteLane}
           >
             <Trash2 size={13} />
@@ -1226,11 +1282,6 @@ function TicketCard({
           >
             {status.label}
           </span>
-          {item.jira_key ? (
-            <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-800">
-              {item.jira_key}
-            </span>
-          ) : null}
           {item.team_name ? (
             <span className="chip text-[10px]">{item.team_name}</span>
           ) : null}

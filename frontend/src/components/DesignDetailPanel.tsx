@@ -1,7 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useState } from "react";
 import { format } from "date-fns";
-import { ChevronLeft, ChevronRight, Octagon, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Octagon, Pencil, Trash2, X } from "lucide-react";
 import { AuditEventBody, auditActorLabel } from "../lib/auditRender";
 import { cn } from "../lib/cn";
 import {
@@ -10,6 +10,11 @@ import {
   useUsers,
   type MentionableUser,
 } from "../lib/queries";
+import {
+  getWorkTicketUrl,
+  normalizeHttpUrl,
+  withWorkTicketUrl,
+} from "../lib/designLinks";
 import type { DesignItem, DesignTicketStatus, DesignTimelineEntry } from "../lib/types";
 import { useAppDialog } from "./AppDialogProvider";
 
@@ -51,7 +56,6 @@ export type DesignItemPatch = Partial<
     | "team_id"
     | "assigned_to"
     | "ticket_status"
-    | "jira_key"
     | "links"
     | "due_date"
     | "is_blocked"
@@ -98,7 +102,8 @@ export function DesignDetailPanel({
   const [editStatus, setEditStatus] = useState(item.ticket_status);
   const [editAssignee, setEditAssignee] = useState(item.assigned_to ?? "");
   const [editTeam, setEditTeam] = useState(item.team_id ?? "");
-  const [editJira, setEditJira] = useState(item.jira_key ?? "");
+  const [editWorkTicketUrl, setEditWorkTicketUrl] = useState(getWorkTicketUrl(item.links));
+  const [editingWorkLink, setEditingWorkLink] = useState(false);
   const [editDue, setEditDue] = useState(item.due_date ?? "");
 
   useEffect(() => {
@@ -107,7 +112,8 @@ export function DesignDetailPanel({
     setEditStatus(item.ticket_status);
     setEditAssignee(item.assigned_to ?? "");
     setEditTeam(item.team_id ?? "");
-    setEditJira(item.jira_key ?? "");
+    setEditWorkTicketUrl(getWorkTicketUrl(item.links));
+    setEditingWorkLink(false);
     setEditDue(item.due_date ?? "");
   }, [
     item.id,
@@ -116,7 +122,7 @@ export function DesignDetailPanel({
     item.ticket_status,
     item.assigned_to,
     item.team_id,
-    item.jira_key,
+    item.links,
     item.due_date,
   ]);
 
@@ -258,7 +264,7 @@ export function DesignDetailPanel({
                   >
                     {statusMeta.label}
                   </span>
-                  {item.assignee_name ? <span>{item.assignee_name}</span> : <span>Unassigned</span>}
+                  {item.assignee_name ? <span>{item.assignee_name}</span> : <span>Parking Lot</span>}
                   {item.team_name ? <span>· {item.team_name}</span> : null}
                 </div>
                 <div>
@@ -316,13 +322,19 @@ export function DesignDetailPanel({
                 className="space-y-4"
                 onSubmit={(e) => {
                   e.preventDefault();
+                  if (
+                    editWorkTicketUrl.trim() &&
+                    !normalizeHttpUrl(editWorkTicketUrl)
+                  ) {
+                    return;
+                  }
                   onPatch(item.id, {
                     name: editName.trim(),
                     description: editDesc.trim(),
                     ticket_status: editStatus,
                     assigned_to: editAssignee || null,
                     team_id: editTeam || null,
-                    jira_key: editJira.trim() || null,
+                    links: withWorkTicketUrl(item.links, editWorkTicketUrl),
                     due_date: editDue.trim() || null,
                   });
                 }}
@@ -368,7 +380,7 @@ export function DesignDetailPanel({
                       value={editAssignee}
                       onChange={(e) => setEditAssignee(e.target.value)}
                     >
-                      <option value="">Unassigned</option>
+                      <option value="">Parking Lot</option>
                       {userOptions.map((u) => (
                         <option key={u.id} value={u.id}>
                           {u.name}
@@ -392,15 +404,6 @@ export function DesignDetailPanel({
                     </select>
                   </label>
                   <label className="block">
-                    <span className="text-xs font-medium text-wp-slate">Jira key</span>
-                    <input
-                      className="input mt-1 w-full"
-                      value={editJira}
-                      onChange={(e) => setEditJira(e.target.value)}
-                      placeholder="FAL-1105"
-                    />
-                  </label>
-                  <label className="block">
                     <span className="text-xs font-medium text-wp-slate">Due date</span>
                     <input
                       type="date"
@@ -410,26 +413,77 @@ export function DesignDetailPanel({
                     />
                   </label>
                 </div>
-
-                {(item.links ?? []).length > 0 ? (
-                  <div>
-                    <div className="text-xs font-medium text-wp-slate">Links</div>
-                    <ul className="mt-1 space-y-1">
-                      {item.links.map((l) => (
-                        <li key={`${l.label}-${l.url}`}>
-                          <a
-                            href={l.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-sm font-medium text-wp-red hover:underline"
-                          >
-                            {l.label}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
+                <div className="block">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-wp-slate">Work ticket link</span>
+                    {!editingWorkLink ? (
+                      <button
+                        type="button"
+                        className="btn-ghost !p-1 text-wp-slate hover:text-wp-ink"
+                        title={
+                          normalizeHttpUrl(editWorkTicketUrl)
+                            ? "Edit work ticket link"
+                            : "Add work ticket link"
+                        }
+                        aria-label={
+                          normalizeHttpUrl(editWorkTicketUrl)
+                            ? "Edit work ticket link"
+                            : "Add work ticket link"
+                        }
+                        onClick={() => setEditingWorkLink(true)}
+                      >
+                        <Pencil size={13} />
+                      </button>
+                    ) : null}
                   </div>
-                ) : null}
+                  {editingWorkLink ? (
+                    <div className="mt-1 space-y-1.5">
+                      <input
+                        type="url"
+                        className="input w-full"
+                        value={editWorkTicketUrl}
+                        onChange={(e) => setEditWorkTicketUrl(e.target.value)}
+                        placeholder="https://…"
+                        autoFocus
+                      />
+                      {editWorkTicketUrl.trim() && !normalizeHttpUrl(editWorkTicketUrl) ? (
+                        <p className="text-[11px] text-red-600">Enter a valid http(s) URL.</p>
+                      ) : null}
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="btn-secondary !py-1 !text-xs"
+                          onClick={() => {
+                            setEditWorkTicketUrl(getWorkTicketUrl(item.links));
+                            setEditingWorkLink(false);
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <span className="text-[10px] text-wp-slate">
+                          Save the ticket to keep changes.
+                        </span>
+                      </div>
+                    </div>
+                  ) : normalizeHttpUrl(editWorkTicketUrl) ? (
+                    <a
+                      href={normalizeHttpUrl(editWorkTicketUrl)!}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 block break-all text-sm font-medium text-wp-red hover:underline"
+                    >
+                      {normalizeHttpUrl(editWorkTicketUrl)}
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      className="mt-1 text-sm text-wp-slate hover:text-wp-ink hover:underline"
+                      onClick={() => setEditingWorkLink(true)}
+                    >
+                      No link — click to add
+                    </button>
+                  )}
+                </div>
 
                 <div className="flex items-center justify-between gap-2 border-t border-wp-stone pt-4">
                   <button type="submit" className="btn-primary" disabled={patchPending || !editName.trim()}>
@@ -461,15 +515,11 @@ export function DesignDetailPanel({
                   </div>
                   <div>
                     <dt className="font-medium text-wp-slate">Assignee</dt>
-                    <dd className="mt-0.5 text-wp-ink">{item.assignee_name ?? "Unassigned"}</dd>
+                    <dd className="mt-0.5 text-wp-ink">{item.assignee_name ?? "Parking Lot"}</dd>
                   </div>
                   <div>
                     <dt className="font-medium text-wp-slate">Product area</dt>
                     <dd className="mt-0.5 text-wp-ink">{item.team_name ?? "—"}</dd>
-                  </div>
-                  <div>
-                    <dt className="font-medium text-wp-slate">Jira</dt>
-                    <dd className="mt-0.5 text-wp-ink">{item.jira_key ?? "—"}</dd>
                   </div>
                   <div>
                     <dt className="font-medium text-wp-slate">Due date</dt>
@@ -477,6 +527,23 @@ export function DesignDetailPanel({
                       {item.due_date
                         ? format(new Date(`${item.due_date}T00:00:00`), "MMM d, yyyy")
                         : "—"}
+                    </dd>
+                  </div>
+                  <div className="col-span-2">
+                    <dt className="font-medium text-wp-slate">Work ticket link</dt>
+                    <dd className="mt-0.5 text-wp-ink">
+                      {getWorkTicketUrl(item.links) ? (
+                        <a
+                          href={getWorkTicketUrl(item.links)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-medium text-wp-red hover:underline break-all"
+                        >
+                          {getWorkTicketUrl(item.links)}
+                        </a>
+                      ) : (
+                        "—"
+                      )}
                     </dd>
                   </div>
                   {item.is_blocked ? (
@@ -488,22 +555,6 @@ export function DesignDetailPanel({
                     </div>
                   ) : null}
                 </dl>
-                {(item.links ?? []).length > 0 ? (
-                  <ul className="space-y-1">
-                    {item.links.map((l) => (
-                      <li key={`${l.label}-${l.url}`}>
-                        <a
-                          href={l.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="font-medium text-wp-red hover:underline"
-                        >
-                          {l.label}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
                 {canDelete ? (
                   <div className="border-t border-wp-stone pt-4">
                     <button

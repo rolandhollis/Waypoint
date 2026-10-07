@@ -51,7 +51,7 @@ export const TAB_PAGE_DESCRIPTIONS: Partial<Record<TabLabelKey, string>> = {
   simple_features:
     "Small initiatives under 16 hours of work that are not tracked on the roadmap.",
   design:
-    "Who is designing what — person columns, ticket status, and a shared Unassigned / Completed pool.",
+    "Who is designing what — Parking Lot for new work, person columns, ticket status, and Completed.",
   ab_testing:
     "Experiment pipeline — named swim lanes you can add, rename, reorder, and delete. Assignee stays on the card.",
   feature_groups:

@@ -83,11 +83,14 @@ async function ensureDesigners(groupId: string): Promise<void> {
 
     // Ensure a design board lane exists for this user.
     await query(
-      `INSERT INTO design_board_lanes (group_id, user_id, "order")
-       SELECT $1, $2, COALESCE((SELECT MAX("order") + 1 FROM design_board_lanes WHERE group_id = $1), 0)
-       WHERE NOT EXISTS (
-         SELECT 1 FROM design_board_lanes WHERE group_id = $1 AND user_id = $2
-       )`,
+      `INSERT INTO design_board_lanes (group_id, user_id, name, "order")
+       SELECT $1, $2, u.name,
+              COALESCE((SELECT MAX("order") + 1 FROM design_board_lanes WHERE group_id = $1), 0)
+         FROM users u
+        WHERE u.id = $2
+          AND NOT EXISTS (
+            SELECT 1 FROM design_board_lanes WHERE group_id = $1 AND user_id = $2
+          )`,
       [groupId, userId],
     );
   }

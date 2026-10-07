@@ -10,6 +10,7 @@ export type DesignBoardLaneRow = {
   id: string;
   group_id: string;
   user_id: string;
+  name: string;
   order: number;
   created_at: Date;
   updated_at: Date;
@@ -19,12 +20,12 @@ export type DesignBoardLaneRow = {
 };
 
 const LANE_SELECT = `
-  SELECT l.id, l.group_id, l.user_id, l."order", l.created_at, l.updated_at,
+  SELECT l.id, l.group_id, l.user_id, l.name, l."order", l.created_at, l.updated_at,
          u.name AS user_name, u.color AS user_color, u.email AS user_email
     FROM design_board_lanes l
     JOIN users u ON u.id = l.user_id
    WHERE l.group_id = $1
-   ORDER BY l."order" ASC, u.name ASC
+   ORDER BY l."order" ASC, l.name ASC
 `;
 
 designBoardLanesRouter.get("/", async (req, res) => {
@@ -34,6 +35,7 @@ designBoardLanesRouter.get("/", async (req, res) => {
 
 const createSchema = z.object({
   user_id: z.string().uuid(),
+  name: z.string().trim().min(1).max(256).optional(),
 });
 
 designBoardLanesRouter.post("/", requireAdmin, async (req, res) => {
@@ -42,8 +44,8 @@ designBoardLanesRouter.post("/", requireAdmin, async (req, res) => {
 
   const result = await withTransaction(async (client) => {
     // User must be a member of this group (or super-user).
-    const { rows: memberRows } = await client.query<{ id: string }>(
-      `SELECT u.id
+    const { rows: memberRows } = await client.query<{ id: string; name: string }>(
+      `SELECT u.id, u.name
          FROM users u
         WHERE u.id = $1
           AND (
@@ -67,6 +69,18 @@ designBoardLanesRouter.post("/", requireAdmin, async (req, res) => {
       throw new HttpError(409, "that user already has a swim lane on this board");
     }
 
+    const laneName = (body.name?.trim() || memberRows[0].name).trim();
+    if (!laneName) throw new HttpError(400, "name is required");
+
+    const { rows: dup } = await client.query<{ id: string }>(
+      `SELECT id FROM design_board_lanes
+        WHERE group_id = $1 AND lower(name) = lower($2)`,
+      [groupId, laneName],
+    );
+    if (dup[0]) {
+      throw new HttpError(409, "a swim lane with that name already exists");
+    }
+
     const { rows: maxRows } = await client.query<{ next: number }>(
       `SELECT COALESCE(MAX("order"), -1) + 1 AS next
          FROM design_board_lanes WHERE group_id = $1`,
@@ -75,16 +89,16 @@ designBoardLanesRouter.post("/", requireAdmin, async (req, res) => {
     const nextOrder = maxRows[0]?.next ?? 0;
 
     const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO design_board_lanes (group_id, user_id, "order")
-       VALUES ($1, $2, $3)
+      `INSERT INTO design_board_lanes (group_id, user_id, name, "order")
+       VALUES ($1, $2, $3, $4)
        RETURNING id`,
-      [groupId, body.user_id, nextOrder],
+      [groupId, body.user_id, laneName, nextOrder],
     );
     return rows[0]!.id;
   });
 
   const { rows: created } = await query<DesignBoardLaneRow>(
-    `SELECT l.id, l.group_id, l.user_id, l."order", l.created_at, l.updated_at,
+    `SELECT l.id, l.group_id, l.user_id, l.name, l."order", l.created_at, l.updated_at,
             u.name AS user_name, u.color AS user_color, u.email AS user_email
        FROM design_board_lanes l
        JOIN users u ON u.id = l.user_id
@@ -92,6 +106,53 @@ designBoardLanesRouter.post("/", requireAdmin, async (req, res) => {
     [result],
   );
   res.status(201).json(created[0]);
+});
+
+const patchSchema = z.object({
+  name: z.string().trim().min(1).max(256),
+});
+
+designBoardLanesRouter.patch("/:id", requireAdmin, async (req, res) => {
+  const body = patchSchema.parse(req.body);
+  const groupId = req.groupId!;
+  const laneId = String(req.params.id);
+  const nextName = body.name.trim();
+  if (!nextName) throw new HttpError(400, "name is required");
+
+  const updated = await withTransaction(async (client) => {
+    const { rows: existing } = await client.query<{ id: string }>(
+      `SELECT id FROM design_board_lanes
+        WHERE id = $1 AND group_id = $2
+        FOR UPDATE`,
+      [laneId, groupId],
+    );
+    if (!existing[0]) throw new HttpError(404, "swim lane not found");
+
+    const { rows: dup } = await client.query<{ id: string }>(
+      `SELECT id FROM design_board_lanes
+        WHERE group_id = $1 AND lower(name) = lower($2) AND id <> $3`,
+      [groupId, nextName, laneId],
+    );
+    if (dup[0]) throw new HttpError(409, "a swim lane with that name already exists");
+
+    await client.query(
+      `UPDATE design_board_lanes
+          SET name = $1, updated_at = NOW()
+        WHERE id = $2 AND group_id = $3`,
+      [nextName, laneId, groupId],
+    );
+    return laneId;
+  });
+
+  const { rows } = await query<DesignBoardLaneRow>(
+    `SELECT l.id, l.group_id, l.user_id, l.name, l."order", l.created_at, l.updated_at,
+            u.name AS user_name, u.color AS user_color, u.email AS user_email
+       FROM design_board_lanes l
+       JOIN users u ON u.id = l.user_id
+      WHERE l.id = $1`,
+    [updated],
+  );
+  res.json(rows[0]);
 });
 
 const reorderSchema = z.object({
@@ -131,11 +192,10 @@ designBoardLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
     const { rows: laneRows } = await client.query<{
       id: string;
       user_id: string;
-      user_name: string;
+      name: string;
     }>(
-      `SELECT l.id, l.user_id, u.name AS user_name
+      `SELECT l.id, l.user_id, l.name
          FROM design_board_lanes l
-         JOIN users u ON u.id = l.user_id
         WHERE l.id = $1 AND l.group_id = $2
         FOR UPDATE`,
       [laneId, groupId],
@@ -182,7 +242,7 @@ designBoardLanesRouter.delete("/:id", requireAdmin, async (req, res) => {
     return {
       deleted: lane.id,
       user_id: lane.user_id,
-      user_name: lane.user_name,
+      name: lane.name,
       tickets_moved: movingCount,
     };
   });

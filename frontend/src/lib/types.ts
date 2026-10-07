@@ -882,6 +882,8 @@ export type DesignBoardLane = {
   id: string;
   group_id: string;
   user_id: string;
+  /** Editable column title (defaults to the linked user's name). */
+  name: string;
   order: number;
   created_at: string;
   updated_at: string;
