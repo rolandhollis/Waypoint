@@ -6,6 +6,8 @@ import {
   PointerSensor,
   closestCenter,
   closestCorners,
+  pointerWithin,
+  rectIntersection,
   useDroppable,
   useSensor,
   useSensors,
@@ -60,13 +62,18 @@ const boardCollision: CollisionDetection = (args) => {
     );
     return closestCenter({ ...args, droppableContainers: laneContainers });
   }
-  // Prefer ticket / column droppables over the outer lane sortable
-  // wrapper so cross-column drops land on the target stage.
+  // Tickets: ignore outer lane wrappers. Prefer the pointer target
+  // (another card or the column body) so reorder + cross-lane both work.
   const ticketContainers = args.droppableContainers.filter((c) => {
     const id = String(c.id);
     return !id.startsWith("lane:");
   });
-  return closestCorners({ ...args, droppableContainers: ticketContainers });
+  const narrowed = { ...args, droppableContainers: ticketContainers };
+  const hit = pointerWithin(narrowed);
+  if (hit.length > 0) return hit;
+  const rect = rectIntersection(narrowed);
+  if (rect.length > 0) return rect;
+  return closestCorners(narrowed);
 };
 
 function partitionBoard(items: AbTestItem[], lanes: AbTestBoardLane[]) {
@@ -177,7 +184,7 @@ export function AbTestView() {
           lane_id: laneId || defaultLaneId || undefined,
         }),
       }),
-    onSuccess: (created) => {
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["abTestItems"] });
       setShowCreate(false);
       setName("");
@@ -185,7 +192,7 @@ export function AbTestView() {
       setTeamId("");
       setAssignedTo("");
       setLaneId("");
-      setSelectedId(created.id);
+      setSelectedId(null);
     },
   });
 
@@ -279,12 +286,12 @@ export function AbTestView() {
     },
   });
 
-  function applyOptimisticLayout(nextByLane: Map<string, AbTestItem[]>) {
-    const cache = qc.getQueryData<AbTestItem[]>(["abTestItems"]);
-    if (!cache) return;
-    dragSnapshotRef.current = cache;
+  function applyOptimisticLayout(
+    nextByLane: Map<string, AbTestItem[]>,
+    revertTo: AbTestItem[],
+  ) {
     const laneMeta = new Map(lanes.map((l) => [l.id, l]));
-    const renumbered = cache.map((item) => {
+    const renumbered = revertTo.map((item) => {
       if (item.deleted_at) return item;
       for (const lane of lanes) {
         const list = nextByLane.get(lane.id) ?? [];
@@ -305,6 +312,8 @@ export function AbTestView() {
       }
       return item;
     });
+    // Keep pre-drag snapshot for layoutMutation.onError rollback.
+    dragSnapshotRef.current = revertTo;
     qc.setQueryData(["abTestItems"], renumbered);
     layoutMutation.mutate(buildLayoutPayload(lanes, nextByLane));
   }
@@ -383,10 +392,13 @@ export function AbTestView() {
       return;
     }
 
-    const current = qc.getQueryData<AbTestItem[]>(["abTestItems"]) ?? snapshot;
-    const { byLane } = partitionBoard(current, lanes);
     const activeItemId = String(active.id);
     const overId = String(over.id);
+    if (activeItemId === overId) return;
+
+    // Partition from the pre-drag snapshot so we don't compose on a
+    // half-applied optimistic cache if a prior drag is still settling.
+    const { byLane } = partitionBoard(snapshot, lanes);
     const overLaneId =
       (over.data.current as { laneId?: string } | undefined)?.laneId ??
       parseLaneSortableId(overId) ??
@@ -433,20 +445,22 @@ export function AbTestView() {
     const next = new Map<string, AbTestItem[]>();
     for (const lane of lanes) next.set(lane.id, [...(byLane.get(lane.id) ?? [])]);
     const fromList = next.get(fromLane)!;
-    const [moved] = fromList.splice(fromIndex, 1);
-    if (!moved) return;
 
     if (fromLane === toLane) {
-      const adjusted = toIndex > fromIndex ? toIndex - 1 : toIndex;
-      fromList.splice(adjusted, 0, moved);
-      next.set(fromLane, fromList);
+      if (fromIndex === toIndex) return;
+      next.set(fromLane, arrayMove(fromList, fromIndex, toIndex));
     } else {
+      const [moved] = fromList.splice(fromIndex, 1);
+      if (!moved) {
+        qc.setQueryData(["abTestItems"], snapshot);
+        return;
+      }
       const toList = next.get(toLane)!;
       toList.splice(toIndex, 0, moved);
       next.set(fromLane, fromList);
       next.set(toLane, toList);
     }
-    applyOptimisticLayout(next);
+    applyOptimisticLayout(next, snapshot);
   }
 
   async function handleDelete(item: AbTestItem) {
@@ -509,7 +523,10 @@ export function AbTestView() {
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4 pt-2">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-wp-slate">
-            {board.activeCount} experiment{board.activeCount === 1 ? "" : "s"} on the board
+            {board.activeCount} experiment{board.activeCount === 1 ? "" : "s"} on the board.
+            {canWrite
+              ? " Drag a card to reorder it or move it between swim lanes."
+              : ""}
           </p>
           {canWrite ? (
             <button
@@ -640,6 +657,10 @@ export function AbTestView() {
                   items={board.byLane.get(lane.id) ?? []}
                   canWrite={canWrite}
                   isAdmin={isAdmin}
+                  // Disable the other axis of sorting while a drag is
+                  // active so nested lane/ticket sortables don't fight.
+                  laneSortDisabled={!isAdmin || activeDragType === "ticket"}
+                  ticketSortDisabled={!canWrite || activeDragType === "lane"}
                   selectedId={selectedId}
                   onOpen={setSelectedId}
                   onRename={() => void handleRenameLane(lane)}
@@ -767,6 +788,8 @@ function SortableStageColumn({
   items,
   canWrite,
   isAdmin,
+  laneSortDisabled,
+  ticketSortDisabled,
   selectedId,
   onOpen,
   onRename,
@@ -776,6 +799,8 @@ function SortableStageColumn({
   items: AbTestItem[];
   canWrite: boolean;
   isAdmin: boolean;
+  laneSortDisabled: boolean;
+  ticketSortDisabled: boolean;
   selectedId: string | null;
   onOpen: (id: string) => void;
   onRename: () => void;
@@ -784,7 +809,7 @@ function SortableStageColumn({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: laneSortableId(lane.id),
     data: { type: "lane", laneId: lane.id },
-    disabled: !isAdmin,
+    disabled: laneSortDisabled,
   });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -799,12 +824,13 @@ function SortableStageColumn({
         items={items}
         canWrite={canWrite}
         isAdmin={isAdmin}
+        ticketSortDisabled={ticketSortDisabled}
         selectedId={selectedId}
         onOpen={onOpen}
         onRename={onRename}
         onDeleteLane={onDeleteLane}
         laneDragHandle={
-          isAdmin ? { attributes, listeners } : undefined
+          isAdmin && !laneSortDisabled ? { attributes, listeners } : undefined
         }
       />
     </div>
@@ -816,6 +842,7 @@ function StageColumn({
   items,
   canWrite,
   isAdmin,
+  ticketSortDisabled,
   selectedId,
   onOpen,
   onRename,
@@ -826,6 +853,7 @@ function StageColumn({
   items: AbTestItem[];
   canWrite: boolean;
   isAdmin: boolean;
+  ticketSortDisabled: boolean;
   selectedId: string | null;
   onOpen: (id: string) => void;
   onRename: () => void;
@@ -840,7 +868,7 @@ function StageColumn({
   const droppableId = `col:${lane.id}`;
   const { setNodeRef, isOver } = useDroppable({
     id: droppableId,
-    data: { laneId: lane.id },
+    data: { type: "column", laneId: lane.id },
   });
 
   return (
@@ -903,7 +931,7 @@ function StageColumn({
               item={item}
               index={idx + 1}
               selected={selectedId === item.id}
-              canWrite={canWrite}
+              canWrite={canWrite && !ticketSortDisabled}
               onOpen={() => onOpen(item.id)}
             />
           ))}
@@ -948,7 +976,10 @@ function SortableTicket({
         item={item}
         index={index}
         selected={selected}
+        // Whole card is the drag handle; PointerSensor distance:6
+        // keeps a short click as "open detail".
         dragProps={canWrite ? { ...attributes, ...listeners } : undefined}
+        isDragging={isDragging}
         onOpen={onOpen}
       />
     </div>
@@ -962,6 +993,7 @@ function TicketCard({
   dragProps,
   onOpen,
   dragging,
+  isDragging,
 }: {
   item: AbTestItem;
   index: number;
@@ -969,6 +1001,7 @@ function TicketCard({
   dragProps?: Record<string, unknown>;
   onOpen?: () => void;
   dragging?: boolean;
+  isDragging?: boolean;
 }) {
   const done = item.lane_is_terminal;
   const stubLabel = `No.${String(index).padStart(2, "0")}`;
@@ -977,18 +1010,17 @@ function TicketCard({
     <article
       className={cn(
         "flex overflow-hidden rounded-lg border border-wp-stone bg-white shadow-sm",
-        dragging && "shadow-lg ring-2 ring-wp-red/20",
+        (dragging || isDragging) && "shadow-lg ring-2 ring-wp-red/20",
         selected && "ring-2 ring-wp-red/35",
+        dragProps && "cursor-grab touch-none active:cursor-grabbing",
       )}
+      {...(dragProps ?? {})}
+      title={dragProps ? "Drag to reorder or move between lanes" : undefined}
     >
       <div
-        className={cn(
-          "flex w-7 shrink-0 flex-col items-center justify-center border-r border-dashed border-wp-stone bg-wp-stone/30",
-          dragProps && "cursor-grab active:cursor-grabbing",
-        )}
-        {...(dragProps ?? {})}
-        title={dragProps ? "Drag to move" : undefined}
+        className="flex w-7 shrink-0 flex-col items-center justify-center gap-1 border-r border-dashed border-wp-stone bg-wp-stone/30"
       >
+        {dragProps ? <GripVertical size={12} className="text-wp-slate" /> : null}
         <span
           className="select-none text-[9px] font-semibold uppercase tracking-wider text-wp-slate"
           style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
@@ -999,7 +1031,12 @@ function TicketCard({
       <button
         type="button"
         className="min-w-0 flex-1 px-3 py-2.5 text-left"
-        onClick={onOpen}
+        onClick={(e) => {
+          // Don't open the drawer at the end of a drag gesture.
+          if (isDragging || dragging) return;
+          e.stopPropagation();
+          onOpen?.();
+        }}
         disabled={!onOpen}
       >
         <div className="flex items-start gap-2">
