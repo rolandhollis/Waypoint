@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from "react";
-import { format } from "date-fns";
+import React, { useEffect, useMemo, useState } from "react";
+import { format, subWeeks } from "date-fns";
 import { Link } from "react-router-dom";
 import { AlertTriangle, ChevronRight } from "lucide-react";
 import {
@@ -82,6 +82,9 @@ type OwnerPendingGroup = {
   projects: StatusReportRow[];
 };
 
+/** How many prior Mondays to offer in the week picker (plus current). */
+const STATUS_REPORT_WEEK_HISTORY = 12;
+
 export function StatusReportView() {
   const [weekOf, setWeekOf] = useState<string | undefined>(undefined);
   const report = useStatusReport(weekOf);
@@ -100,6 +103,10 @@ export function StatusReportView() {
   const [completionFilter, setCompletionFilter] = useState<CompletionFilter | null>(null);
   const canWrite = useCanWrite();
   const me = useMe();
+  // Pin the dropdown to the live reporting week. Selecting a past week
+  // changes report.data.week_of, which used to rebuild the option list
+  // from that past Monday and hide more recent (and other) choices.
+  const [currentWeekOf, setCurrentWeekOf] = useState<string | null>(null);
 
   const filteredIds = useMemo(() => {
     if (!projects.data) return null;
@@ -113,7 +120,18 @@ export function StatusReportView() {
     return report.data.rows.filter((r) => filteredIds.has(r.project_id));
   }, [report.data, filteredIds]);
 
-  const isPastWeek = !!(weekOf && report.data?.week_of && weekOf !== report.data.week_of);
+  useEffect(() => {
+    if (!weekOf && report.data?.week_of) {
+      setCurrentWeekOf(report.data.week_of);
+    }
+  }, [weekOf, report.data?.week_of]);
+
+  const effectiveWeekOf = weekOf ?? report.data?.week_of ?? null;
+  const isPastWeek = !!(
+    currentWeekOf &&
+    effectiveWeekOf &&
+    effectiveWeekOf !== currentWeekOf
+  );
   const activeCompletionFilter: CompletionFilter =
     completionFilter ?? (isAdmin && !isPastWeek ? "needs_update" : "all");
 
@@ -199,19 +217,19 @@ export function StatusReportView() {
   }, [rows, isAdmin, isPastWeek]);
 
   const weekOptions = useMemo(() => {
-    const list: string[] = [];
-    const current = report.data?.week_of;
-    if (current) list.push(current);
-    if (current) {
-      const anchor = new Date(`${current}T00:00:00`);
-      for (let i = 1; i <= 8; i++) {
-        const d = new Date(anchor);
-        d.setDate(d.getDate() - 7 * i);
-        list.push(d.toISOString().slice(0, 10));
-      }
+    if (!currentWeekOf) return effectiveWeekOf ? [effectiveWeekOf] : [];
+    // Noon local avoids UTC day-shift when formatting calendar Mondays.
+    const anchor = new Date(`${currentWeekOf}T12:00:00`);
+    const list: string[] = [currentWeekOf];
+    for (let i = 1; i <= STATUS_REPORT_WEEK_HISTORY; i++) {
+      list.push(format(subWeeks(anchor, i), "yyyy-MM-dd"));
+    }
+    if (effectiveWeekOf && !list.includes(effectiveWeekOf)) {
+      list.push(effectiveWeekOf);
+      list.sort((a, b) => b.localeCompare(a));
     }
     return list;
-  }, [report.data?.week_of]);
+  }, [currentWeekOf, effectiveWeekOf]);
 
   const rowsAreEditable = canWrite && !isPastWeek;
   const dueAt = report.data?.due_at ? new Date(report.data.due_at) : null;
@@ -287,8 +305,13 @@ export function StatusReportView() {
             <label className="text-xs text-wp-slate">Week</label>
             <select
               className="input w-40"
-              value={weekOf ?? report.data?.week_of ?? ""}
-              onChange={(e) => setWeekOf(e.target.value || undefined)}
+              value={effectiveWeekOf ?? ""}
+              onChange={(e) => {
+                const next = e.target.value || undefined;
+                // Selecting the live week clears the override so the
+                // query key stays on "current" and currentWeekOf can refresh.
+                setWeekOf(next && currentWeekOf && next === currentWeekOf ? undefined : next);
+              }}
             >
               {weekOptions.map((w) => (
                 <option key={w} value={w}>{w}</option>
