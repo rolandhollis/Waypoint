@@ -6,6 +6,7 @@ export const TAB_LABEL_KEYS = [
   "status_report",
   "ezestimates",
   "kpis",
+  "completed",
   "phases",
   "simple_features",
   "design",

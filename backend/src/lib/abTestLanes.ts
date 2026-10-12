@@ -1,11 +1,14 @@
 import type { PoolClient } from "pg";
 
+/** Default landing column for new experiments. */
+export const AB_TEST_BACKLOG_LANE_NAME = "Backlog (ideas)";
+
 /** Default A/B Testing columns, left → right. Seeded per group. */
 export const DEFAULT_AB_TEST_LANES: ReadonlyArray<{
   name: string;
   is_terminal: boolean;
 }> = [
-  { name: "Backlog (ideas)", is_terminal: false },
+  { name: AB_TEST_BACKLOG_LANE_NAME, is_terminal: false },
   { name: "Prioritized (next in the queue for Scoping & Hypothesis)", is_terminal: false },
   { name: "Design", is_terminal: false },
   { name: "Ready to build", is_terminal: false },
@@ -36,4 +39,44 @@ export async function seedDefaultAbTestLanes(
       [groupId, lane.name, i, lane.is_terminal],
     );
   }
+}
+
+/**
+ * Resolve the Backlog (ideas) lane for a group, creating default lanes
+ * if the board is empty. Prefers an exact name match, then any lane
+ * whose name starts with "backlog", then the leftmost lane.
+ */
+export async function resolveBacklogAbTestLane(
+  client: PoolClient,
+  groupId: string,
+): Promise<{ id: string; is_terminal: boolean }> {
+  await seedDefaultAbTestLanes(client, groupId);
+
+  const { rows: exact } = await client.query<{ id: string; is_terminal: boolean }>(
+    `SELECT id, is_terminal FROM ab_test_board_lanes
+      WHERE group_id = $1 AND lower(name) = lower($2)
+      ORDER BY "order" ASC
+      LIMIT 1`,
+    [groupId, AB_TEST_BACKLOG_LANE_NAME],
+  );
+  if (exact[0]) return exact[0];
+
+  const { rows: fuzzy } = await client.query<{ id: string; is_terminal: boolean }>(
+    `SELECT id, is_terminal FROM ab_test_board_lanes
+      WHERE group_id = $1 AND lower(name) LIKE 'backlog%'
+      ORDER BY "order" ASC
+      LIMIT 1`,
+    [groupId],
+  );
+  if (fuzzy[0]) return fuzzy[0];
+
+  const { rows: first } = await client.query<{ id: string; is_terminal: boolean }>(
+    `SELECT id, is_terminal FROM ab_test_board_lanes
+      WHERE group_id = $1
+      ORDER BY "order" ASC
+      LIMIT 1`,
+    [groupId],
+  );
+  if (!first[0]) throw new Error("no swim lanes on this board");
+  return first[0];
 }

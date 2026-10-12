@@ -139,7 +139,6 @@ export function AbTestView() {
   const [description, setDescription] = useState("");
   const [teamId, setTeamId] = useState("");
   const [assignedTo, setAssignedTo] = useState("");
-  const [laneId, setLaneId] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeDragType, setActiveDragType] = useState<"ticket" | "lane" | null>(null);
   const dragSnapshotRef = useRef<AbTestItem[] | null>(null);
@@ -166,7 +165,6 @@ export function AbTestView() {
     [teams.data],
   );
   const userOptions = users.data ?? [];
-  const defaultLaneId = lanes[0]?.id ?? "";
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -181,7 +179,7 @@ export function AbTestView() {
           description: description.trim(),
           team_id: teamId || null,
           assigned_to: assignedTo || null,
-          lane_id: laneId || defaultLaneId || undefined,
+          // New experiments land at the end of Backlog; move by dragging.
         }),
       }),
     onSuccess: () => {
@@ -191,7 +189,6 @@ export function AbTestView() {
       setDescription("");
       setTeamId("");
       setAssignedTo("");
-      setLaneId("");
       setSelectedId(null);
     },
   });
@@ -534,7 +531,6 @@ export function AbTestView() {
               className="btn-primary inline-flex items-center gap-1.5"
               onClick={() => {
                 createMutation.reset();
-                setLaneId(defaultLaneId);
                 setShowCreate(true);
               }}
             >
@@ -577,43 +573,27 @@ export function AbTestView() {
             nameFieldId="ab-name"
             descriptionFieldId="ab-desc"
             extraFields={
-              <>
-                <div className="min-w-[180px]">
-                  <label className="text-xs font-medium text-wp-slate" htmlFor="ab-assign">
-                    Assigned to
-                  </label>
-                  <select
-                    id="ab-assign"
-                    className="input mt-1 w-full"
-                    value={assignedTo}
-                    onChange={(e) => setAssignedTo(e.target.value)}
-                  >
-                    <option value="">— Unassigned —</option>
-                    {userOptions.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="min-w-[180px]">
-                  <label className="text-xs font-medium text-wp-slate" htmlFor="ab-lane">
-                    Stage
-                  </label>
-                  <select
-                    id="ab-lane"
-                    className="input mt-1 w-full"
-                    value={laneId || defaultLaneId}
-                    onChange={(e) => setLaneId(e.target.value)}
-                  >
-                    {lanes.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </>
+              <div className="min-w-[180px]">
+                <label className="text-xs font-medium text-wp-slate" htmlFor="ab-assign">
+                  Assigned to
+                </label>
+                <select
+                  id="ab-assign"
+                  className="input mt-1 w-full"
+                  value={assignedTo}
+                  onChange={(e) => setAssignedTo(e.target.value)}
+                >
+                  <option value="">— Unassigned —</option>
+                  {userOptions.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-2 text-[11px] text-wp-slate">
+                  New experiments are added at the end of Backlog. Drag to move stages.
+                </p>
+              </div>
             }
           />
         ) : null}
@@ -803,8 +783,8 @@ function SortableStageColumn({
   ticketSortDisabled: boolean;
   selectedId: string | null;
   onOpen: (id: string) => void;
-  onRename: () => void;
-  onDeleteLane: () => void;
+  onRename?: () => void;
+  onDeleteLane?: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: laneSortableId(lane.id),
@@ -856,8 +836,8 @@ function StageColumn({
   ticketSortDisabled: boolean;
   selectedId: string | null;
   onOpen: (id: string) => void;
-  onRename: () => void;
-  onDeleteLane: () => void;
+  onRename?: () => void;
+  onDeleteLane?: () => void;
   laneDragHandle?: {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     attributes: any;
@@ -899,24 +879,28 @@ function StageColumn({
         </span>
         {isAdmin ? (
           <>
-            <button
-              type="button"
-              className="btn-ghost !p-1 text-wp-slate hover:text-wp-ink"
-              title={`Rename ${lane.name}`}
-              aria-label={`Rename ${lane.name}`}
-              onClick={onRename}
-            >
-              <Pencil size={13} />
-            </button>
-            <button
-              type="button"
-              className="btn-ghost !p-1 text-wp-slate hover:text-red-600"
-              title={`Delete ${lane.name}`}
-              aria-label={`Delete ${lane.name}`}
-              onClick={onDeleteLane}
-            >
-              <Trash2 size={13} />
-            </button>
+            {onRename ? (
+              <button
+                type="button"
+                className="btn-ghost !p-1 text-wp-slate hover:text-wp-ink"
+                title={`Rename ${lane.name}`}
+                aria-label={`Rename ${lane.name}`}
+                onClick={onRename}
+              >
+                <Pencil size={13} />
+              </button>
+            ) : null}
+            {onDeleteLane ? (
+              <button
+                type="button"
+                className="btn-ghost !p-1 text-wp-slate hover:text-red-600"
+                title={`Delete ${lane.name}`}
+                aria-label={`Delete ${lane.name}`}
+                onClick={onDeleteLane}
+              >
+                <Trash2 size={13} />
+              </button>
+            ) : null}
           </>
         ) : null}
       </header>

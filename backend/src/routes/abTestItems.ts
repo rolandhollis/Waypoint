@@ -2,7 +2,10 @@ import { Router } from "express";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { query, withTransaction } from "../db/pool.js";
-import { seedDefaultAbTestLanes } from "../lib/abTestLanes.js";
+import {
+  resolveBacklogAbTestLane,
+  seedDefaultAbTestLanes,
+} from "../lib/abTestLanes.js";
 import { requireWrite } from "../middleware/auth.js";
 import { HttpError } from "../middleware/error.js";
 import type { AbTestItemRow, DesignItemLink } from "../types.js";
@@ -164,17 +167,12 @@ async function loadLane(
   return rows[0];
 }
 
-async function firstLane(client: PoolClient, groupId: string): Promise<LaneMeta> {
-  await seedDefaultAbTestLanes(client, groupId);
-  const { rows } = await client.query<LaneMeta>(
-    `SELECT id, is_terminal FROM ab_test_board_lanes
-      WHERE group_id = $1
-      ORDER BY "order" ASC
-      LIMIT 1`,
-    [groupId],
-  );
-  if (!rows[0]) throw new HttpError(400, "no swim lanes on this board");
-  return rows[0];
+async function defaultCreateLane(
+  client: PoolClient,
+  groupId: string,
+): Promise<LaneMeta> {
+  // New items always land at the end of Backlog (ideas).
+  return resolveBacklogAbTestLane(client, groupId);
 }
 
 async function fetchDto(id: string): Promise<AbTestItemDto | undefined> {
@@ -248,16 +246,17 @@ abTestItemsRouter.post("/", requireWrite, async (req, res) => {
 
     const lane = body.lane_id
       ? await loadLane(client, body.lane_id, groupId)
-      : await firstLane(client, groupId);
+      : await defaultCreateLane(client, groupId);
 
-    await client.query(
-      `UPDATE ab_test_items
-          SET position = position + 1, updated_at = NOW()
+    const { rows: posRows } = await client.query<{ next: number }>(
+      `SELECT COALESCE(MAX(position), -1) + 1 AS next
+         FROM ab_test_items
         WHERE group_id = $1
           AND deleted_at IS NULL
           AND lane_id = $2`,
       [groupId, lane.id],
     );
+    const position = posRows[0]?.next ?? 0;
 
     const jiraKey =
       body.jira_key === undefined ? null : body.jira_key?.trim() || null;
@@ -276,7 +275,7 @@ abTestItemsRouter.post("/", requireWrite, async (req, res) => {
        ) VALUES (
          $1, $2, $3, $4, $5,
          $6, $7::jsonb, $8, $9, $10,
-         0, $11, $12, $13
+         $11, $12, $13, $14
        )
        RETURNING *`,
       [
@@ -290,6 +289,7 @@ abTestItemsRouter.post("/", requireWrite, async (req, res) => {
         dueDate,
         isBlocked,
         blockedReason,
+        position,
         body.assigned_to ?? null,
         req.user!.id,
         completedAt,

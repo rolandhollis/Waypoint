@@ -10,6 +10,7 @@ import { PrioritizationView } from "./views/PrioritizationView";
 import { RoadmapView } from "./views/RoadmapView";
 import { StatusReportView } from "./views/StatusReportView";
 import { KpiReportView } from "./views/KpiReportView";
+import { CompletedReportView } from "./views/CompletedReportView";
 import { EZEstimatesView } from "./views/EZEstimatesView";
 import { AdminSettingsView } from "./views/AdminSettingsView";
 import { PhasesView } from "./views/PhasesView";
@@ -198,6 +199,7 @@ export function App() {
           <Route path="/status-report" element={<StatusReportView />} />
           <Route path="/ezestimates" element={<EZEstimatesView />} />
           <Route path="/kpis" element={<KpiReportView />} />
+          <Route path="/completed" element={<CompletedReportView />} />
           <Route path="/phases" element={<PhasesView />} />
           <Route path="/simple-features" element={<SimpleFeaturesView />} />
           <Route path="/design" element={<DesignView />} />

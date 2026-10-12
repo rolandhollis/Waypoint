@@ -10,6 +10,7 @@ export const TAB_LABEL_KEYS = [
   "status_report",
   "ezestimates",
   "kpis",
+  "completed",
   "phases",
   "simple_features",
   "design",
@@ -29,6 +30,7 @@ export const DEFAULT_TAB_LABELS: Record<TabLabelKey, string> = {
   status_report: "Status Report",
   ezestimates: "EZEstimates",
   kpis: "KPIs",
+  completed: "Completed",
   phases: "Phases",
   simple_features: "Simple Features",
   design: "Design Tickets",
@@ -47,6 +49,7 @@ export const TAB_PAGE_DESCRIPTIONS: Partial<Record<TabLabelKey, string>> = {
   prioritization: "Drag to reorder. Changes cascade to Board swim-lane order and Roadmap Priority sort.",
   ezestimates: "Bulk-edit phase lengths with T-shirt size presets.",
   kpis: "Roadmap-visible projects grouped by KPI, sorted by upcoming end date.",
+  completed: "Roadmap projects completed in the last 30 days (configurable), newest first.",
   phases: "What each board phase means — definitions for every swim lane.",
   simple_features:
     "Small initiatives under 16 hours of work that are not tracked on the roadmap.",
@@ -71,6 +74,7 @@ export const TAB_ROUTES: Record<TabLabelKey, string> = {
   status_report: "/status-report",
   ezestimates: "/ezestimates",
   kpis: "/kpis",
+  completed: "/completed",
   phases: "/phases",
   simple_features: "/simple-features",
   design: "/design",
@@ -120,7 +124,7 @@ export const NAV_DROPDOWN_GROUPS: NavDropdownGroup[] = [
   {
     id: "reference",
     menuLabel: "Reference",
-    sections: [{ keys: ["kpis", "phases"] }],
+    sections: [{ keys: ["kpis", "completed", "phases"] }],
   },
 ];
 
