@@ -282,12 +282,12 @@ const tabLabelsPatchSchema = z
     status_report: tabLabelValueSchema.optional(),
     ezestimates: tabLabelValueSchema.optional(),
     kpis: tabLabelValueSchema.optional(),
+    completed: tabLabelValueSchema.optional(),
     phases: tabLabelValueSchema.optional(),
     simple_features: tabLabelValueSchema.optional(),
     design: tabLabelValueSchema.optional(),
     ab_testing: tabLabelValueSchema.optional(),
     feature_groups: tabLabelValueSchema.optional(),
-    game: tabLabelValueSchema.optional(),
     admin: tabLabelValueSchema.optional(),
   })
   .strict();
@@ -298,7 +298,6 @@ const constantsPatchSchema = z
     email_title: z.string().trim().min(1).max(80).nullable().optional(),
     tab_labels: tabLabelsPatchSchema.nullable().optional(),
     weekly_status_schedule: weeklyStatusSchedulePatchSchema.nullable().optional(),
-    prediction_game_regenerate_enabled: z.boolean().optional(),
   })
   .strict();
 
@@ -359,10 +358,6 @@ function mergeConstantsBag(
       }
       bag.weekly_status_schedule = cur;
     }
-  }
-
-  if (body.prediction_game_regenerate_enabled !== undefined) {
-    bag.prediction_game_regenerate_enabled = body.prediction_game_regenerate_enabled;
   }
 
   return bag;

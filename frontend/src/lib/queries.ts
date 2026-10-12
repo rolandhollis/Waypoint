@@ -30,8 +30,6 @@ import type {
   AbTestBoardLane,
   AbTestTimelineEntry,
   FeatureGroupSummary,
-  PredictionHistoryEntry,
-  PredictionTodayResponse,
   StatusReportResponse,
   SwimLane,
   Team,
@@ -282,21 +280,6 @@ export function useAbTestItemHistory(id: string | undefined) {
     queryKey: ["abTestItemHistory", id],
     queryFn: () => api<AbTestTimelineEntry[]>(`/ab-test-items/${id}/history`),
     enabled: !!id,
-  });
-}
-
-export function usePredictionGameToday() {
-  return useQuery({
-    queryKey: ["predictionGameToday"],
-    queryFn: () => api<PredictionTodayResponse>("/prediction-game/today"),
-    refetchInterval: POLL_MS,
-  });
-}
-
-export function usePredictionGameHistory() {
-  return useQuery({
-    queryKey: ["predictionGameHistory"],
-    queryFn: () => api<PredictionHistoryEntry[]>("/prediction-game/history"),
   });
 }
 

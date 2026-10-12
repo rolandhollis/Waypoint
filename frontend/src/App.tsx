@@ -19,7 +19,6 @@ import { DesignView } from "./views/DesignView";
 import { AbTestView } from "./views/AbTestView";
 import { FeatureGroupsView } from "./views/FeatureGroupsView";
 import { FeatureGroupDetailView } from "./views/FeatureGroupDetailView";
-import { GameView } from "./views/GameView";
 import { ProjectDetailPage } from "./views/ProjectDetailPage";
 import { UserAssignmentsView } from "./views/UserAssignmentsView";
 import { LoginView } from "./views/LoginView";
@@ -206,7 +205,6 @@ export function App() {
           <Route path="/ab-testing" element={<AbTestView />} />
           <Route path="/feature-groups" element={<FeatureGroupsView />} />
           <Route path="/feature-groups/:groupId" element={<FeatureGroupDetailView />} />
-          <Route path="/game" element={<GameView />} />
           <Route path="/admin" element={<AdminSettingsView />} />
           {/* Standalone `/projects/:id` — bookmarkable / shareable
               item detail page. Renders the same shared body the

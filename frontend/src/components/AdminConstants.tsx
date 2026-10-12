@@ -71,7 +71,6 @@ export function AdminConstants() {
         <AppNameField groupId={groupId} />
         <EmailTitleField groupId={groupId} />
         <TabLabelsField groupId={groupId} />
-        <PredictionGameRegenerateField groupId={groupId} />
       </div>
     </section>
   );
@@ -384,51 +383,6 @@ function TabLabelsField({ groupId }: { groupId: string }) {
             : "Reset all to defaults"}
         </button>
       </div>
-    </div>
-  );
-}
-
-function PredictionGameRegenerateField({ groupId }: { groupId: string }) {
-  const qc = useQueryClient();
-  const constantsQ = useGroupConstants(groupId);
-  const enabled = constantsQ.data?.prediction_game_regenerate_enabled === true;
-
-  const patch = useMutation({
-    mutationFn: (prediction_game_regenerate_enabled: boolean) =>
-      api<AppConstants>(`/groups/${groupId}/constants`, {
-        method: "PATCH",
-        body: JSON.stringify({ prediction_game_regenerate_enabled }),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["groups"] });
-      qc.invalidateQueries({ queryKey: ["groupConstants", groupId] });
-    },
-  });
-
-  return (
-    <div className="space-y-2 rounded-md border border-wp-stone/80 bg-wp-stone/5 p-4">
-      <div>
-        <h3 className="text-sm font-semibold text-wp-ink">Prediction game</h3>
-        <p className="mt-1 text-xs text-wp-slate">
-          Controls whether admins can manually generate or regenerate the daily
-          yes/no question on the Game tab. The morning cron job still runs
-          regardless.
-        </p>
-      </div>
-      <label className="flex items-start gap-2 text-sm text-wp-ink">
-        <input
-          type="checkbox"
-          className="mt-0.5"
-          checked={enabled}
-          disabled={patch.isPending || constantsQ.isLoading}
-          onChange={(e) => patch.mutate(e.target.checked)}
-        />
-        <span>
-          Allow admins to regenerate the daily question
-          {patch.isPending ? <span className="text-wp-slate"> (saving…)</span> : null}
-        </span>
-      </label>
-      <MutationErrorBanner mutation={patch} />
     </div>
   );
 }

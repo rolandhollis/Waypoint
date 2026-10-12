@@ -12,7 +12,6 @@ export const TAB_LABEL_KEYS = [
   "design",
   "ab_testing",
   "feature_groups",
-  "game",
   "admin",
 ] as const;
 

@@ -1,5 +1,4 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   BookOpen,
@@ -19,7 +18,6 @@ import {
   type NavDropdownGroup,
   type TabLabelKey,
 } from "../lib/navTabs";
-import { ChessKnightIcon } from "./ChessKnightIcon";
 
 const DROPDOWN_ICONS: Record<string, LucideIcon> = {
   plan: ListOrdered,
@@ -102,34 +100,6 @@ function NavDropdown({
   );
 }
 
-function NavIconLink({
-  to,
-  label,
-  active,
-  children,
-}: {
-  to: string;
-  label: string;
-  active: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <NavLink
-      to={to}
-      className={cn(
-        "inline-flex items-center justify-center rounded-md p-1.5 transition",
-        active
-          ? "bg-wp-red text-white"
-          : "text-wp-slate hover:bg-wp-stone/40 hover:text-wp-ink",
-      )}
-      aria-label={label}
-      title={label}
-    >
-      {children}
-    </NavLink>
-  );
-}
-
 export function TopNav() {
   const location = useLocation();
   const pathname = location.pathname;
@@ -154,18 +124,6 @@ export function TopNav() {
           pathname={pathname}
         />
       ))}
-      <NavIconLink
-        to={TAB_ROUTES.game}
-        label={tabLabels.game}
-        active={isNavPathActive(pathname, TAB_ROUTES.game)}
-      >
-        <ChessKnightIcon
-          size={18}
-          className={cn(
-            isNavPathActive(pathname, TAB_ROUTES.game) ? "text-white" : "text-wp-red/90",
-          )}
-        />
-      </NavIconLink>
       {isAdmin ? (
         <NavTabLink
           to={TAB_ROUTES.admin}

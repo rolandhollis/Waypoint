@@ -82,16 +82,7 @@ export function deriveConstants(raw: unknown): AppConstants {
   out.weekly_status_schedule_effective = resolveWeeklyStatusSchedule(
     out.weekly_status_schedule ?? undefined,
   );
-  if ("prediction_game_regenerate_enabled" in bag) {
-    const v = bag.prediction_game_regenerate_enabled;
-    if (typeof v === "boolean") out.prediction_game_regenerate_enabled = v;
-  }
   return out;
-}
-
-/** Manual generate/regenerate on the Game tab is opt-in per workspace. */
-export function predictionGameRegenerateEnabled(constants: AppConstants): boolean {
-  return constants.prediction_game_regenerate_enabled === true;
 }
 
 export function weeklyStatusScheduleForConstants(

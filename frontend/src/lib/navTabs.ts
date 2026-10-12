@@ -16,7 +16,6 @@ export const TAB_LABEL_KEYS = [
   "design",
   "ab_testing",
   "feature_groups",
-  "game",
   "admin",
 ] as const;
 
@@ -36,7 +35,6 @@ export const DEFAULT_TAB_LABELS: Record<TabLabelKey, string> = {
   design: "Design Tickets",
   ab_testing: "A/B Testing",
   feature_groups: "Feature Groups",
-  game: "Game",
   admin: "Admin",
 };
 
@@ -59,7 +57,6 @@ export const TAB_PAGE_DESCRIPTIONS: Partial<Record<TabLabelKey, string>> = {
     "Experiment pipeline — named swim lanes you can add, rename, reorder, and delete. Assignee stays on the card.",
   feature_groups:
     "Rank proposed project features with stakeholders — group lists and priority tiers.",
-  game: "Daily sports prediction — vote yes or no before 5pm Central. Expect mild irreverence.",
   admin: "Manage swim lanes, teams, users, and workspace settings.",
 };
 
@@ -80,7 +77,6 @@ export const TAB_ROUTES: Record<TabLabelKey, string> = {
   design: "/design",
   ab_testing: "/ab-testing",
   feature_groups: "/feature-groups",
-  game: "/game",
   admin: "/admin",
 };
 

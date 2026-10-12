@@ -99,8 +99,6 @@ export type AppConstants = {
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */
   weekly_status_schedule_effective?: WeeklyStatusSchedule;
-  /** When true, admins can manually generate/regenerate the daily prediction game question. */
-  prediction_game_regenerate_enabled?: boolean;
 };
 
 export type WeeklyStatusScheduleInput = {
@@ -685,27 +683,6 @@ export type AbTestItemRow = {
   updated_at: Date;
   completed_at: Date | null;
   deleted_at: Date | null;
-};
-
-export type PredictionQuestionRow = {
-  id: string;
-  group_id: string;
-  game_date: Date | string;
-  question_text: string;
-  event_summary: string;
-  event_time_hint: string | null;
-  vote_yes_hint: string;
-  vote_no_hint: string;
-  cutoff_at: Date;
-  outcome: boolean | null;
-  outcome_note: string | null;
-  resolved_at: Date | null;
-  resolved_by: string | null;
-  llm_model: string | null;
-  generated_at: Date;
-  generated_by: string | null;
-  kalshi_market_ticker: string | null;
-  kalshi_yes_price: string | number | null;
 };
 
 export type HealthFlag = "white" | "green" | "yellow" | "red";

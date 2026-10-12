@@ -112,8 +112,6 @@ export type AppConstants = {
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */
   weekly_status_schedule_effective?: WeeklyStatusSchedule;
-  /** When true, admins can manually generate/regenerate the daily prediction game question. */
-  prediction_game_regenerate_enabled?: boolean;
 };
 
 /**
@@ -938,37 +936,4 @@ export type AbTestTimelineEntry = {
   field: string | null;
   from_value: unknown;
   to_value: unknown;
-};
-
-export type PredictionQuestion = {
-  id: string;
-  group_id: string;
-  game_date: string;
-  question_text: string;
-  event_summary: string;
-  event_time_hint: string | null;
-  vote_yes_hint: string;
-  vote_no_hint: string;
-  cutoff_at: string;
-  outcome: boolean | null;
-  outcome_note: string | null;
-  resolved_at: string | null;
-  llm_model: string | null;
-  generated_at: string;
-  kalshi_market_ticker: string | null;
-  kalshi_yes_price: number | null;
-};
-
-export type PredictionTodayResponse = {
-  game_date: string;
-  question: PredictionQuestion | null;
-  voting_open: boolean;
-  opens_at: string | null;
-  cutoff_at: string | null;
-  my_vote: { prediction: boolean; voted_at: string } | null;
-  vote_counts: { will_happen: number; will_not_happen: number };
-};
-
-export type PredictionHistoryEntry = PredictionQuestion & {
-  vote_counts: { will_happen: number; will_not_happen: number };
 };
