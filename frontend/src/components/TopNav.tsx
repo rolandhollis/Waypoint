@@ -1,8 +1,8 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { LucideIcon } from "lucide-react";
 import {
-  BookOpen,
   ChevronDown,
+  FileBarChart,
   Layers,
   ListOrdered,
 } from "lucide-react";
@@ -22,7 +22,7 @@ import {
 const DROPDOWN_ICONS: Record<string, LucideIcon> = {
   plan: ListOrdered,
   queues: Layers,
-  reference: BookOpen,
+  reports: FileBarChart,
 };
 
 const DROPDOWN_CONTENT_CLASS =

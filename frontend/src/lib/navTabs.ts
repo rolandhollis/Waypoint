@@ -84,7 +84,6 @@ export const TAB_ROUTES: Record<TabLabelKey, string> = {
 export const PRIMARY_NAV_KEYS: TabLabelKey[] = [
   "board",
   "roadmap",
-  "status_report",
   "design",
   "ab_testing",
 ];
@@ -92,7 +91,7 @@ export const PRIMARY_NAV_KEYS: TabLabelKey[] = [
 
 export type NavDropdownSection = {
   keys: TabLabelKey[];
-  /** Optional in-menu section label (e.g. "Reference"). */
+  /** Optional in-menu section label. */
   label?: string;
 };
 
@@ -118,9 +117,9 @@ export const NAV_DROPDOWN_GROUPS: NavDropdownGroup[] = [
     sections: [{ keys: ["simple_features", "feature_groups"] }],
   },
   {
-    id: "reference",
-    menuLabel: "Reference",
-    sections: [{ keys: ["kpis", "completed", "phases"] }],
+    id: "reports",
+    menuLabel: "Reports",
+    sections: [{ keys: ["status_report", "kpis", "completed", "phases"] }],
   },
 ];
 
