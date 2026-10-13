@@ -20,6 +20,7 @@ import {
 } from "../lib/designQueue.js";
 import { fireMentionEmail } from "../notifications/mentionEmail.js";
 import { getExperimentContext } from "../lib/experimentContext.js";
+import { enqueueJiraSync } from "../lib/jiraSync.js";
 
 /** Ordered phase-date fields, earliest → latest. Used by both the
  * internal-ordering validator and the forward-cascade helper. */
@@ -952,6 +953,15 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
       });
     }
 
+    // Epics auto-create a linked Jira issue when sync is enabled.
+    if (nextType === "epic") {
+      await enqueueJiraSync(client, {
+        groupId,
+        projectId,
+        action: "create",
+      });
+    }
+
     const { rows: finalRows } = await client.query<ProjectRow>(
       `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
       [projectId],
@@ -1261,6 +1271,12 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
       }
     }
 
+    await enqueueJiraSync(client, {
+      groupId,
+      projectId,
+      action: "update",
+    });
+
     const { rows: finalRows } = await client.query<ProjectRow>(
       `SELECT ${PROJECT_COLUMNS} FROM projects p WHERE p.id = $1`,
       [projectId],
@@ -1416,6 +1432,27 @@ async function moveProjectImpl(
       toLaneId: to,
       userId: args.userId,
     });
+
+    const { rows: destLane } = await client.query<{
+      is_terminal: boolean;
+      is_archive: boolean;
+    }>(`SELECT is_terminal, COALESCE(is_archive, FALSE) AS is_archive FROM swim_lanes WHERE id = $1`, [
+      to,
+    ]);
+    const terminal = !!(destLane[0]?.is_terminal || destLane[0]?.is_archive);
+    await enqueueJiraSync(client, {
+      groupId: args.groupId,
+      projectId: existing.id,
+      action: "update",
+    });
+    if (terminal) {
+      await enqueueJiraSync(client, {
+        groupId: args.groupId,
+        projectId: existing.id,
+        action: "transition",
+        payload: { statusName: "Done" },
+      });
+    }
   }
 
   const { rows: updated } = await client.query<ProjectRow>(

@@ -296,6 +296,13 @@ const constantsPatchSchema = z
   .object({
     app_name: z.string().trim().min(1).max(60).nullable().optional(),
     email_title: z.string().trim().min(1).max(80).nullable().optional(),
+    jira_brand_code: z
+      .string()
+      .trim()
+      .min(1)
+      .max(40)
+      .nullable()
+      .optional(),
     tab_labels: tabLabelsPatchSchema.nullable().optional(),
     weekly_status_schedule: weeklyStatusSchedulePatchSchema.nullable().optional(),
   })
@@ -318,6 +325,11 @@ function mergeConstantsBag(
   if (body.email_title !== undefined) {
     if (body.email_title === null) delete bag.email_title;
     else bag.email_title = body.email_title;
+  }
+
+  if (body.jira_brand_code !== undefined) {
+    if (body.jira_brand_code === null) delete bag.jira_brand_code;
+    else bag.jira_brand_code = body.jira_brand_code;
   }
 
   if (body.tab_labels !== undefined) {

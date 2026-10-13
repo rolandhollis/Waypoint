@@ -18,6 +18,7 @@ import {
   setSessionCookie,
   ttlFor,
 } from "../auth/session.js";
+import { requestAccountAccess } from "../auth/accessRequest.js";
 import {
   consumePasswordResetToken,
   hashResetToken,
@@ -214,6 +215,79 @@ authRouter.post("/forgot-password", async (req, res) => {
     // callers. Log for operators; the user's next attempt (or
     // support's escalation) will surface real issues.
     console.error("forgot-password send failed", err);
+  }
+  res.status(204).end();
+});
+
+// -----------------------------------------------------------------
+// Unauthenticated access request (emails super-admins)
+// -----------------------------------------------------------------
+
+const ACCESS_WINDOW_MS = 15 * 60 * 1000;
+const ACCESS_MAX_REQUESTS = 5;
+const accessFailures = new Map<string, FailBucket>();
+
+function recordAccessRequest(key: string): void {
+  const now = Date.now();
+  const cur = accessFailures.get(key);
+  if (!cur || cur.resetAt <= now) {
+    accessFailures.set(key, { count: 1, resetAt: now + ACCESS_WINDOW_MS });
+    return;
+  }
+  cur.count++;
+}
+
+function isAccessLocked(key: string): boolean {
+  const cur = accessFailures.get(key);
+  if (!cur) return false;
+  if (cur.resetAt <= Date.now()) {
+    accessFailures.delete(key);
+    return false;
+  }
+  return cur.count >= ACCESS_MAX_REQUESTS;
+}
+
+const requestAccessSchema = z.object({
+  email: z.string().email().max(254),
+  name: z.string().trim().min(1).max(120),
+  message: z.string().trim().max(2000).optional().nullable(),
+});
+
+/**
+ * POST /api/auth/request-access
+ *
+ * Public form for people who need an account. Emails every
+ * `is_super_user` with the details + a link to Admin so they can
+ * create the user (existing invite flow). Always 204 when the body
+ * parses — same anti-enumeration stance as forgot-password.
+ */
+authRouter.post("/request-access", async (req, res) => {
+  if (config.authMode !== "password") {
+    res.status(400).json({ error: "auth mode does not use password login" });
+    return;
+  }
+  const body = requestAccessSchema.parse(req.body);
+  const key = body.email.toLowerCase();
+
+  if (isAccessLocked(key)) {
+    res.status(429).json({ error: "too many access requests; try again later" });
+    return;
+  }
+  recordAccessRequest(key);
+
+  try {
+    const result = await requestAccountAccess({
+      email: body.email,
+      name: body.name,
+      message: body.message,
+    });
+    if (result.alreadyUser) {
+      console.info(`[access-request] ${key} already has an account; skipped email`);
+    } else if (!result.emailed) {
+      console.warn(`[access-request] ${key} not emailed (no recipients or dry-run)`);
+    }
+  } catch (err) {
+    console.error("request-access send failed", err);
   }
   res.status(204).end();
 });

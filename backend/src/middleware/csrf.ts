@@ -22,10 +22,19 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // POST can't produce a valid token without the shared secret.
 const CSRF_EXEMPT_PATHS = new Set(["/api/notifications/unsubscribe"]);
 
+function isCsrfExempt(path: string): boolean {
+  if (CSRF_EXEMPT_PATHS.has(path)) return true;
+  // Jira Cloud webhooks POST without a browser Origin.
+  if (path === "/api/webhooks/jira" || path.startsWith("/api/webhooks/jira/")) {
+    return true;
+  }
+  return false;
+}
+
 export function csrfGuard(req: Request, res: Response, next: NextFunction) {
   if (config.authMode !== "password") return next();
   if (SAFE_METHODS.has(req.method)) return next();
-  if (CSRF_EXEMPT_PATHS.has(req.path)) return next();
+  if (isCsrfExempt(req.path)) return next();
 
   const origin = req.header("origin") ?? deriveOriginFromReferer(req.header("referer"));
 

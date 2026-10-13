@@ -25,8 +25,10 @@ import {
   type DependencyStatus,
   type PhaseKey,
 } from "../lib/dependencies";
+import { cn } from "../lib/cn";
 import { computePhases } from "../lib/phaseCompute";
 import { compareGroupBySortKey, resolveProjectGroup } from "../lib/roadmapGrouping";
+import { resolveGroupExpanded } from "../lib/roadmapGroupExpand";
 import { computeEpicSubtaskSegments, type EpicSubtaskSegment } from "../lib/epicSegments";
 import { useCanWrite, useKpis, useProjects } from "../lib/queries";
 import { childrenByParent, descendants, indexById, rootEpic } from "../lib/hierarchy";
@@ -353,6 +355,8 @@ export function GanttTimeline(props: Props) {
   const expandAllEpics = useViewStore((s) => s.expandAllEpics);
   const collapseAllEpics = useViewStore((s) => s.collapseAllEpics);
   const expandedSet = useMemo(() => new Set(expandedEpicIds), [expandedEpicIds]);
+  const groupExpandOverrides = useViewStore((s) => s.roadmapGroupExpandOverrides);
+  const setRoadmapGroupExpanded = useViewStore((s) => s.setRoadmapGroupExpanded);
 
   // Horizontal-scroll container ref. In the sticky-header layout
   // this points at the OUTER card (whose overflow-auto scrolls both
@@ -569,6 +573,28 @@ export function GanttTimeline(props: Props) {
     ],
   );
 
+  // Expand/collapse per labeled group. Defaults from project activity
+  // (collapsed when no in-progress / upcoming work); user toggles
+  // persist in `roadmapGroupExpandOverrides` (shared with Compact).
+  const groupExpanded = useMemo(() => {
+    const out = new Map<string, boolean>();
+    for (const g of groups) {
+      if (g.label == null) {
+        out.set(g.key, true);
+        continue;
+      }
+      out.set(
+        g.key,
+        resolveGroupExpanded(
+          g.key,
+          g.rows.map((r) => r.project),
+          groupExpandOverrides,
+        ),
+      );
+    }
+    return out;
+  }, [groups, groupExpandOverrides]);
+
   const lanesById = useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
   // Row positions map — projectId → top Y of that row within the
@@ -580,19 +606,23 @@ export function GanttTimeline(props: Props) {
   // <g transform="translate(0, HEADER_HEIGHT)"> so these same
   // coordinates land at the correct absolute Y there. Keeping the
   // math in one system means we don't have to fork the render loop.
+  // Collapsed groups omit their project rows so arrows / hitboxes
+  // stay aligned with the visible label column.
   const rowPositions = useMemo(() => {
     const out = new Map<string, { rowY: number; project: Project }>();
     let cursorY = 0;
     groups.forEach((g, gi) => {
       if (gi > 0 && g.label) cursorY += GROUP_GAP;
       if (g.label) cursorY += GROUP_HEADER_HEIGHT;
+      const expanded = groupExpanded.get(g.key) ?? true;
+      if (!expanded) return;
       g.rows.forEach((row, idx) => {
         out.set(row.project.id, { rowY: cursorY + idx * ROW_HEIGHT, project: row.project });
       });
       cursorY += g.rows.length * ROW_HEIGHT;
     });
     return out;
-  }, [groups]);
+  }, [groups, groupExpanded]);
 
   // Total pixel height of the body content (everything below the
   // header strip). Used to size the body SVG in interactive mode and
@@ -600,13 +630,16 @@ export function GanttTimeline(props: Props) {
   // full-height fills of the "today" line and month gridlines in the
   // body SVG so they don't have to reach for a magic 9999.
   const bodyHeight = useMemo(() => (
-    groups.reduce((s, g, gi) => (
-      s
-      + (gi > 0 && g.label ? GROUP_GAP : 0)
-      + (g.label ? GROUP_HEADER_HEIGHT : 0)
-      + g.rows.length * ROW_HEIGHT
-    ), 0)
-  ), [groups]);
+    groups.reduce((s, g, gi) => {
+      const expanded = groupExpanded.get(g.key) ?? true;
+      return (
+        s
+        + (gi > 0 && g.label ? GROUP_GAP : 0)
+        + (g.label ? GROUP_HEADER_HEIGHT : 0)
+        + (expanded ? g.rows.length * ROW_HEIGHT : 0)
+      );
+    }, 0)
+  ), [groups, groupExpanded]);
 
   // Capacity overloads are a workspace-level truth, not a filtered one:
   // Alice is still overloaded on Aug 12 even if the current filter
@@ -1015,6 +1048,7 @@ export function GanttTimeline(props: Props) {
   const labelBodyInner = clustersByGroup.map((cg, gi) => {
     const clusters = cg.clusters;
     const rootIds = clusters.map((c) => c.rootId);
+    const expanded = groupExpanded.get(cg.key) ?? true;
     // Every cluster inside a group shares the same containerId so
     // the drag-end handler can cheaply reject drops that cross
     // group boundaries (see `data.current.groupKey`).
@@ -1041,10 +1075,23 @@ export function GanttTimeline(props: Props) {
         {gi > 0 && cg.label ? <div style={{ height: GROUP_GAP }} /> : null}
         {cg.label ? (
           <div
-            className="flex items-center justify-between border-b border-wp-stone bg-wp-stone/30 px-3 text-xs font-semibold uppercase tracking-wide text-wp-slate"
+            className="flex items-center justify-between border-b border-wp-stone bg-wp-stone/30 pr-3 text-xs font-semibold uppercase tracking-wide text-wp-slate"
             style={{ height: GROUP_HEADER_HEIGHT }}
           >
-            <span className="flex min-w-0 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setRoadmapGroupExpanded(cg.key, !expanded)}
+              aria-expanded={expanded}
+              title={expanded ? `Collapse ${cg.label}` : `Expand ${cg.label}`}
+              className="flex min-w-0 items-center gap-1.5 px-3 py-0 text-left text-xs font-semibold uppercase tracking-wide text-wp-slate hover:text-wp-ink"
+            >
+              <ChevronRight
+                size={14}
+                className={cn(
+                  "shrink-0 text-wp-slate transition-transform",
+                  expanded && "rotate-90",
+                )}
+              />
               {/* KPI grouping keys off the KPI's canonical color, so
                   we show the same swatch users see in the KPI report
                   / picker. Other groupings don't set g.color and
@@ -1057,21 +1104,23 @@ export function GanttTimeline(props: Props) {
                 />
               ) : null}
               <span className="truncate">{cg.label}</span>
-            </span>
+            </button>
             <span>{cg.rowCount}</span>
           </div>
         ) : null}
-        {rowReorderEnabled ? (
-          <SortableContext
-            id={contextId}
-            items={rootIds.map((rid) => makeSortableId(cg.key, rid))}
-            strategy={verticalListSortingStrategy}
-          >
-            {groupClusters}
-          </SortableContext>
-        ) : (
-          groupClusters
-        )}
+        {expanded ? (
+          rowReorderEnabled ? (
+            <SortableContext
+              id={contextId}
+              items={rootIds.map((rid) => makeSortableId(cg.key, rid))}
+              strategy={verticalListSortingStrategy}
+            >
+              {groupClusters}
+            </SortableContext>
+          ) : (
+            groupClusters
+          )
+        ) : null}
       </div>
     );
   });
@@ -1283,6 +1332,8 @@ export function GanttTimeline(props: Props) {
           if (gi > 0 && g.label) cursorY += GROUP_GAP;
           const groupStartY = cursorY;
           if (g.label) cursorY += GROUP_HEADER_HEIGHT;
+          const expanded = groupExpanded.get(g.key) ?? true;
+          const visibleRows = expanded ? g.rows : [];
           const rowsTop = cursorY;
           // Per-row transparent rect stretching the full chart
           // width. Sits BEHIND the bar + overload overlays in paint
@@ -1294,7 +1345,7 @@ export function GanttTimeline(props: Props) {
           // path so we don't double-fire; overload tooltips get
           // their own onClick further down to preserve the click
           // affordance where they paint over this rect.
-          const rowHitRects: React.ReactNode[] = g.rows.map((row, idx) => {
+          const rowHitRects: React.ReactNode[] = visibleRows.map((row, idx) => {
             const p = row.project;
             const rowY = cursorY + idx * ROW_HEIGHT;
             return (
@@ -1311,7 +1362,7 @@ export function GanttTimeline(props: Props) {
             );
           });
           const rowOverloadOverlays: React.ReactNode[] = [];
-          const rows = g.rows.map((row, idx) => {
+          const rows = visibleRows.map((row, idx) => {
             const p = row.project;
             const rowY = cursorY + idx * ROW_HEIGHT;
             const activeDrag = drag?.projectId === p.id ? drag : null;
@@ -1390,7 +1441,7 @@ export function GanttTimeline(props: Props) {
               />
             );
           });
-          cursorY += g.rows.length * ROW_HEIGHT;
+          cursorY += visibleRows.length * ROW_HEIGHT;
           // Overload overlay: only meaningful when the group key IS
           // an entity id (owner or team mode). We paint a
           // translucent red band across the group's Y range for
@@ -1892,150 +1943,196 @@ function Bar(props: {
         style={{ cursor: canEdit ? "grab" : "pointer" }}
         onPointerDown={(e) => onStartDrag(e, p.id, "move")}
       >
-        {subtaskSegments ? (
-          // Epic with scheduled subtasks: paint the bar from the
-          // rolled-up subtask timeline. Each segment carries one of
-          // the five single-phase kinds (styled like the per-phase
-          // fallback below) or "mixed" (polka dot overlay).
-          //
-          // PDF mode drops every `url(#...)` pattern/gradient reference
-          // and paints flat solids instead. html-to-image serialises
-          // the captured DOM into a `<foreignObject>` inside a data:
-          // URI, and Chromium's SVG renderer inside that context has
-          // been observed to silently fail to resolve fragment
-          // identifiers on `<pattern>` / `<linearGradient>` fills —
-          // which drops the ENTIRE `<rect>` (not just the overlay),
-          // leaving the exported chart blank. Solids capture reliably
-          // and read cleanly in print, so PDF mode uses them exclusively.
-          subtaskSegments.map((seg, i) => {
-            const segX = differenceInCalendarDays(seg.start, chartStart) * dayPx;
-            const segW = Math.max(2, differenceInCalendarDays(seg.end, seg.start) * dayPx);
-            if (seg.kind === "awaitingDev" || seg.kind === "awaitingOptimization") {
-              return (
-                <g key={`seg-${i}`}>
-                  {/* Interactive: light slate base + darker slate hatch overlay.
-                      PDF: darker slate solid (matches the hatch tone so awaiting
-                      periods read as "muted" against phase colors in print). */}
-                  <rect x={segX} y={barY + barH / 2 - 2} width={segW} height={4} fill={pdfMode ? "#94A3B8" : "#CBD5E1"} rx={2} />
-                  {pdfMode ? null : (
-                    <rect x={segX} y={barY + barH / 2 - 2} width={segW} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
-                  )}
-                </g>
-              );
-            }
-            if (seg.kind === "discovery") {
-              return <rect key={`seg-${i}`} x={segX} y={barY} width={segW} height={barH} fill={base} rx={3} />;
-            }
-            if (seg.kind === "development") {
-              return (
-                <g key={`seg-${i}`}>
-                  <rect x={segX} y={barY} width={segW} height={barH} fill={base} fillOpacity={0.55} rx={3} />
-                  {pdfMode ? null : (
-                    <rect x={segX} y={barY} width={segW} height={barH} fill="url(#phase-hatch)" rx={3} />
-                  )}
-                </g>
-              );
-            }
-            if (seg.kind === "optimization") {
-              return <rect key={`seg-${i}`} x={segX} y={barY} width={segW} height={barH} fill={base} fillOpacity={0.25} rx={3} />;
-            }
-            // seg.kind === "mixed"
-            return (
-              <g key={`seg-${i}`}>
-                <rect x={segX} y={barY} width={segW} height={barH} fill={base} fillOpacity={0.5} rx={3} />
-                {pdfMode ? null : (
-                  <rect x={segX} y={barY} width={segW} height={barH} fill="url(#mixed-polka)" rx={3} />
-                )}
-              </g>
-            );
-          })
-        ) : (
-          <>
-            {discGeom ? (
-              <rect x={discGeom.x} y={barY} width={discGeom.w} height={barH} fill={base} rx={3} />
-            ) : null}
-            {devGapGeom ? (
-              <g>
-                <rect x={devGapGeom.x} y={barY + barH / 2 - 2} width={devGapGeom.w} height={4} fill={pdfMode ? "#94A3B8" : "#CBD5E1"} rx={2} />
-                {pdfMode ? null : (
-                  <rect x={devGapGeom.x} y={barY + barH / 2 - 2} width={devGapGeom.w} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
-                )}
-              </g>
-            ) : null}
-            {devGeom ? (
-              <>
-                <rect x={devGeom.x} y={barY} width={devGeom.w} height={barH} fill={base} fillOpacity={0.55} rx={3} />
-                {pdfMode ? null : (
-                  <rect x={devGeom.x} y={barY} width={devGeom.w} height={barH} fill="url(#phase-hatch)" rx={3} />
-                )}
-                {/* Unconfirmed dev estimate — dashed amber outline signals
-                    that the segment's timing is a PM best-guess pending
-                    engineering sign-off. Rendered above the fill layers so
-                    the dashes stay legible against the hatched color.
-                    Skipped in the subtask-rollup path because the epic's
-                    own flag doesn't correspond to any single visible
-                    segment there. Also skipped when there is no
-                    Development phase to outline. */}
-                {!p.dev_estimate_sourced_by_dev ? (
-                  <rect
-                    x={devGeom.x + 0.5}
-                    y={barY + 0.5}
-                    width={Math.max(0, devGeom.w - 1)}
-                    height={barH - 1}
-                    rx={3}
-                    fill="none"
-                    stroke="#f59e0b"
-                    strokeWidth={1.5}
-                    strokeDasharray="4 3"
-                    pointerEvents="none"
-                  />
-                ) : null}
-                {/* Blocked stop-sign on the left edge of the development
-                    bar (migration 052). Native <title> shows the reason
-                    on hover. Hit target is slightly larger than the glyph. */}
-                {p.is_blocked ? (
-                  <g
-                    transform={`translate(${devGeom.x - 2}, ${barY + barH / 2})`}
-                    style={{ pointerEvents: "auto", cursor: "help" }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={(e) => { e.stopPropagation(); onOpen(p.id); }}
-                  >
-                    <title>
-                      {p.blocked_reason?.trim()
-                        ? `Blocked: ${p.blocked_reason.trim()}`
-                        : "Blocked"}
-                    </title>
-                    <rect x={-10} y={-10} width={20} height={20} fill="transparent" />
-                    {/* Octagon stop-sign with an X (lucide Octagon path). */}
-                    <path
-                      d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86L7.86 2z"
-                      transform="translate(-7,-7) scale(0.58)"
-                      fill="#DC2626"
-                      stroke="#7F1D1D"
-                      strokeWidth={1.5}
-                      strokeLinejoin="round"
-                    />
-                    <g stroke="#ffffff" strokeWidth={1.75} strokeLinecap="round" pointerEvents="none">
-                      <line x1={-3.2} y1={-3.2} x2={3.2} y2={3.2} />
-                      <line x1={3.2} y1={-3.2} x2={-3.2} y2={3.2} />
+        {(() => {
+          // Match Compact's phase language: discovery lightest → mid
+          // development → solid final stage; awaiting gaps stay clear
+          // inside a bordered capsule (labels stay in the left column).
+          const hasOpt = Boolean(
+            subtaskSegments
+              ? subtaskSegments.some((s) => s.kind === "optimization")
+              : optGeom,
+          );
+          const discOpacity = 0.48;
+          const midOpacity = hasOpt ? 0.68 : 1;
+          const finalOpacity = 1;
+          const barSpanW = Math.max(2, overallEndX - firstStartX);
+
+          return (
+            <>
+              {/* Invisible hit target across the full span (including
+                  clear awaiting gaps) so drag/click still work there. */}
+              <rect
+                x={firstStartX}
+                y={barY}
+                width={barSpanW}
+                height={barH}
+                fill="transparent"
+                rx={3}
+              />
+              {subtaskSegments ? (
+                // Epic with scheduled subtasks: paint the bar from the
+                // rolled-up subtask timeline. Awaiting gaps intentionally
+                // paint nothing — the outer border frames the clear span.
+                //
+                // PDF mode drops every `url(#...)` pattern reference and
+                // paints flat solids (Chromium foreignObject quirk).
+                subtaskSegments.map((seg, i) => {
+                  const segX = differenceInCalendarDays(seg.start, chartStart) * dayPx;
+                  const segW = Math.max(2, differenceInCalendarDays(seg.end, seg.start) * dayPx);
+                  if (seg.kind === "awaitingDev" || seg.kind === "awaitingOptimization") {
+                    return null;
+                  }
+                  if (seg.kind === "discovery") {
+                    return (
+                      <rect
+                        key={`seg-${i}`}
+                        x={segX}
+                        y={barY}
+                        width={segW}
+                        height={barH}
+                        fill={base}
+                        fillOpacity={discOpacity}
+                      />
+                    );
+                  }
+                  if (seg.kind === "development") {
+                    return (
+                      <rect
+                        key={`seg-${i}`}
+                        x={segX}
+                        y={barY}
+                        width={segW}
+                        height={barH}
+                        fill={base}
+                        fillOpacity={midOpacity}
+                      />
+                    );
+                  }
+                  if (seg.kind === "optimization") {
+                    return (
+                      <rect
+                        key={`seg-${i}`}
+                        x={segX}
+                        y={barY}
+                        width={segW}
+                        height={barH}
+                        fill={base}
+                        fillOpacity={finalOpacity}
+                      />
+                    );
+                  }
+                  // seg.kind === "mixed"
+                  return (
+                    <g key={`seg-${i}`}>
+                      <rect
+                        x={segX}
+                        y={barY}
+                        width={segW}
+                        height={barH}
+                        fill={base}
+                        fillOpacity={0.58}
+                      />
+                      {pdfMode ? null : (
+                        <rect x={segX} y={barY} width={segW} height={barH} fill="url(#mixed-polka)" />
+                      )}
                     </g>
-                  </g>
-                ) : null}
-              </>
-            ) : null}
-            {optGapGeom ? (
-              <g>
-                <rect x={optGapGeom.x} y={barY + barH / 2 - 2} width={optGapGeom.w} height={4} fill={pdfMode ? "#94A3B8" : "#CBD5E1"} rx={2} />
-                {pdfMode ? null : (
-                  <rect x={optGapGeom.x} y={barY + barH / 2 - 2} width={optGapGeom.w} height={4} fill="url(#awaiting-dev-hatch)" rx={2} />
-                )}
-              </g>
-            ) : null}
-            {optGeom ? (
-              <rect x={optGeom.x} y={barY} width={optGeom.w} height={barH} fill={base} fillOpacity={0.25} rx={3} />
-            ) : null}
-          </>
-        )}
+                  );
+                })
+              ) : (
+                <>
+                  {discGeom ? (
+                    <rect
+                      x={discGeom.x}
+                      y={barY}
+                      width={discGeom.w}
+                      height={barH}
+                      fill={base}
+                      fillOpacity={discOpacity}
+                    />
+                  ) : null}
+                  {/* Awaiting gaps: no fill — outer border is the cue. */}
+                  {devGeom ? (
+                    <>
+                      <rect
+                        x={devGeom.x}
+                        y={barY}
+                        width={devGeom.w}
+                        height={barH}
+                        fill={base}
+                        fillOpacity={optGeom ? midOpacity : finalOpacity}
+                      />
+                      {/* Unconfirmed dev estimate — dashed amber outline. */}
+                      {!p.dev_estimate_sourced_by_dev ? (
+                        <rect
+                          x={devGeom.x + 0.5}
+                          y={barY + 0.5}
+                          width={Math.max(0, devGeom.w - 1)}
+                          height={barH - 1}
+                          rx={2}
+                          fill="none"
+                          stroke="#f59e0b"
+                          strokeWidth={1.5}
+                          strokeDasharray="4 3"
+                          pointerEvents="none"
+                        />
+                      ) : null}
+                      {p.is_blocked ? (
+                        <g
+                          transform={`translate(${devGeom.x - 2}, ${barY + barH / 2})`}
+                          style={{ pointerEvents: "auto", cursor: "help" }}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => { e.stopPropagation(); onOpen(p.id); }}
+                        >
+                          <title>
+                            {p.blocked_reason?.trim()
+                              ? `Blocked: ${p.blocked_reason.trim()}`
+                              : "Blocked"}
+                          </title>
+                          <rect x={-10} y={-10} width={20} height={20} fill="transparent" />
+                          <path
+                            d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86L7.86 2z"
+                            transform="translate(-7,-7) scale(0.58)"
+                            fill="#DC2626"
+                            stroke="#7F1D1D"
+                            strokeWidth={1.5}
+                            strokeLinejoin="round"
+                          />
+                          <g stroke="#ffffff" strokeWidth={1.75} strokeLinecap="round" pointerEvents="none">
+                            <line x1={-3.2} y1={-3.2} x2={3.2} y2={3.2} />
+                            <line x1={3.2} y1={-3.2} x2={-3.2} y2={3.2} />
+                          </g>
+                        </g>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {optGeom ? (
+                    <rect
+                      x={optGeom.x}
+                      y={barY}
+                      width={optGeom.w}
+                      height={barH}
+                      fill={base}
+                      fillOpacity={finalOpacity}
+                    />
+                  ) : null}
+                </>
+              )}
+              {/* Capsule border — frames clear awaiting gaps so they
+                  read as "no work" without a pale fill. */}
+              <rect
+                x={firstStartX}
+                y={barY}
+                width={barSpanW}
+                height={barH}
+                fill="none"
+                stroke={base}
+                strokeWidth={1.5}
+                rx={3}
+                pointerEvents="none"
+              />
+            </>
+          );
+        })()}
       </g>
 
       {/* Resize handles — positioned at each divider. Wider transparent hitbox for

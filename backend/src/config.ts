@@ -125,4 +125,34 @@ export const config = {
     apiKey: process.env.ANTHROPIC_API_KEY ?? "",
     model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-4-5-20250929",
   },
+  /**
+   * Atlassian Jira Software sync (Waypoint ↔ epic). Off by default.
+   * When enabled + credentials present, project writes enqueue an
+   * outbox row; a cron worker creates/updates epics and stores
+   * jira_key / jira_issue_id on the project.
+   */
+  jira: {
+    syncEnabled: (process.env.JIRA_SYNC_ENABLED ?? "false").toLowerCase() === "true",
+    baseUrl: (process.env.JIRA_BASE_URL ?? "").replace(/\/$/, ""),
+    email: process.env.JIRA_EMAIL ?? "",
+    apiToken: process.env.JIRA_API_TOKEN ?? "",
+    projectKey: process.env.JIRA_PROJECT_KEY ?? "",
+    issueType: process.env.JIRA_ISSUE_TYPE ?? "Epic",
+    webhookSecret: process.env.JIRA_WEBHOOK_SECRET ?? "",
+    /**
+     * SHOP Brand multicheckboxes field id (e.g. customfield_25007).
+     * Empty disables writing Brand on API sync.
+     */
+    brandFieldId: (process.env.JIRA_BRAND_FIELD_ID ?? "customfield_25007").trim(),
+    /**
+     * SHOP Pod multicheckboxes field id (e.g. customfield_25040).
+     * Empty disables writing Pod on API sync.
+     */
+    podFieldId: (process.env.JIRA_POD_FIELD_ID ?? "customfield_25040").trim(),
+    /** Comma-separated Jira status names that mean "complete" inbound. */
+    doneStatuses: (process.env.JIRA_DONE_STATUSES ?? "Done,Closed")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  },
 };

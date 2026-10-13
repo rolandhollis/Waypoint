@@ -95,6 +95,11 @@ export type AppConstants = {
   email_title?: string | null;
   /** Per-nav-tab label overrides for this tenant's top bar. */
   tab_labels?: TabLabels | null;
+  /**
+   * SHOP / JPD Brand option for this workspace (e.g. RMN, VC).
+   * Used by Jira sync + CSV export. Unset → default "RMN".
+   */
+  jira_brand_code?: string | null;
   /** Admin overrides for weekly status cadence (partial — unset keys use defaults). */
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */
@@ -374,6 +379,12 @@ export type ProjectRow = {
   is_blocked: boolean;
   /** Free-text reason shown when `is_blocked` is true. Null when clear. */
   blocked_reason: string | null;
+  /** Linked Jira Software issue key (e.g. SHOP-123), when sync is active. */
+  jira_key: string | null;
+  /** Atlassian issue id for stable webhook matching. */
+  jira_issue_id: string | null;
+  jira_synced_at: Date | null;
+  jira_sync_error: string | null;
   /**
    * PM flag: has the dev-phase estimate been vetted by an engineer?
    * Default false — old rows carry no confirmation, new rows are

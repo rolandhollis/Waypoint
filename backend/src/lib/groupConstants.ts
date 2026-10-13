@@ -28,6 +28,11 @@ export function deriveConstants(raw: unknown): AppConstants {
     if (v === null) out.email_title = null;
     else if (typeof v === "string") out.email_title = v;
   }
+  if ("jira_brand_code" in bag) {
+    const v = bag.jira_brand_code;
+    if (v === null) out.jira_brand_code = null;
+    else if (typeof v === "string") out.jira_brand_code = v;
+  }
   if ("tab_labels" in bag) {
     const v = bag.tab_labels;
     if (v === null) out.tab_labels = null;
@@ -124,6 +129,15 @@ export async function loadGroupWeeklyStatusSchedule(groupId: string): Promise<We
 export function emailTitleForConstants(constants: AppConstants): string {
   const title = constants.email_title?.trim();
   return title && title.length > 0 ? title : config.email.fromName;
+}
+
+/** Default SHOP Brand option when a workspace has not set one. */
+export const DEFAULT_JIRA_BRAND_CODE = "RMN";
+
+/** Effective Brand code for Jira sync / JPD export from this tenant. */
+export function jiraBrandCodeForConstants(constants: AppConstants): string {
+  const code = constants.jira_brand_code?.trim();
+  return code && code.length > 0 ? code : DEFAULT_JIRA_BRAND_CODE;
 }
 
 /** Load derived constants for one, many, or all groups. */

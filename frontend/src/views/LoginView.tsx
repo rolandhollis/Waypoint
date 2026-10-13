@@ -7,11 +7,11 @@ import { consumePostLoginRedirect } from "../lib/postLoginRedirect";
 import type { User } from "../lib/types";
 
 /**
- * Password-mode login screen. Standard email + password form plus a
- * self-serve "forgot password" link that kicks off an email-based
- * reset. No "sign up" (roster stays admin-managed) and no auto
- * lockout copy — the server returns a friendly 429 when the login
- * limiter fires.
+ * Password-mode login screen. Standard email + password form plus
+ * self-serve "forgot password" and "request access" links. Roster
+ * stays admin-managed — request access emails a super-admin who
+ * creates the account. The server returns a friendly 429 when the
+ * login limiter fires.
  */
 export function LoginView() {
   const [email, setEmail] = useState("");
@@ -149,6 +149,13 @@ export function LoginView() {
             className="font-medium text-wp-red hover:underline"
           >
             Forgot your password?
+          </Link>
+          <span className="mx-1.5 text-wp-stone">·</span>
+          <Link
+            to="/request-access"
+            className="font-medium text-wp-red hover:underline"
+          >
+            Need an account?
           </Link>
         </p>
       </form>

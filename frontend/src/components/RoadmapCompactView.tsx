@@ -1,8 +1,10 @@
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { addDays, addMonths, differenceInCalendarDays, format, startOfMonth } from "date-fns";
+import { ChevronRight } from "lucide-react";
 
 import { computePhases } from "../lib/phaseCompute";
 import { readableOn } from "../lib/colors";
+import { resolveGroupExpanded } from "../lib/roadmapGroupExpand";
 import {
   compareGroupBySortKey,
   resolveProjectGroup,
@@ -18,21 +20,23 @@ import {
 } from "../lib/roadmapViewport";
 import type { Kpi, Project, SwimLane, Team, User } from "../lib/types";
 import type { ColorBy, GroupBy } from "../lib/viewState";
+import { useViewStore } from "../lib/viewState";
 import { useResizableRoadmapHeight } from "../lib/useResizableRoadmapHeight";
 import { HeightResizer } from "./HeightResizer";
+import { cn } from "../lib/cn";
 
 /**
  * Compact roadmap render — the second Roadmap style option.
  *
  * Drops the left label column entirely and packs items into a
  * minimum number of rows so no two visible bars overlap
- * horizontally within the same row. Each item is a single solid
- * rectangle spanning its earliest → latest plotted date; the item
- * title is rendered inside the bar (centered vertically, truncated
- * with ellipsis when the bar is too narrow). Key-strategic items
- * get a 2px red outline to match the "star" indicator the Rows
- * view surfaces in the label column and Quarters view exposes as a
- * click affordance.
+ * horizontally within the same row. Each item spans its earliest →
+ * latest plotted date; phase stages (discovery / awaiting / dev /
+ * optimization) are painted as subtle opacity bands inside that
+ * single capsule so the bar still reads as one entity. The item
+ * title is rendered inside the bar (truncated when too narrow).
+ * Key-strategic items get a 2px red outline to match the "star"
+ * indicator the Rows view surfaces in the label column.
  *
  * The date-math (chart start/end, day-pixel density, today marker,
  * month header) reuses the same helpers `GanttTimeline` uses so
@@ -239,6 +243,8 @@ export function RoadmapCompactView({
    */
   pinnedGroupKeys?: string[];
 }) {
+  const groupExpandOverrides = useViewStore((s) => s.roadmapGroupExpandOverrides);
+  const setRoadmapGroupExpanded = useViewStore((s) => s.setRoadmapGroupExpanded);
   // Ref-bound to the horizontal + vertical scroll container so the
   // today-snap effect can position `scrollLeft`. Same pattern
   // GanttTimeline uses for its outer scroll card; both views should
@@ -511,6 +517,28 @@ export function RoadmapCompactView({
     return sections;
   }, [projects, viewEnd, colorBy, groupBy, users, lanes, teams, kpis, laneById, teamById, userById, pinnedGroupKeys]);
 
+  // Expand/collapse per labeled section. Defaults from project
+  // activity (collapsed when no in-progress / upcoming work);
+  // user toggles persist in `roadmapGroupExpandOverrides`.
+  const sectionExpanded = useMemo(() => {
+    const out = new Map<string, boolean>();
+    for (const section of packedSections) {
+      if (section.label == null) {
+        out.set(section.key, true);
+        continue;
+      }
+      out.set(
+        section.key,
+        resolveGroupExpanded(
+          section.key,
+          section.bars.map((b) => b.project),
+          groupExpandOverrides,
+        ),
+      );
+    }
+    return out;
+  }, [packedSections, groupExpandOverrides]);
+
   // Per-section vertical geometry. Computed alongside `bodyHeight`
   // so the render pass can look up each section's `headerTop`,
   // `barsTop`, and total height without re-walking the section
@@ -534,15 +562,16 @@ export function RoadmapCompactView({
       }
       const headerTop = cursorY;
       const headerHeight = section.label != null ? SECTION_HEADER_HEIGHT : 0;
+      const expanded = sectionExpanded.get(section.key) ?? true;
       const barsTop = headerTop + headerHeight;
-      const barsHeight = section.rowCount * ROW_HEIGHT;
+      const barsHeight = expanded ? section.rowCount * ROW_HEIGHT : 0;
       layouts.set(section.key, {
         headerTop,
         barsTop,
         height: headerHeight + barsHeight,
       });
       cursorY = barsTop + barsHeight;
-      bars += section.bars.length;
+      if (expanded) bars += section.bars.length;
       renderedSections += 1;
     }
     // Guarantee at least one row of body height so the empty-state
@@ -555,7 +584,7 @@ export function RoadmapCompactView({
       bodyHeight: Math.max(ROW_HEIGHT, cursorY),
       totalBarCount: bars,
     };
-  }, [packedSections]);
+  }, [packedSections, sectionExpanded]);
 
   const today = new Date();
   const todayX = differenceInCalendarDays(today, start) * dayPx;
@@ -714,6 +743,7 @@ export function RoadmapCompactView({
             if (section.label == null) return null;
             const layout = sectionLayouts.get(section.key);
             if (!layout) return null;
+            const expanded = sectionExpanded.get(section.key) ?? true;
             return (
               <div
                 key={`section-header-${section.key}`}
@@ -725,7 +755,20 @@ export function RoadmapCompactView({
                   height: SECTION_HEADER_HEIGHT,
                 }}
               >
-                <div className="sticky left-0 flex h-full w-fit items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wide text-wp-slate">
+                <button
+                  type="button"
+                  onClick={() => setRoadmapGroupExpanded(section.key, !expanded)}
+                  aria-expanded={expanded}
+                  title={expanded ? `Collapse ${section.label}` : `Expand ${section.label}`}
+                  className="sticky left-0 flex h-full w-fit items-center gap-1.5 px-2 text-xs font-semibold uppercase tracking-wide text-wp-slate hover:text-wp-ink"
+                >
+                  <ChevronRight
+                    size={14}
+                    className={cn(
+                      "shrink-0 text-wp-slate transition-transform",
+                      expanded && "rotate-90",
+                    )}
+                  />
                   {section.color ? (
                     <span
                       aria-hidden
@@ -735,7 +778,7 @@ export function RoadmapCompactView({
                   ) : null}
                   <span className="truncate">{section.label}</span>
                   <span className="text-wp-slate/60">{section.bars.length}</span>
-                </div>
+                </button>
               </div>
             );
           })}
@@ -743,6 +786,7 @@ export function RoadmapCompactView({
           {packedSections.flatMap((section) => {
             const layout = sectionLayouts.get(section.key);
             if (!layout) return [];
+            if (!(sectionExpanded.get(section.key) ?? true)) return [];
             return section.bars.map((bar) => {
               const p = bar.project;
               const x = differenceInCalendarDays(bar.startDate, start) * dayPx;
@@ -831,32 +875,72 @@ export function RoadmapCompactView({
                 clampLeft = Math.max(0, rawClampLeft - deficit);
               }
 
+              const phases = computePhases(p);
+              const titleLines = [
+                p.title,
+                `${format(bar.startDate, "MMM d, yyyy")} → ${format(bar.endDate, "MMM d, yyyy")}`,
+                phases.discovery
+                  ? `Discovery: ${format(phases.discovery.start, "MMM d")} → ${format(phases.discovery.end, "MMM d")}`
+                  : null,
+                phases.awaitingDev
+                  ? `Awaiting Dev: ${format(phases.awaitingDev.start, "MMM d")} → ${format(phases.awaitingDev.end, "MMM d")}`
+                  : null,
+                phases.development
+                  ? `Development: ${format(phases.development.start, "MMM d")} → ${format(phases.development.end, "MMM d")}`
+                  : null,
+                phases.awaitingOptimization
+                  ? `Awaiting Optimization: ${format(phases.awaitingOptimization.start, "MMM d")} → ${format(phases.awaitingOptimization.end, "MMM d")}`
+                  : null,
+                phases.optimization
+                  ? `Optimization: ${format(phases.optimization.start, "MMM d")} → ${format(phases.optimization.end, "MMM d")}`
+                  : null,
+              ].filter(Boolean).join("\n");
+
               return (
                 <button
                   type="button"
                   key={`${section.key}-${p.id}`}
                   onClick={() => onOpen(p.id)}
-                  title={`${p.title}\n${format(bar.startDate, "MMM d, yyyy")} → ${format(bar.endDate, "MMM d, yyyy")}`}
-                  className="absolute overflow-hidden rounded-md text-xs font-medium shadow-sm transition hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-red focus-visible:ring-offset-1"
+                  title={titleLines}
+                  className="absolute box-border overflow-hidden rounded-md text-xs font-medium shadow-sm transition hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-wp-red focus-visible:ring-offset-1"
                   style={{
                     left: x,
                     top,
                     width,
                     height,
-                    backgroundColor: bar.color,
                     color: textColor,
+                    // Transparent shell + colored border: work stages
+                    // paint fills inside; awaiting gaps stay clear so
+                    // the chart shows through, while the border keeps
+                    // the capsule (and the in-bar title) readable.
+                    backgroundColor: "transparent",
+                    border: `1.5px solid ${bar.color}`,
+                    // Matched halos for light and dark titles so both
+                    // keep the same optical weight. Dark ring behind
+                    // white text (gaps on white chart); light ring
+                    // behind ink text (same stroke mass, inverted).
+                    textShadow: compactLabelHalo(textColor),
+                    WebkitTextStroke:
+                      textColor === "#ffffff"
+                        ? "0.3px rgba(15, 23, 42, 0.4)"
+                        : "0.3px rgba(255, 255, 255, 0.55)",
+                    // Ensure stroke sits under the glyph fill.
+                    paintOrder: "stroke fill",
                     // Key-strategic items get a 2px red outline per
                     // the reference image — same "star" indicator
                     // the Rows view surfaces in the label column.
-                    // Rendered as `outline` (not `border`) so it
-                    // doesn't consume the bar's inner width and
-                    // shift the title away from the geometric
-                    // pixel span; the -2px offset keeps the outline
-                    // aligned with the bar's visual edge.
+                    // Rendered as `outline` (not replacing `border`)
+                    // so the phase border still frames gaps.
                     outline: p.is_key_strategic ? "2px solid #E01F2D" : undefined,
-                    outlineOffset: p.is_key_strategic ? "-2px" : undefined,
+                    outlineOffset: p.is_key_strategic ? "1px" : undefined,
                   }}
                 >
+                  <CompactPhaseSegments
+                    barStart={bar.startDate}
+                    dayPx={dayPx}
+                    color={bar.color}
+                    phases={phases}
+                  />
                   {/* Adaptive-size label subcomponent. Owns its own
                       measurement effect so the preferred `text-sm
                       font-bold` (14px / weight 700) style downshifts
@@ -898,12 +982,138 @@ export function RoadmapCompactView({
   );
 }
 
+/** Symmetric title halo — same mass for white and ink foregrounds. */
+function compactLabelHalo(textColor: string): string {
+  const ring =
+    textColor === "#ffffff"
+      ? "rgba(15, 23, 42, 0.65)"
+      : "rgba(255, 255, 255, 0.75)";
+  const soft =
+    textColor === "#ffffff"
+      ? "rgba(15, 23, 42, 0.4)"
+      : "rgba(255, 255, 255, 0.5)";
+  return [
+    `0 0 1.5px ${ring}`,
+    `0 0 3px ${soft}`,
+    `0 1px 1.5px ${ring}`,
+    `0 -1px 1.5px ${ring}`,
+  ].join(", ");
+}
+
+/**
+ * Subtle in-bar phase bands for Compact mode.
+ *
+ * Opacity ramps left → right so work deepens toward delivery:
+ * discovery lightest, development mid, final stage (optimization
+ * when present, else development) solid.
+ *
+ * Awaiting-dev / awaiting-optimization gaps paint nothing — the
+ * parent bar's colored border frames the clear region so gaps read
+ * as "no work" while the capsule (and in-bar title) stay legible.
+ */
+function CompactPhaseSegments({
+  barStart,
+  dayPx,
+  color,
+  phases,
+}: {
+  barStart: Date;
+  dayPx: number;
+  color: string;
+  phases: ReturnType<typeof computePhases>;
+}) {
+  if (!phases.scheduled) return null;
+
+  const geom = (interval: { start: Date; end: Date }) => {
+    const left = differenceInCalendarDays(interval.start, barStart) * dayPx;
+    const width = Math.max(2, differenceInCalendarDays(interval.end, interval.start) * dayPx);
+    return { left, width };
+  };
+
+  const disc = phases.discovery ? geom(phases.discovery) : null;
+  const awaitingDev = phases.awaitingDev ? geom(phases.awaitingDev) : null;
+  const dev = phases.development ? geom(phases.development) : null;
+  const awaitingOpt = phases.awaitingOptimization
+    ? geom(phases.awaitingOptimization)
+    : null;
+  const opt = phases.optimization ? geom(phases.optimization) : null;
+
+  const mainPhaseCount = [disc, dev, opt].filter(Boolean).length;
+  // One continuous phase and no gaps → solid fill inside the bordered
+  // shell; multi-phase (or gap) items get the subtle bands.
+  const solidOnly =
+    mainPhaseCount <= 1 && !awaitingDev && !awaitingOpt;
+
+  if (solidOnly) {
+    return (
+      <div
+        className="pointer-events-none absolute inset-0 rounded-[inherit]"
+        aria-hidden
+        style={{ backgroundColor: color }}
+      />
+    );
+  }
+
+  // Final stage gets full color; earlier stages wash toward the left.
+  // Discovery stays the lightest band but is kept opaque enough that
+  // inherited white titles still read cleanly on top of it.
+  const finalIsOpt = Boolean(opt);
+  const finalIsDev = !finalIsOpt && Boolean(dev);
+  const discOpacity = 0.48;
+  const midOpacity = finalIsOpt ? 0.68 : 1;
+  const finalOpacity = 1;
+
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 overflow-hidden rounded-[inherit]"
+      aria-hidden
+    >
+      {disc ? (
+        <div
+          className="absolute inset-y-0"
+          style={{
+            left: disc.left,
+            width: disc.width,
+            backgroundColor: color,
+            opacity: discOpacity,
+          }}
+        />
+      ) : null}
+
+      {dev ? (
+        <div
+          className="absolute inset-y-0"
+          style={{
+            left: dev.left,
+            width: dev.width,
+            backgroundColor: color,
+            opacity: finalIsDev ? finalOpacity : midOpacity,
+          }}
+        />
+      ) : null}
+
+      {opt ? (
+        <div
+          className="absolute inset-y-0"
+          style={{
+            left: opt.left,
+            width: opt.width,
+            backgroundColor: color,
+            opacity: finalOpacity,
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * Resolve the solid bar color for one item under the current
  * `colorBy` dimension. Mirrors `GanttTimeline`'s `pickBase`
  * decision tree so both styles paint the same color for the same
  * (colorBy, project) pair — the Rows view uses this color for the
- * discovery / opt-gradient bar body, and Compact uses it flat.
+ * discovery / opt-gradient bar body, and Compact uses it for the
+ * phase-band base color.
  *
  * Falls back to a neutral slate when the resolved entity is missing
  * (e.g. no primary team when `colorBy === "team"`, no assigned lane

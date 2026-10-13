@@ -16,7 +16,7 @@ import type { Kpi, Project, SwimLane, Team, User } from "./types";
  *   SHOP Pod        → Waypoint team → SHOP Pod select option (else blank).
  *                     Named "SHOP Pod" (not "Pod"/"Team") so the importer
  *                     does not auto-map onto Atlassian Teams.
- *   Brand           → always "RMN" (SHOP custom field)
+ *   Brand           → workspace jira_brand_code (default RMN; SHOP custom field)
  *   Start date      → start_date (Jira CSV: dd/MMM/yy h:mm a)
  *   Project target  → target_date / end date (same pattern; SHOP field name)
  *
@@ -51,10 +51,21 @@ export type JpdLookups = {
   lanes: SwimLane[];
   /** Used to resolve parent titles when the parent is not in the export set. */
   allProjects?: Project[];
+  /**
+   * SHOP Brand option for this workspace (e.g. RMN, VC).
+   * Falls back to DEFAULT_JIRA_BRAND_CODE when unset.
+   */
+  brandCode?: string | null;
 };
 
 const ISSUE_TYPE_IDEA = "Idea";
-const BRAND_RMN = "RMN";
+/** Default when a workspace has not set `jira_brand_code`. */
+export const DEFAULT_JIRA_BRAND_CODE = "RMN";
+
+export function resolveJiraBrandCode(brandCode?: string | null): string {
+  const code = brandCode?.trim();
+  return code && code.length > 0 ? code : DEFAULT_JIRA_BRAND_CODE;
+}
 
 /**
  * Exact SHOP "Pod" select-option labels (production Waypoint teams).
@@ -91,12 +102,20 @@ export function projectsToJpdCsv(projects: Project[], lookups: JpdLookups): stri
   const kpiById = new Map(lookups.kpis.map((k) => [k.id, k]));
   const laneById = new Map(lookups.lanes.map((l) => [l.id, l]));
   const projectById = new Map((lookups.allProjects ?? projects).map((p) => [p.id, p]));
+  const brandCode = resolveJiraBrandCode(lookups.brandCode);
 
   const rows: string[][] = [[...JPD_COLUMNS]];
   for (const p of projects) {
     rows.push(
       JPD_COLUMNS.map((col) =>
-        jpdCell(col, p, { userById, teamById, kpiById, laneById, projectById }),
+        jpdCell(col, p, {
+          userById,
+          teamById,
+          kpiById,
+          laneById,
+          projectById,
+          brandCode,
+        }),
       ),
     );
   }
@@ -114,7 +133,8 @@ export function defaultJpdExportFilename(now: Date = new Date()): string {
  * Three fake ideas with no Waypoint ids. Use this to dry-run the
  * JPD importer before touching real backlog rows.
  */
-export function jpdSampleCsv(): string {
+export function jpdSampleCsv(brandCode?: string | null): string {
+  const brand = resolveJiraBrandCode(brandCode);
   const rows: string[][] = [
     [...JPD_COLUMNS],
     [
@@ -124,7 +144,7 @@ export function jpdSampleCsv(): string {
       "",
       "waypoint-test smoke",
       "Data",
-      BRAND_RMN,
+      brand,
       "",
       "",
       "sample-a",
@@ -141,7 +161,7 @@ export function jpdSampleCsv(): string {
       "",
       "waypoint-test",
       "Personalization",
-      BRAND_RMN,
+      brand,
       "15/Oct/26 12:00 AM",
       "31/Dec/26 12:00 AM",
       "sample-b",
@@ -158,7 +178,7 @@ export function jpdSampleCsv(): string {
       "",
       "waypoint-test child",
       "Product Deals",
-      BRAND_RMN,
+      brand,
       "",
       "",
       "sample-c",
@@ -182,6 +202,7 @@ type Maps = {
   kpiById: Map<string, Kpi>;
   laneById: Map<string, SwimLane>;
   projectById: Map<string, Project>;
+  brandCode: string;
 };
 
 function teamNames(p: Project, m: Maps): string[] {
@@ -195,19 +216,27 @@ const SHOP_POD_BY_LOWER = new Map(
 );
 
 /**
- * First Waypoint team that maps to an existing SHOP Pod option.
- * Unmatched teams leave Pod blank so the importer does not invent options.
+ * All Waypoint teams that map to existing SHOP Pod options (deduped).
+ * Unmatched teams are skipped so the importer does not invent options.
+ * Multiple pods are space-separated for Jira CSV multicheckboxes.
  */
-export function resolveShopPod(teamNamesForItem: string[]): string {
+export function resolveShopPods(teamNamesForItem: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
   for (const name of teamNamesForItem) {
     const key = name.trim().toLowerCase();
     if (!key) continue;
-    const aliased = WAYPOINT_TEAM_TO_POD[key];
-    if (aliased) return aliased;
-    const exact = SHOP_POD_BY_LOWER.get(key);
-    if (exact) return exact;
+    const pod = WAYPOINT_TEAM_TO_POD[key] ?? SHOP_POD_BY_LOWER.get(key);
+    if (!pod || seen.has(pod)) continue;
+    seen.add(pod);
+    out.push(pod);
   }
-  return "";
+  return out;
+}
+
+/** @deprecated Prefer resolveShopPods. */
+export function resolveShopPod(teamNamesForItem: string[]): string {
+  return resolveShopPods(teamNamesForItem).join(" ");
 }
 
 function jpdCell(col: (typeof JPD_COLUMNS)[number], p: Project, m: Maps): string {
@@ -223,9 +252,9 @@ function jpdCell(col: (typeof JPD_COLUMNS)[number], p: Project, m: Maps): string
     case "Labels":
       return (p.tags ?? []).map(toJiraLabel).filter(Boolean).join(" ");
     case "SHOP Pod":
-      return resolveShopPod(teamNames(p, m));
+      return resolveShopPods(teamNames(p, m)).join(" ");
     case "Brand":
-      return BRAND_RMN;
+      return m.brandCode;
     case "Start date":
       return jiraCsvDateTime(p.start_date);
     case "Project target":

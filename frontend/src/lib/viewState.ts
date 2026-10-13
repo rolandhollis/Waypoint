@@ -16,17 +16,15 @@ export type GroupBy = "none" | "owner" | "swim_lane" | "team" | "tag" | "kpi";
  */
 export type RoadmapSort = "startDate" | "priority";
 /**
- * Roadmap render style. `"rows"` (default) is the historical Gantt
- * layout — left label column, one row per top-level item, phase-
- * hatched bars. `"compact"` drops the label column entirely, packs
- * items into rows via a greedy no-overlap algorithm, and renders
- * each item as a single solid rectangle with the title inside the
- * bar. Both styles reuse the same timeframe / date-range machinery
- * (today marker, sticky month header, `computeRoadmapChartRange`)
- * so the timeframe segmented control keeps working in either mode.
- * Quarters view (`roadmapTimeframe === "quarters"`) still takes
- * precedence over this pick — the swap-in short-circuits before
- * the style branch inside RoadmapView.
+ * Roadmap render style. `"compact"` (default) packs items into rows
+ * via a greedy no-overlap algorithm with titles inside bars.
+ * `"rows"` is the historical Gantt — left label column, one row per
+ * top-level item. Both share the same phase-band + bordered-gap bar
+ * language and the same timeframe / date-range machinery (today
+ * marker, sticky month header, `computeRoadmapChartRange`). Quarters
+ * view (`roadmapTimeframe === "quarters"`) still takes precedence
+ * over this pick — the swap-in short-circuits before the style
+ * branch inside RoadmapView.
  */
 export type RoadmapStyle = "rows" | "compact";
 
@@ -99,6 +97,7 @@ export type AdminTopTabKey =
   | "tshirt-sizes"
   | "ai-reference-estimates"
   | "csv"
+  | "jira-sync"
   | "constants";
 
 /**
@@ -123,6 +122,14 @@ type Store = {
    * zustand's `persist` can serialize it.
    */
   expandedEpicIds: string[];
+  /**
+   * Sparse expand/collapse overrides for Roadmap labeled groups
+   * (team / owner / … section headers). Key = group key (e.g. team
+   * id). `true` = force open, `false` = force closed. Missing key →
+   * default from project activity (collapsed when the section has
+   * no in-progress or upcoming work). Cleared when `groupBy` changes.
+   */
+  roadmapGroupExpandOverrides: Record<string, boolean>;
   /**
    * Whether the Roadmap "Recent changes" and "Unscheduled" sections
    * are expanded. These are shared page-level UI prefs (not tied to
@@ -218,14 +225,9 @@ type Store = {
    */
   roadmapTimeframe: Zoom;
   /**
-   * Persisted Roadmap render style. `"rows"` is the historical Gantt
-   * with a label column and phase-hatched bars; `"compact"` drops
-   * the label column entirely, packs items into rows via a greedy
-   * no-overlap algorithm, and paints each as a single solid bar
-   * with its title inside. See the `RoadmapStyle` type for full
-   * detail. Default `"rows"` so a first-time visit (or any migrated
-   * user without an explicit pick) lands on the exact same layout
-   * as before.
+   * Persisted Roadmap render style. `"compact"` (default) packs
+   * items with titles in-bar; `"rows"` is the historical Gantt with
+   * a label column. See the `RoadmapStyle` type for full detail.
    */
   roadmapStyle: RoadmapStyle;
   /**
@@ -270,6 +272,8 @@ type Store = {
   toggleEpicExpanded: (epicId: string) => void;
   expandAllEpics: (epicIds: string[]) => void;
   collapseAllEpics: () => void;
+  /** Force a Roadmap group open/closed (persisted override). */
+  setRoadmapGroupExpanded: (groupKey: string, expanded: boolean) => void;
   setRoadmapRecentChangesOpen: (v: boolean) => void;
   setRoadmapUnscheduledOpen: (v: boolean) => void;
   setRoadmapLabelColumnPx: (px: number) => void;
@@ -448,6 +452,7 @@ export const useViewStore = create<Store>()(
       roadmap: defaultRoadmapPerView,
       ezestimates: defaultEzestimatesPerView,
       expandedEpicIds: [],
+      roadmapGroupExpandOverrides: {},
       // Both Roadmap page-level panels start collapsed — they're
       // "peek in when you need it" surfaces, not the primary content.
       roadmapRecentChangesOpen: false,
@@ -474,12 +479,9 @@ export const useViewStore = create<Store>()(
       // first-time visit lands on the exact same six-month Gantt
       // returning users had before the pick started persisting.
       roadmapTimeframe: "6mo",
-      // Default the Roadmap render style to the historical Rows
-      // layout so a first-time visit (or any migrated user without
-      // an explicit pick) lands on the exact same Gantt they had
-      // before. Users opt in to the Compact layout via the toolbar
-      // Style toggle.
-      roadmapStyle: "rows",
+      // Default Compact — denser packed layout. Users can flip to
+      // Rows via the toolbar Style toggle (persisted per browser).
+      roadmapStyle: "compact",
       // Admin tab state starts empty so the view falls back to its
       // "first visible tab" default until the user actually picks
       // one (which persists via setAdminActiveTab below).
@@ -492,7 +494,14 @@ export const useViewStore = create<Store>()(
       statusReportGroupBy: "swim_lane",
       setFilters: (view, filters) => set((s) => ({ ...s, [view]: { ...s[view], filters } })),
       setColorBy: (view, colorBy) => set((s) => ({ ...s, [view]: { ...s[view], colorBy } })),
-      setGroupBy: (view, groupBy) => set((s) => ({ ...s, [view]: { ...s[view], groupBy } })),
+      setGroupBy: (view, groupBy) =>
+        set((s) => ({
+          ...s,
+          [view]: { ...s[view], groupBy },
+          // Stale team/owner expand overrides don't apply under a
+          // different groupBy dimension.
+          ...(view === "roadmap" ? { roadmapGroupExpandOverrides: {} } : {}),
+        })),
       setStatusReportGroupBy: (groupBy) => set(() => ({ statusReportGroupBy: groupBy })),
       toggleEpicExpanded: (epicId) => set((s) => {
         const has = s.expandedEpicIds.includes(epicId);
@@ -502,6 +511,13 @@ export const useViewStore = create<Store>()(
       }),
       expandAllEpics: (epicIds) => set(() => ({ expandedEpicIds: [...epicIds] })),
       collapseAllEpics: () => set(() => ({ expandedEpicIds: [] })),
+      setRoadmapGroupExpanded: (groupKey, expanded) =>
+        set((s) => ({
+          roadmapGroupExpandOverrides: {
+            ...s.roadmapGroupExpandOverrides,
+            [groupKey]: expanded,
+          },
+        })),
       setRoadmapRecentChangesOpen: (v) => set(() => ({ roadmapRecentChangesOpen: v })),
       setRoadmapUnscheduledOpen: (v) => set(() => ({ roadmapUnscheduledOpen: v })),
       // Always run picked widths through the clamp so a caller that
@@ -634,7 +650,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 17,
+      version: 19,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -818,6 +834,24 @@ export const useViewStore = create<Store>()(
         if (version < 17) {
           if (!Array.isArray(persisted.boardHiddenSwimLaneIds)) {
             persisted.boardHiddenSwimLaneIds = [];
+          }
+        }
+        // < v18: Compact became the default Roadmap style. Only
+        // rewrite invalid values — users who already picked Rows
+        // (or Compact) keep their choice.
+        if (version < 18) {
+          if (persisted.roadmapStyle !== "rows" && persisted.roadmapStyle !== "compact") {
+            persisted.roadmapStyle = "compact";
+          }
+        }
+        // < v19: Roadmap group expand/collapse overrides (team rows).
+        if (version < 19) {
+          if (
+            !persisted.roadmapGroupExpandOverrides
+            || typeof persisted.roadmapGroupExpandOverrides !== "object"
+            || Array.isArray(persisted.roadmapGroupExpandOverrides)
+          ) {
+            persisted.roadmapGroupExpandOverrides = {};
           }
         }
         return persisted;

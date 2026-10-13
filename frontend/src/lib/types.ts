@@ -109,6 +109,11 @@ export type AppConstants = {
   email_title?: string | null;
   /** Per-nav-tab label overrides for this tenant's top bar. */
   tab_labels?: TabLabels | null;
+  /**
+   * SHOP / JPD Brand option for this workspace (e.g. RMN, VC).
+   * Used by Jira sync + CSV export. Unset → default "RMN".
+   */
+  jira_brand_code?: string | null;
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */
   weekly_status_schedule_effective?: WeeklyStatusSchedule;
@@ -348,6 +353,11 @@ export type Project = {
   optimization_start_date: string | null;
   optimization_end_date: string | null;
   actual_completion_date: string | null;
+  /** Linked Jira Software issue key when automatic sync is active. */
+  jira_key: string | null;
+  jira_issue_id: string | null;
+  jira_synced_at: string | null;
+  jira_sync_error: string | null;
   /**
    * Per-item opt-out from capacity planning. When true this row is
    * skipped in both the roadmap overload sweep and the

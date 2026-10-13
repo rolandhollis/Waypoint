@@ -26,6 +26,7 @@ import { ProjectComments } from "./ProjectComments";
 import { ProjectDeadlines } from "./ProjectDeadlines";
 import { ProjectDependencies } from "./ProjectDependencies";
 import { ProjectLinks } from "./ProjectLinks";
+import { JiraSyncPanel } from "./JiraSyncPanel";
 import { ProjectPicker } from "./ProjectPicker";
 import { StatusPill } from "./StatusPill";
 import { StatusUpdateForm } from "./StatusUpdateForm";
@@ -1564,6 +1565,8 @@ export function ProjectDetailBody({
         <ProjectDependencies project={project} />
 
         <ProjectLinks project={project} />
+
+        <JiraSyncPanel project={project} />
 
         {myChildren.length ? (
           <section className="mt-6">

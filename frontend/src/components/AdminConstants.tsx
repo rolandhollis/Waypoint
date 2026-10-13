@@ -9,6 +9,7 @@ import {
   type TabLabelKey,
   type TabLabels,
 } from "../lib/navTabs";
+import { DEFAULT_JIRA_BRAND_CODE } from "../lib/jpdCsvExport";
 import { DEFAULT_APP_NAME, DEFAULT_EMAIL_TITLE, useCurrentGroup, useGroupConstants, useMe } from "../lib/queries";
 import type { AppConstants } from "../lib/types";
 import { useAppDialog } from "./AppDialogProvider";
@@ -70,6 +71,7 @@ export function AdminConstants() {
       <div className="mt-4 space-y-6">
         <AppNameField groupId={groupId} />
         <EmailTitleField groupId={groupId} />
+        <JiraBrandCodeField groupId={groupId} />
         <TabLabelsField groupId={groupId} />
       </div>
     </section>
@@ -256,6 +258,95 @@ function EmailTitleField({ groupId }: { groupId: string }) {
         Sender name shown in the inbox for digest and reminder emails from this
         workspace. Max 80 characters. Reset to use the platform default (
         <span className="font-mono">{DEFAULT_EMAIL_TITLE}</span>).
+      </p>
+    </div>
+  );
+}
+
+function JiraBrandCodeField({ groupId }: { groupId: string }) {
+  const qc = useQueryClient();
+  const { confirm } = useAppDialog();
+  const constantsQ = useGroupConstants(groupId);
+  const persisted = (constantsQ.data?.jira_brand_code ?? "") as string;
+
+  const [draft, setDraft] = useState<string>(persisted);
+  useEffect(() => {
+    setDraft(persisted);
+  }, [persisted]);
+
+  const patch = useMutation({
+    mutationFn: (body: Pick<AppConstants, "jira_brand_code">) =>
+      api<AppConstants>(`/groups/${groupId}/constants`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["groups"] });
+      qc.invalidateQueries({ queryKey: ["groupConstants", groupId] });
+    },
+  });
+
+  const trimmed = draft.trim();
+  const isDirty = trimmed !== persisted.trim();
+  const canSave = isDirty && trimmed.length > 0 && trimmed.length <= 40 && !patch.isPending;
+  const isCleared = persisted.trim().length === 0;
+
+  return (
+    <div className="space-y-2">
+      <MutationErrorBanner mutation={patch} />
+      <label className="block text-xs font-medium text-wp-slate">
+        Jira Brand code
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <input
+            className="input min-w-[10rem] flex-1 font-mono uppercase"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={DEFAULT_JIRA_BRAND_CODE}
+            maxLength={40}
+            disabled={constantsQ.isLoading || patch.isPending}
+          />
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={!canSave}
+            onClick={() => patch.mutate({ jira_brand_code: trimmed })}
+          >
+            {patch.isPending && patch.variables?.jira_brand_code !== null ? "Saving…" : "Save"}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary inline-flex items-center gap-1.5"
+            disabled={isCleared || patch.isPending}
+            title={
+              isCleared
+                ? `Already using the default ("${DEFAULT_JIRA_BRAND_CODE}")`
+                : `Clear override; export/sync falls back to "${DEFAULT_JIRA_BRAND_CODE}"`
+            }
+            onClick={async () => {
+              if (
+                !(await confirm({
+                  title: "Reset Jira Brand code?",
+                  description: `Reset Brand to the default ("${DEFAULT_JIRA_BRAND_CODE}")?`,
+                }))
+              )
+                return;
+              patch.mutate({ jira_brand_code: null });
+            }}
+          >
+            <RotateCcw size={13} />
+            {patch.isPending && patch.variables?.jira_brand_code === null
+              ? "Resetting…"
+              : "Reset to default"}
+          </button>
+        </div>
+      </label>
+      <p className="text-[11px] text-wp-slate/80">
+        Written to the SHOP <span className="font-medium text-wp-ink">Brand</span> field
+        on Jira sync and JPD CSV export. Must match an existing Brand option
+        (e.g. <span className="font-mono">RMN</span>,{" "}
+        <span className="font-mono">VC</span>, <span className="font-mono">BF</span>).
+        Default when unset:{" "}
+        <span className="font-mono">{DEFAULT_JIRA_BRAND_CODE}</span>.
       </p>
     </div>
   );

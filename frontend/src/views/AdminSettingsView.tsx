@@ -33,6 +33,7 @@ import { AdminConstants } from "../components/AdminConstants";
 import { WeeklyStatusScheduleAdmin } from "../components/WeeklyStatusScheduleAdmin";
 import { AiReferenceEstimatesAdmin } from "../components/AiReferenceEstimatesAdmin";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
+import { JiraSyncAdmin } from "../components/JiraSyncAdmin";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
 import { MultiSelect } from "../components/MultiSelect";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
@@ -109,6 +110,7 @@ const TOP_TABS: TopTabDef[] = [
       { key: "export", label: "Export", render: () => <CsvExportAdmin /> },
     ],
   },
+  { key: "jira-sync", label: "Jira sync", render: () => <JiraSyncAdmin /> },
   // Constants slots in at the end because it's the most niche of the
   // set — new admins meet it after every other more-frequently-used
   // panel. Left-of-CSV would have separated it from the "adjust
@@ -2660,16 +2662,64 @@ function SortableTshirtSizeRow({
   );
 }
 
+type AccessRequestPrefill = {
+  email: string;
+  name: string;
+  message: string | null;
+};
+
 function UsersAdmin() {
   const { confirm } = useAppDialog();
   const users = useUsers();
   const health = useHealth();
   const me = useMe();
   const qc = useQueryClient();
+  const [params, setParams] = useSearchParams();
   const isPasswordMode = health.data?.auth === "password";
   const [creating, setCreating] = useState(false);
+  const [accessRequest, setAccessRequest] = useState<AccessRequestPrefill | null>(null);
   const [resettingUser, setResettingUser] = useState<User | null>(null);
   const [viewingUser, setViewingUser] = useState<User | null>(null);
+
+  // Deep-link from access-request email:
+  // /admin?tab=users&requestEmail=…&requestName=…&requestMessage=…
+  // Open the create-user modal prefilled. Params stay until the
+  // dialog closes so a Strict Mode remount (or login bounce) can
+  // still recover the prefill.
+  useEffect(() => {
+    const email = (params.get("requestEmail") ?? "").trim();
+    const name = (params.get("requestName") ?? "").trim();
+    if (!email || !name) return;
+    const message = (params.get("requestMessage") ?? "").trim() || null;
+    setAccessRequest((prev) => {
+      if (
+        prev &&
+        prev.email === email &&
+        prev.name === name &&
+        prev.message === message
+      ) {
+        return prev;
+      }
+      return { email, name, message };
+    });
+    setCreating(true);
+  }, [params]);
+
+  function clearAccessRequestParams() {
+    if (
+      !params.has("requestEmail") &&
+      !params.has("requestName") &&
+      !params.has("requestMessage")
+    ) {
+      return;
+    }
+    const next = new URLSearchParams(params);
+    next.delete("requestEmail");
+    next.delete("requestName");
+    next.delete("requestMessage");
+    if (!next.get("tab")) next.set("tab", "users");
+    setParams(next, { replace: true });
+  }
   const patchRole = useMutation({
     mutationFn: (v: { id: string; role: User["role"] }) => api<User>(`/users/${v.id}/role`, { method: "PATCH", body: JSON.stringify({ role: v.role }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
@@ -2714,7 +2764,14 @@ function UsersAdmin() {
             Leave blank for no cap.
           </p>
         </div>
-        <button type="button" className="btn-primary" onClick={() => setCreating(true)}>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => {
+            setAccessRequest(null);
+            setCreating(true);
+          }}
+        >
           Create user
         </button>
       </div>
@@ -2845,10 +2902,19 @@ function UsersAdmin() {
       {creating ? (
         <NewUserDialog
           isPasswordMode={isPasswordMode}
-          onClose={() => setCreating(false)}
+          initialEmail={accessRequest?.email}
+          initialName={accessRequest?.name}
+          requestMessage={accessRequest?.message}
+          onClose={() => {
+            setCreating(false);
+            setAccessRequest(null);
+            clearAccessRequestParams();
+          }}
           onCreated={() => {
             qc.invalidateQueries({ queryKey: ["users"] });
             qc.invalidateQueries({ queryKey: ["unassignedUsers"] });
+            setAccessRequest(null);
+            clearAccessRequestParams();
           }}
         />
       ) : null}
@@ -3203,15 +3269,23 @@ function UnassignedUsersPanel() {
 
 function NewUserDialog({
   isPasswordMode,
+  initialEmail,
+  initialName,
+  requestMessage,
   onClose,
   onCreated,
 }: {
   isPasswordMode: boolean;
+  initialEmail?: string;
+  initialName?: string;
+  /** Optional note from an unauthenticated access request. */
+  requestMessage?: string | null;
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [email, setEmail] = useState("");
-  const [name, setName] = useState("");
+  const fromAccessRequest = Boolean(initialEmail && initialName);
+  const [email, setEmail] = useState(initialEmail ?? "");
+  const [name, setName] = useState(initialName ?? "");
   const [role, setRole] = useState<User["role"]>("owner");
   const [color] = useState(
     () => USER_PALETTE[Math.floor(Math.random() * USER_PALETTE.length)]!,
@@ -3272,7 +3346,10 @@ function NewUserDialog({
   const canSubmit = emailValid && nameValid && !create.isPending;
 
   return (
-    <DialogFrame onClose={onClose} title="Create user">
+    <DialogFrame
+      onClose={onClose}
+      title={fromAccessRequest ? "Review access request" : "Create user"}
+    >
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -3281,13 +3358,27 @@ function NewUserDialog({
         }}
         className="space-y-4"
       >
+        {fromAccessRequest ? (
+          <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+            This person requested an account. Confirm the details below and
+            create their user — they'll get an invite email to set a password.
+          </p>
+        ) : null}
+
+        {requestMessage ? (
+          <div className="rounded-md border border-wp-stone bg-wp-stone/20 px-3 py-2 text-xs text-wp-ink">
+            <div className="font-medium text-wp-slate">Their note</div>
+            <p className="mt-1 whitespace-pre-wrap">{requestMessage}</p>
+          </div>
+        ) : null}
+
         <label className="block">
           <span className="text-xs font-medium text-wp-slate">Email</span>
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            autoFocus
+            autoFocus={!fromAccessRequest}
             required
             placeholder="name@company.com"
             autoComplete="off"
@@ -3303,6 +3394,7 @@ function NewUserDialog({
             onChange={(e) => setName(e.target.value)}
             required
             placeholder="Full name"
+            autoFocus={fromAccessRequest}
             className="input mt-1 w-full"
           />
         </label>

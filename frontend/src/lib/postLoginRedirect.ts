@@ -19,7 +19,12 @@
 export const POST_LOGIN_REDIRECT_STORAGE_KEY = "waypoint.postLoginRedirect";
 
 /** Paths that ARE the auth flow itself — bouncing to them would loop. */
-const AUTH_PATHS = new Set(["/login", "/forgot-password", "/reset-password"]);
+const AUTH_PATHS = new Set([
+  "/login",
+  "/forgot-password",
+  "/reset-password",
+  "/request-access",
+]);
 
 /**
  * Persist `pathname + search` for the current window as the target

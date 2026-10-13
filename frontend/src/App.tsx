@@ -23,6 +23,7 @@ import { ProjectDetailPage } from "./views/ProjectDetailPage";
 import { UserAssignmentsView } from "./views/UserAssignmentsView";
 import { LoginView } from "./views/LoginView";
 import { ForgotPasswordView } from "./views/ForgotPasswordView";
+import { RequestAccessView } from "./views/RequestAccessView";
 import { ResetPasswordView } from "./views/ResetPasswordView";
 import { AbDemoBanner } from "./components/AbDemoBanner";
 import { AbPreviewBanner } from "./components/AbPreviewBanner";
@@ -74,7 +75,13 @@ export function App() {
       qc.setQueryData(["me"], null);
       if (!isPasswordMode) return;
       const path = window.location.pathname;
-      if (path === "/reset-password" || path === "/forgot-password") return;
+      if (
+        path === "/reset-password" ||
+        path === "/forgot-password" ||
+        path === "/request-access"
+      ) {
+        return;
+      }
       // Stash the URL the user was on (pathname + search) so the
       // post-login redirect can take them straight back to the same
       // filtered view — critical for shareable roadmap links, but
@@ -131,6 +138,7 @@ export function App() {
           <Routes>
             <Route path="/login" element={<LoginView />} />
             <Route path="/forgot-password" element={<ForgotPasswordView />} />
+            <Route path="/request-access" element={<RequestAccessView />} />
             <Route path="/reset-password" element={<ResetPasswordView />} />
             <Route path="*" element={<Navigate to="/login" replace state={{ from: location }} />} />
           </Routes>
@@ -232,6 +240,7 @@ export function App() {
               signs them out at the end of the flow. */}
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/forgot-password" element={<Navigate to="/" replace />} />
+          <Route path="/request-access" element={<Navigate to="/" replace />} />
           <Route path="/reset-password" element={<ResetPasswordView />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

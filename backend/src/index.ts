@@ -22,7 +22,6 @@ import { importsRouter } from "./routes/imports.js";
 import { projectsRouter } from "./routes/projects.js";
 import { prioritizationRouter } from "./routes/prioritization.js";
 import { aiHeadlineRouter } from "./routes/aiHeadline.js";
-import { roadmapOverviewsRouter } from "./routes/roadmapOverviews.js";
 import { projectCommentsRouter } from "./routes/comments.js";
 import { projectDeadlinesRouter } from "./routes/deadlines.js";
 import { projectDependenciesRouter } from "./routes/dependencies.js";
@@ -39,7 +38,10 @@ import { abTestBoardLanesRouter } from "./routes/abTestBoardLanes.js";
 import { simpleFeaturesRouter } from "./routes/simpleFeatures.js";
 import { featureGroupsRouter } from "./routes/featureGroups.js";
 import { analyticsRouter } from "./routes/analytics.js";
+import { jiraWebhooksRouter } from "./routes/jiraWebhooks.js";
+import { jiraSyncAdminRouter } from "./routes/jiraSyncAdmin.js";
 import { startCron } from "./jobs/weeklyStatus.js";
+import { startJiraSyncCron } from "./jobs/jiraSync.js";
 
 const app = express();
 
@@ -64,6 +66,9 @@ app.use("/api/auth", authRouter);
 
 // Public experiment analytics (no login required; join key = ziffsplit_id).
 app.use("/api/analytics", analyticsRouter);
+
+// Jira webhooks (shared-secret auth; CSRF-exempt).
+app.use("/api/webhooks/jira", jiraWebhooksRouter);
 
 // Unauthenticated: mock roster for the dev switcher. In mock mode only.
 app.use("/api/users", (req, res, next) => {
@@ -99,12 +104,6 @@ app.use("/api/prioritization", authenticate, groupScope, prioritizationRouter);
 // single project — the prompt is caller-assembled and none of the
 // existing project routes fit its shape.
 app.use("/api/ai", authenticate, groupScope, aiHeadlineRouter);
-// PM-authored overview text keyed by (current group, roadmap
-// filter fingerprint). Mounted alongside the AI headline router
-// because the two features share the same per-view fingerprint;
-// see backend/src/routes/roadmapOverviews.ts for the endpoint
-// contract.
-app.use("/api/roadmap-overviews", authenticate, groupScope, roadmapOverviewsRouter);
 app.use("/api/projects/:id/comments", authenticate, groupScope, projectCommentsRouter);
 app.use("/api/projects/:id/deadlines", authenticate, groupScope, projectDeadlinesRouter);
 app.use("/api/projects/:id/dependencies", authenticate, groupScope, projectDependenciesRouter);
@@ -131,6 +130,7 @@ app.use("/api/design-items", authenticate, groupScope, designItemsRouter);
 app.use("/api/design-board-lanes", authenticate, groupScope, designBoardLanesRouter);
 app.use("/api/ab-test-items", authenticate, groupScope, abTestItemsRouter);
 app.use("/api/ab-test-board-lanes", authenticate, groupScope, abTestBoardLanesRouter);
+app.use("/api/jira-sync", authenticate, groupScope, jiraSyncAdminRouter);
 
 // Notifications router carries both public (unsubscribe) and admin
 // (ad-hoc reminder/digest triggers) endpoints. Public endpoints
@@ -163,6 +163,7 @@ runMigrations()
     app.listen(config.port, () => {
       console.log(`[api] listening on http://localhost:${config.port} (auth=${config.authMode})`);
       startCron();
+      startJiraSyncCron();
       bootstrapSuperAdmin().catch((err) => console.error("[auth] super-admin bootstrap failed", err));
     });
   })

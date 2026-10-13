@@ -21,7 +21,6 @@ import { GanttTimeline } from "../components/GanttTimeline";
 import { ProjectDetailPanel } from "../components/ProjectDetailPanel";
 import { RecentChanges } from "../components/RecentChanges";
 import { RoadmapHeadline } from "../components/RoadmapHeadline";
-import { RoadmapOverview } from "../components/RoadmapOverview";
 import { UnscheduledList } from "../components/UnscheduledList";
 import { PhaseLegend } from "../components/PhaseLegend";
 import { ColorLegend } from "../components/ColorLegend";
@@ -141,8 +140,8 @@ export function RoadmapView() {
   // control makes the pick both live and persistent in one write.
   const zoom = useViewStore((s) => s.roadmapTimeframe);
   const setZoom = useViewStore((s) => s.setRoadmapTimeframe);
-  // Roadmap render style — one of "rows" (default, historical Gantt)
-  // or "compact" (label-less, packed solid-color bars). Lives on the
+  // Roadmap render style — one of "compact" (default, packed bars)
+  // or "rows" (historical Gantt with label column). Lives on the
   // same persisted store as timeframe / sort so a reload lands the
   // PM back on the same view they left. The Quarters swap-in still
   // takes precedence via the `zoom === "quarters"` branch below;
@@ -596,23 +595,9 @@ export function RoadmapView() {
           well-defined subtree to snapshot; the wrapper itself adds
           no styling to keep the DOM shape identical to before. */}
       <div ref={exportRef} className="flex min-h-0 flex-1 flex-col">
-        {/* Optional PM-authored overview text for the current
-            (group, filter fingerprint) slice. Sits above the
-            timeframe / sort controls so it reads like an intro
-            paragraph on the page. Empty state (no row saved yet)
-            renders a subtle ghost affordance for editors and
-            renders nothing at all for viewers — see
-            RoadmapOverview.tsx for the state matrix. */}
-        <RoadmapOverview
-          filters={filters}
-          groupBy={groupBy}
-          zoom={zoom}
-          visibleProjectIds={headlineVisibleIds}
-          pdfMode={pdfMode}
-        />
         <div className="flex flex-col gap-2 border-b border-wp-stone bg-white/60 px-4 py-2">
-          {/* Row 1: timeframe + sort-by + action(s). Kept compact so
-              the two legends below get their own breathing room. */}
+          {/* Timeframe + sort-by + actions. Color / phase legends sit
+              under the chart (not here) to free vertical space. */}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-3 text-xs">
               <div className="flex items-center gap-2">
@@ -858,19 +843,6 @@ export function RoadmapView() {
               ) : null}
             </div>
           </div>
-          {/* Row 2: color legend (dynamic — depends on the current
-              colorBy dimension and which items are visible). */}
-          <ColorLegend
-            colorBy={colorBy}
-            lanes={lanes.data ?? []}
-            teams={teams.data ?? []}
-            users={users.data ?? []}
-            scopedProjects={scheduledInViewport}
-          />
-          {/* Row 3: phase legend (static reference for the bar
-              styling; separated so the two legends don't compete
-              for horizontal space). */}
-          <PhaseLegend />
         </div>
 
         {/* Two-scroll layout in interactive mode:
@@ -991,6 +963,21 @@ export function RoadmapView() {
                 : "No scheduled projects fall inside this timeframe. Widen the zoom (or pick All) to see items outside the current window."}
             </div>
           )}
+
+          {/* Legends under the chart — same Color / Phase keys as
+              before, moved off the toolbar so the Gantt gets the
+              vertical real estate. Still inside `exportRef` so PDF /
+              Copy image keep them. */}
+          <div className="flex flex-col gap-1.5 border-b border-wp-stone bg-white/60 px-4 py-2">
+            <ColorLegend
+              colorBy={colorBy}
+              lanes={lanes.data ?? []}
+              teams={teams.data ?? []}
+              users={users.data ?? []}
+              scopedProjects={scheduledInViewport}
+            />
+            <PhaseLegend />
+          </div>
 
           {/* Recent-changes section sits between the Gantt and the
               Unscheduled list. Rendered unconditionally — the empty

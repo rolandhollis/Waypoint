@@ -1,12 +1,21 @@
 import { useMemo, useState } from "react";
 import { Download, ListChecks, Search } from "lucide-react";
-import { useKpis, useProjects, useSwimLanes, useTeams, useUsers } from "../lib/queries";
+import {
+  useCurrentGroup,
+  useKpis,
+  useProjects,
+  useSwimLanes,
+  useTeams,
+  useUsers,
+} from "../lib/queries";
 import { defaultExportFilename, downloadCsv, projectsToCsv } from "../lib/csvExport";
 import {
+  DEFAULT_JIRA_BRAND_CODE,
   defaultJpdExportFilename,
   defaultJpdSampleFilename,
   jpdSampleCsv,
   projectsToJpdCsv,
+  resolveJiraBrandCode,
 } from "../lib/jpdCsvExport";
 import type { Project } from "../lib/types";
 
@@ -39,6 +48,8 @@ export function CsvExportAdmin() {
   const teams = useTeams();
   const kpis = useKpis();
   const lanes = useSwimLanes();
+  const currentGroup = useCurrentGroup();
+  const brandCode = resolveJiraBrandCode(currentGroup?.constants?.jira_brand_code);
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [search, setSearch] = useState("");
@@ -126,12 +137,13 @@ export function CsvExportAdmin() {
       kpis: kpis.data ?? [],
       lanes: lanes.data ?? [],
       allProjects: allItems,
+      brandCode,
     });
     downloadCsv(defaultJpdExportFilename(), csv);
   }
 
   function exportJpdSample() {
-    downloadCsv(defaultJpdSampleFilename(), jpdSampleCsv());
+    downloadCsv(defaultJpdSampleFilename(), jpdSampleCsv(brandCode));
   }
 
   return (
@@ -140,10 +152,12 @@ export function CsvExportAdmin() {
       <p className="mt-1 text-xs text-wp-slate">
         Download a CSV of selected items. Waypoint CSV round-trips here; Jira Product
         Discovery CSV is for SHOP ideas (Summary → idea title, Issue Type = Idea,
-        Brand = RMN, SHOP Pod → Pod select field, Project target = end date).
-        On import: map SHOP Pod → Pod, never map anything to Jira Team.
-        Start with the dummy sample or a handful of real rows — do not select all
-        until the JPD mapping looks right.
+        Brand ={" "}
+        <span className="font-mono text-wp-ink">{brandCode}</span>
+        {" "}(from Admin → Constants; default {DEFAULT_JIRA_BRAND_CODE}), SHOP Pod → Pod
+        select field, Project target = end date). On import: map SHOP Pod → Pod, never
+        map anything to Jira Team. Start with the dummy sample or a handful of real
+        rows — do not select all until the JPD mapping looks right.
       </p>
 
       {phase.kind === "idle" ? (
