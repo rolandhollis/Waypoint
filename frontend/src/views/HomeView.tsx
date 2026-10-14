@@ -75,19 +75,15 @@ export function HomeView() {
     );
   }
 
-  // CMS configured but resolve has not succeeded yet (pending or error).
-  // Never paint the built-in homepage here — a later success would flicker.
-  if (cmsConfigured && !resolved.isSuccess) {
-    return (
-      <HomeShell busy>
-        {resolved.isError ? (
-          <p className="p-5 text-sm text-wp-slate">Couldn’t load homepage content.</p>
-        ) : null}
-      </HomeShell>
-    );
+  // CMS configured and resolve still in flight — hold an empty shell so
+  // we don't flash the built-in homepage before a published layout
+  // arrives. On error (e.g. local JiffContent down), fall through to
+  // the built-in overview instead of leaving a blank page.
+  if (cmsConfigured && resolved.isPending) {
+    return <HomeShell busy />;
   }
 
-  // CMS off, or resolve succeeded with no published layout → built-in.
+  // CMS off, resolve errored, or succeeded with no published layout → built-in.
 
   const projectsSection = (
     <div className="lg:col-span-4" key="projects">

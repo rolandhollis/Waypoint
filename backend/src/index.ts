@@ -46,7 +46,15 @@ import { startJiraSyncCron } from "./jobs/jiraSync.js";
 const app = express();
 
 app.use(cors({ origin: config.corsOrigins, credentials: true }));
-app.use(express.json({ limit: "1mb" }));
+// Most JSON bodies stay small. The admin roadmap-snapshot email
+// posts one PNG per team (base64), so that path needs a larger
+// ceiling — still well under Resend's 40MB email cap.
+app.use((req, res, next) => {
+  if (req.path === "/api/notifications/roadmap-snapshot/run") {
+    return express.json({ limit: "25mb" })(req, res, next);
+  }
+  return express.json({ limit: "1mb" })(req, res, next);
+});
 // Form-encoded parser is only needed for the RFC 8058 One-Click
 // unsubscribe POST that mail clients send. Small limit so this
 // doesn't accidentally become an ingress path for large payloads.

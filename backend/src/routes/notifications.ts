@@ -8,6 +8,11 @@ import {
 } from "../notifications/statusDigest.js";
 import { runAnnouncement } from "../notifications/announcement.js";
 import {
+  clearRoadmapSnapshotFollowup,
+  getRoadmapSnapshotFollowup,
+  runRoadmapSnapshotEmail,
+} from "../notifications/roadmapSnapshotEmail.js";
+import {
   loadOverdueProjects,
   reportingTodayIso,
   runOverdueCompletionReminders,
@@ -63,7 +68,7 @@ notificationsRouter.get("/unsubscribe", async (req, res) => {
       page(
         "Unsubscribed",
         result.notificationKind === DIGEST_UNSUB_KIND
-          ? "You won't receive further digest or announcement emails."
+          ? "You won't receive further digest, announcement, or roadmap snapshot emails."
           : "You won't receive further reminder emails.",
       ),
     );
@@ -73,7 +78,7 @@ notificationsRouter.get("/unsubscribe", async (req, res) => {
     page(
       "Unsubscribed",
       result.notificationKind === DIGEST_UNSUB_KIND
-        ? `You won't receive further digest or announcement emails at <strong>${escapeHtml(result.email)}</strong>.`
+        ? `You won't receive further digest, announcement, or roadmap snapshot emails at <strong>${escapeHtml(result.email)}</strong>.`
         : `You won't receive further reminder emails at <strong>${escapeHtml(result.email)}</strong>. You can re-enable them any time from your profile page in the app.`,
     ),
   );
@@ -189,6 +194,103 @@ notificationsRouter.post(
       body: body.body,
     });
     res.json(result);
+  },
+);
+
+const runRoadmapSnapshotSchema = z.object({
+  dry_run: z.boolean().optional().default(false),
+  /** When true, email only the requesting admin — not the digest list. */
+  test_to_self: z.boolean().optional().default(false),
+  subject: z.string().trim().min(1).max(200),
+  intro: z.string().trim().max(2_000).optional().nullable(),
+  teams: z
+    .array(
+      z.object({
+        team_id: z.string().uuid(),
+        team_name: z.string().trim().min(1).max(200),
+        // Base64 PNG without data-URL prefix. Cap keeps a single
+        // team image under ~8MB binary (~11MB base64).
+        png_base64: z.string().min(1).max(12_000_000),
+        in_development: z.array(z.string().trim().min(1).max(500)).max(200).default([]),
+      }),
+    )
+    .max(40)
+    .default([]),
+});
+
+/**
+ * Admin-only roadmap snapshot email: one Compact 3-month PNG per
+ * team, headed by the team name, sent to the digest roster (or
+ * only to the requesting admin when `test_to_self` is set).
+ * Images are captured in the browser and posted here.
+ */
+notificationsRouter.post(
+  "/roadmap-snapshot/run",
+  authenticate,
+  groupScope,
+  requireAdmin,
+  async (req, res) => {
+    const body = runRoadmapSnapshotSchema.parse(req.body ?? {});
+    if (body.dry_run && body.test_to_self) {
+      res.status(400).json({ error: "dry_run and test_to_self cannot both be true" });
+      return;
+    }
+    const teams = body.teams.map((t) => ({
+      teamId: t.team_id,
+      teamName: t.team_name,
+      png: Buffer.from(t.png_base64, "base64"),
+      inDevelopment: t.in_development,
+    }));
+    for (const t of teams) {
+      // Cheap PNG magic-byte check so we don't forward junk to Resend.
+      if (t.png.length < 8 || t.png[0] !== 0x89 || t.png[1] !== 0x50) {
+        res.status(400).json({ error: `Invalid PNG for team ${t.teamName}` });
+        return;
+      }
+    }
+    const me = req.user!;
+    const result = await runRoadmapSnapshotEmail({
+      dryRun: body.dry_run,
+      scopeGroupId: req.groupId!,
+      subject: body.subject,
+      intro: body.intro ?? null,
+      teams,
+      testToSelf: body.test_to_self
+        ? { email: me.email, userId: me.id, userName: me.name ?? null }
+        : null,
+    });
+    // A successful full-list send clears any queued digest follow-up
+    // so we don't double-send when the admin UI also drains.
+    if (!body.dry_run && !body.test_to_self && result.sent > 0) {
+      await clearRoadmapSnapshotFollowup(req.groupId!);
+    }
+    res.json(result);
+  },
+);
+
+/**
+ * Pending roadmap snapshot follow-up queued after a status digest
+ * send. The admin UI drains this by capturing charts in-browser.
+ */
+notificationsRouter.get(
+  "/roadmap-snapshot/pending",
+  authenticate,
+  groupScope,
+  requireAdmin,
+  async (req, res) => {
+    const pending = await getRoadmapSnapshotFollowup(req.groupId!);
+    res.json({ pending });
+  },
+);
+
+notificationsRouter.post(
+  "/roadmap-snapshot/pending/ack",
+  authenticate,
+  groupScope,
+  requireAdmin,
+  async (req, res) => {
+    await clearRoadmapSnapshotFollowup(req.groupId!);
+    res.json({ ok: true });
   },
 );
 

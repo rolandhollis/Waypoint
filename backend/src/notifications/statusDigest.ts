@@ -22,6 +22,7 @@ import {
 } from "../lib/weeklyStatusSchedule.js";
 import { sendEmail } from "./email.js";
 import { emailBodyToHtml, emailBodyToPlainText } from "./emailHtml.js";
+import { enqueueRoadmapSnapshotFollowup } from "./roadmapSnapshotEmail.js";
 import { makeUnsubscribeToken } from "./unsubscribe.js";
 
 /**
@@ -1059,6 +1060,7 @@ export async function runStatusReportDigest({
   let sent = 0;
   let skippedEmpty = 0;
   let errors = 0;
+  const groupsWithSuccessfulSend = new Set<string>();
 
   for (const bundle of bundles) {
     if (!bundle.updates.length) {
@@ -1123,6 +1125,7 @@ export async function runStatusReportDigest({
           [result.messageId, KIND, bundle.groupId, r.email, weekIso],
         );
         sent += 1;
+        groupsWithSuccessfulSend.add(bundle.groupId);
       } catch (err) {
         errors += 1;
         console.error(`[digest] send failed for group=${bundle.groupId} email=${r.email}:`, err);
@@ -1137,6 +1140,21 @@ export async function runStatusReportDigest({
         }
       }
     }
+  }
+
+  // Queue roadmap snapshot follow-up for every group that got at least
+  // one digest delivery. The admin UI drains this (browser capture).
+  if (!dryRun && groupsWithSuccessfulSend.size) {
+    for (const gid of groupsWithSuccessfulSend) {
+      try {
+        await enqueueRoadmapSnapshotFollowup(gid, weekIso);
+      } catch (err) {
+        console.error(`[digest] failed to enqueue roadmap snapshot followup for ${gid}:`, err);
+      }
+    }
+    console.log(
+      `[digest] enqueued roadmap snapshot followup for ${groupsWithSuccessfulSend.size} group(s)`,
+    );
   }
 
   console.log(

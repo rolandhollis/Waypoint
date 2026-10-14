@@ -8,7 +8,10 @@ import { toPng } from "html-to-image";
  * Caller must put the roadmap into the desired filter/zoom/style and
  * (usually) `pdfMode` before calling, then await one paint tick.
  */
-export async function captureRoadmapPng(root: HTMLElement): Promise<string> {
+export async function captureRoadmapPng(
+  root: HTMLElement,
+  opts?: { pixelRatio?: number },
+): Promise<string> {
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
@@ -19,7 +22,9 @@ export async function captureRoadmapPng(root: HTMLElement): Promise<string> {
   return toPng(root, {
     width,
     height,
-    pixelRatio: 2,
+    // Default 2× for crisp PDF/PPTX; email callers can pass 1.5 to
+    // keep the Resend payload under the request size ceiling.
+    pixelRatio: opts?.pixelRatio ?? 2,
     cacheBust: true,
     backgroundColor: "#ffffff",
     filter: (node) => {

@@ -30,6 +30,18 @@ export type SendResult = {
   delivered: boolean;
 };
 
+export type EmailAttachment = {
+  /** Raw file bytes (preferred) or a base64 string. */
+  content: Buffer | string;
+  filename: string;
+  contentType?: string;
+  /**
+   * When set, Resend sends the file as an inline attachment and
+   * the HTML body can reference it with `cid:{contentId}`.
+   */
+  contentId?: string;
+};
+
 export type SendEmailInput = {
   to: string;
   subject: string;
@@ -49,6 +61,8 @@ export type SendEmailInput = {
   headers?: Record<string, string>;
   /** Optional override for the Resend `from` display name (per-tenant). */
   from?: string;
+  /** Optional file attachments (inline via contentId, or regular). */
+  attachments?: EmailAttachment[];
 };
 
 export async function sendEmail(input: SendEmailInput): Promise<SendResult> {
@@ -58,7 +72,10 @@ export async function sendEmail(input: SendEmailInput): Promise<SendResult> {
     // delivered=false and fail the job so notification_log isn't
     // left in a falsely-successful state.
     console.warn(
-      `[email] RESEND_API_KEY not set — pretending to send:\n  to: ${input.to}\n  subject: ${input.subject}`,
+      `[email] RESEND_API_KEY not set — pretending to send:\n  to: ${input.to}\n  subject: ${input.subject}`
+        + (input.attachments?.length
+          ? `\n  attachments: ${input.attachments.length}`
+          : ""),
     );
     return { messageId: `dry-run-${Date.now()}`, delivered: false };
   }
@@ -71,6 +88,16 @@ export async function sendEmail(input: SendEmailInput): Promise<SendResult> {
     ...(input.html ? { html: input.html } : {}),
     ...(input.replyTo ? { replyTo: input.replyTo } : {}),
     ...(input.headers ? { headers: input.headers } : {}),
+    ...(input.attachments?.length
+      ? {
+          attachments: input.attachments.map((a) => ({
+            filename: a.filename,
+            content: a.content,
+            ...(a.contentType ? { contentType: a.contentType } : {}),
+            ...(a.contentId ? { contentId: a.contentId } : {}),
+          })),
+        }
+      : {}),
   });
   if (error) {
     // Bubble up as a plain Error so the caller's try/catch can log

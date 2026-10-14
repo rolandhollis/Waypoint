@@ -34,6 +34,11 @@ import { WeeklyStatusScheduleAdmin } from "../components/WeeklyStatusScheduleAdm
 import { AiReferenceEstimatesAdmin } from "../components/AiReferenceEstimatesAdmin";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { JiraSyncAdmin } from "../components/JiraSyncAdmin";
+import { RoadmapSnapshotEmailAdmin } from "../components/RoadmapSnapshotEmailAdmin";
+import {
+  RoadmapSnapshotSendProvider,
+  useRoadmapSnapshotSend,
+} from "../components/RoadmapSnapshotSendProvider";
 import { CsvImportAdmin } from "../components/CsvImportAdmin";
 import { MultiSelect } from "../components/MultiSelect";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
@@ -548,14 +553,17 @@ function reminderRunTitle(last: ReminderRunResult): string {
 
 function NotificationsAdmin() {
   return (
-    <div className="flex flex-col gap-4">
-      <ReminderAdmin />
-      <DigestRecipientsAdmin />
-      <DigestAdmin />
-      <AnnouncementAdmin />
-      <OverdueCompletionAdmin />
-      <AiEstimatorStatusRow />
-    </div>
+    <RoadmapSnapshotSendProvider>
+      <div className="flex flex-col gap-4">
+        <ReminderAdmin />
+        <DigestRecipientsAdmin />
+        <DigestAdmin />
+        <AnnouncementAdmin />
+        <RoadmapSnapshotEmailAdmin />
+        <OverdueCompletionAdmin />
+        <AiEstimatorStatusRow />
+      </div>
+    </RoadmapSnapshotSendProvider>
   );
 }
 
@@ -1246,7 +1254,9 @@ function DigestRecipientsAdmin() {
 }
 
 function DigestAdmin() {
-  const { confirm } = useAppDialog();
+  const { confirm, alert } = useAppDialog();
+  const { dataReady, drainPendingRoadmapSnapshot, followUpStatus } =
+    useRoadmapSnapshotSend();
   const recipients = useQuery({
     queryKey: ["digestRecipients"],
     queryFn: () => api<DigestRecipient[]>("/notifications/digest-recipients"),
@@ -1260,6 +1270,7 @@ function DigestAdmin() {
   });
 
   const [digestAdminNote, setDigestAdminNote] = useState("");
+  const [roadmapWorking, setRoadmapWorking] = useState(false);
 
   const digestNoteTrimmed = digestAdminNote.trim();
   const digestNoteReady = !isEmptyRichText(digestNoteTrimmed);
@@ -1268,9 +1279,54 @@ function DigestAdmin() {
     admin_note: digestNoteReady ? digestNoteTrimmed : undefined,
   });
 
-  const busySend = runDigest.isPending;
+  const busySend = runDigest.isPending || roadmapWorking;
   const lastRun = runDigest.data;
   const recipientCount = recipients.data?.length ?? 0;
+
+  async function sendDigestThenRoadmap() {
+    if (
+      !(await confirm({
+        title: "Send digest now?",
+        description:
+          "Send the weekly digest to every recipient on this group's distribution list, then capture and email the roadmap snapshot to the same list.",
+        confirmLabel: "Send now",
+      }))
+    ) {
+      return;
+    }
+
+    try {
+      const digestResult = await runDigest.mutateAsync(digestRunArgs(false));
+      // Digest enqueue marks a follow-up when anyone was emailed.
+      if (digestResult.sent <= 0) {
+        return;
+      }
+      if (!dataReady) {
+        await alert({
+          title: "Digest sent; roadmap snapshot pending",
+          description:
+            "Roadmap data was still loading. Keep this Notifications tab open — the snapshot will send automatically once data is ready, or use Roadmap snapshot email → Capture & send to list.",
+        });
+        return;
+      }
+      setRoadmapWorking(true);
+      try {
+        await drainPendingRoadmapSnapshot();
+      } catch (err) {
+        await alert({
+          title: "Digest sent; roadmap snapshot failed",
+          description:
+            err instanceof Error
+              ? err.message
+              : "Use Roadmap snapshot email → Capture & send to list to retry.",
+        });
+      } finally {
+        setRoadmapWorking(false);
+      }
+    } catch {
+      // runDigest error surfaces via MutationErrorBanner
+    }
+  }
 
   return (
     <section className="card-surface p-4">
@@ -1287,7 +1343,10 @@ function DigestAdmin() {
             <span className="font-medium text-wp-ink">Email distribution list</span> above.
             Saved drafts are excluded until owners click Submit. Runs automatically at the digest time on the{" "}
             <span className="font-medium text-wp-ink">Status schedule</span> tab; use these buttons to
-            preview or send on demand. Skips silently when the group has zero completed updates or zero
+            preview or send on demand. After a successful digest send (manual or scheduled),
+            the roadmap snapshot email is queued and captured in this browser for the same list —
+            keep the Notifications tab open (or reopen it) so the follow-up can run.
+            Skips silently when the group has zero completed updates or zero
             recipients. Scoped to the group you're currently viewing.
           </p>
         </div>
@@ -1331,22 +1390,28 @@ function DigestAdmin() {
           type="button"
           className="btn-primary inline-flex items-center gap-1.5"
           disabled={busySend || recipientCount === 0}
-          onClick={async () => {
-            if (
-              !(await confirm({
-                title: "Send digest now?",
-                description:
-                  "Send the weekly digest to every recipient on this group's distribution list, including anyone who already received one this week.",
-                confirmLabel: "Send now",
-              }))
-            ) return;
-            runDigest.mutate(digestRunArgs(false));
-          }}
+          onClick={() => void sendDigestThenRoadmap()}
         >
           <Send size={13} />
-          {busySend && runDigest.variables?.dry_run === false ? "Sending…" : "Send now"}
+          {runDigest.isPending && runDigest.variables?.dry_run === false
+            ? "Sending digest…"
+            : roadmapWorking
+              ? "Sending roadmap…"
+              : "Send now"}
         </button>
       </div>
+
+      {followUpStatus ? (
+        <p
+          className={
+            "mt-3 text-xs " +
+            (roadmapWorking ? "font-medium text-wp-ink" : "text-wp-slate")
+          }
+          role="status"
+        >
+          {followUpStatus}
+        </p>
+      ) : null}
 
       {lastRun ? (
         <div
