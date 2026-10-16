@@ -7,7 +7,21 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDownAZ, CalendarClock, ChevronRight, GripVertical, Mail, Megaphone, Send, Sparkles, Trash2, Users } from "lucide-react";
+import {
+  ArrowDownAZ,
+  CalendarClock,
+  Camera,
+  ChevronLeft,
+  ChevronRight,
+  GripVertical,
+  Mail,
+  Megaphone,
+  Send,
+  Sparkles,
+  Trash2,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import { api } from "../lib/api";
 import {
   useAiEstimatorHealth,
@@ -106,7 +120,6 @@ const TOP_TABS: TopTabDef[] = [
   // (soft-delete via deleted_at) flow.
   { key: "archived",               label: "Deleted cards",         render: () => <ArchivedProjectsAdmin /> },
   { key: "notifications",          label: "Notifications",         render: () => <NotificationsAdmin /> },
-  { key: "status-schedule",        label: "Status schedule",       render: () => <WeeklyStatusScheduleAdmin /> },
   { key: "audit-trail",            label: "Audit trail",           render: () => <AuditTrailAdmin /> },
   { key: "tshirt-sizes",           label: "T-Shirt Sizes",         render: () => <TshirtSizesAdmin /> },
   { key: "ai-reference-estimates", label: "AI reference estimates", render: () => <AiReferenceEstimatesAdmin /> },
@@ -143,6 +156,8 @@ const LEGACY_TAB_TO_PARENT: Record<string, { parent: AdminTopTabKey; sub: string
   groups:  { parent: "workspace", sub: "groups" },
   import: { parent: "csv",       sub: "import" },
   export: { parent: "csv",       sub: "export" },
+  /** Status schedule now lives under Notifications. */
+  "status-schedule": { parent: "notifications", sub: "status-schedule" },
 };
 
 // -----------------------------------------------------------------
@@ -201,12 +216,17 @@ export function AdminSettingsView() {
 
   let activeTop: AdminTopTabKey;
   let urlSub: string | null = rawSub || null;
-  const legacy = LEGACY_TAB_TO_PARENT[rawTab];
-  if (legacy && tabs.find((t) => t.key === legacy.parent)) {
-    activeTop = legacy.parent;
-    urlSub = urlSub ?? legacy.sub;
+  const legacyFromUrl = LEGACY_TAB_TO_PARENT[rawTab];
+  const legacyFromStore =
+    !rawTab && storedTop ? LEGACY_TAB_TO_PARENT[storedTop] : undefined;
+  if (legacyFromUrl && tabs.find((t) => t.key === legacyFromUrl.parent)) {
+    activeTop = legacyFromUrl.parent;
+    urlSub = urlSub ?? legacyFromUrl.sub;
   } else if (tabs.find((t) => t.key === (rawTab as AdminTopTabKey))) {
     activeTop = rawTab as AdminTopTabKey;
+  } else if (legacyFromStore && tabs.find((t) => t.key === legacyFromStore.parent)) {
+    activeTop = legacyFromStore.parent;
+    urlSub = urlSub ?? legacyFromStore.sub;
   } else if (storedTop && tabs.find((t) => t.key === storedTop)) {
     activeTop = storedTop;
   } else {
@@ -265,7 +285,15 @@ export function AdminSettingsView() {
   }
 
   function selectPanel(key: AdminTopTabKey) {
-    if (key === activeTop) return;
+    if (key === activeTop) {
+      // Re-clicking Notifications while a detail is open returns to the index.
+      if (key === "notifications" && params.get("subtab")) {
+        const next = new URLSearchParams(params);
+        next.delete("subtab");
+        setParams(next, { replace: true });
+      }
+      return;
+    }
     setActive(key);
   }
 
@@ -556,18 +584,182 @@ function reminderRunTitle(last: ReminderRunResult): string {
   return `Reminder sent to ${last.sent} owner${last.sent === 1 ? "" : "s"}.`;
 }
 
+type NotificationSectionKey =
+  | "status-schedule"
+  | "status-reminders"
+  | "google-chat"
+  | "digest-recipients"
+  | "weekly-digest"
+  | "announcement"
+  | "roadmap-snapshot"
+  | "overdue-completion"
+  | "ai-estimator";
+
+const NOTIFICATION_SECTIONS: Array<{
+  key: NotificationSectionKey;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+  iconClass: string;
+}> = [
+  {
+    key: "status-schedule",
+    label: "Status schedule",
+    description: "Due day/time, owner reminder, digest, and Google Chat nudge timing.",
+    icon: CalendarClock,
+    iconClass: "bg-wp-stone/40 text-wp-ink",
+  },
+  {
+    key: "status-reminders",
+    label: "Weekly status-report reminder",
+    description: "Email owners who still owe a status update this week.",
+    icon: Mail,
+    iconClass: "bg-wp-red/10 text-wp-red",
+  },
+  {
+    key: "google-chat",
+    label: "Google Chat PM nudge",
+    description: "Post a Chat reminder for product managers (webhook + send).",
+    icon: Megaphone,
+    iconClass: "bg-sky-100 text-sky-700",
+  },
+  {
+    key: "digest-recipients",
+    label: "Digest & announcement list",
+    description: "Who receives the Friday digest, announcements, and roadmap snapshots.",
+    icon: Users,
+    iconClass: "bg-violet-100 text-violet-700",
+  },
+  {
+    key: "weekly-digest",
+    label: "Weekly status digest",
+    description: "Friday rollup of completed work — preview or send to the list.",
+    icon: Send,
+    iconClass: "bg-emerald-100 text-emerald-700",
+  },
+  {
+    key: "announcement",
+    label: "Announcement email",
+    description: "One-off message to the same distribution list.",
+    icon: Megaphone,
+    iconClass: "bg-amber-100 text-amber-800",
+  },
+  {
+    key: "roadmap-snapshot",
+    label: "Roadmap snapshot email",
+    description: "Capture per-team roadmap images and email the list.",
+    icon: Camera,
+    iconClass: "bg-indigo-100 text-indigo-700",
+  },
+  {
+    key: "overdue-completion",
+    label: "Overdue completion-date reminder",
+    description: "Email owners of projects past their completion date.",
+    icon: CalendarClock,
+    iconClass: "bg-red-100 text-red-700",
+  },
+  {
+    key: "ai-estimator",
+    label: "AI phase-size estimator",
+    description: "Status of the Claude-powered EZEstimates Suggest button.",
+    icon: Sparkles,
+    iconClass: "bg-emerald-100 text-emerald-700",
+  },
+];
+
+/**
+ * Notifications hub: short index of channels, then one detail panel
+ * at a time (deep-linkable via `?tab=notifications&subtab=…`).
+ */
 function NotificationsAdmin() {
+  const [params, setParams] = useSearchParams();
+  const rawSub = params.get("subtab") ?? "";
+  const active =
+    NOTIFICATION_SECTIONS.find((s) => s.key === rawSub)?.key ?? null;
+
+  function openSection(key: NotificationSectionKey) {
+    const next = new URLSearchParams(params);
+    next.set("tab", "notifications");
+    next.set("subtab", key);
+    setParams(next, { replace: true });
+  }
+
+  function backToIndex() {
+    const next = new URLSearchParams(params);
+    next.set("tab", "notifications");
+    next.delete("subtab");
+    setParams(next, { replace: true });
+  }
+
+  if (!active) {
+    return (
+      <div>
+        <p className="mb-3 text-sm text-wp-slate">
+          Choose a schedule or channel to configure and send.
+        </p>
+        <ul className="divide-y divide-wp-stone overflow-hidden rounded-md border border-wp-stone bg-white">
+          {NOTIFICATION_SECTIONS.map((section) => {
+            const Icon = section.icon;
+            return (
+              <li key={section.key}>
+                <button
+                  type="button"
+                  onClick={() => openSection(section.key)}
+                  className="flex w-full items-start gap-3 px-4 py-3 text-left transition hover:bg-wp-stone/20"
+                >
+                  <span
+                    className={
+                      "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full " +
+                      section.iconClass
+                    }
+                  >
+                    <Icon size={16} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold text-wp-ink">
+                      {section.label}
+                    </span>
+                    <span className="mt-0.5 block text-xs text-wp-slate">
+                      {section.description}
+                    </span>
+                  </span>
+                  <ChevronRight
+                    size={16}
+                    className="mt-1 shrink-0 text-wp-slate"
+                    aria-hidden
+                  />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  }
+
+  const meta = NOTIFICATION_SECTIONS.find((s) => s.key === active)!;
+
   return (
     <RoadmapSnapshotSendProvider>
-      <div className="flex flex-col gap-4">
-        <ReminderAdmin />
-        <GoogleChatPmReminderAdmin />
-        <DigestRecipientsAdmin />
-        <DigestAdmin />
-        <AnnouncementAdmin />
-        <RoadmapSnapshotEmailAdmin />
-        <OverdueCompletionAdmin />
-        <AiEstimatorStatusRow />
+      <div className="space-y-3">
+        <button
+          type="button"
+          onClick={backToIndex}
+          className="inline-flex items-center gap-1 text-xs font-medium text-wp-slate hover:text-wp-ink"
+        >
+          <ChevronLeft size={14} aria-hidden />
+          All notifications
+        </button>
+        <div className="sr-only">{meta.label}</div>
+        {active === "status-schedule" ? <WeeklyStatusScheduleAdmin /> : null}
+        {active === "status-reminders" ? <ReminderAdmin /> : null}
+        {active === "google-chat" ? <GoogleChatPmReminderAdmin /> : null}
+        {active === "digest-recipients" ? <DigestRecipientsAdmin /> : null}
+        {active === "weekly-digest" ? <DigestAdmin /> : null}
+        {active === "announcement" ? <AnnouncementAdmin /> : null}
+        {active === "roadmap-snapshot" ? <RoadmapSnapshotEmailAdmin /> : null}
+        {active === "overdue-completion" ? <OverdueCompletionAdmin /> : null}
+        {active === "ai-estimator" ? <AiEstimatorStatusRow /> : null}
       </div>
     </RoadmapSnapshotSendProvider>
   );
@@ -635,8 +827,8 @@ function GoogleChatPmReminderAdmin() {
             {schedule
               ? ` (scheduled ${formatWeekday(schedule.google_chat_day)} at ${schedule.google_chat_time} ${schedule.timezone})`
               : " (default Thursday 5:00am)"}
-            . Change day/time on the{" "}
-            <span className="font-medium text-wp-ink">Status schedule</span> tab. Mark PMs under Users.
+            . Change day/time under{" "}
+            <span className="font-medium text-wp-ink">Status schedule</span>. Mark PMs under Users.
           </p>
         </div>
       </div>
@@ -820,7 +1012,7 @@ function ReminderAdmin() {
           <p className="mt-1 text-xs text-wp-slate">
             Sends one email per owner listing the status updates they owe this week.
             Runs automatically at the reminder time on the{" "}
-            <span className="font-medium text-wp-ink">Status schedule</span> tab; use these buttons to
+            <span className="font-medium text-wp-ink">Status schedule</span>; use these buttons to
             preview or fire it on demand. Scoped to the group you're currently viewing.
           </p>
         </div>
@@ -1459,7 +1651,7 @@ function DigestAdmin() {
         await alert({
           title: "Digest sent; roadmap snapshot pending",
           description:
-            "Roadmap data was still loading. Keep this Notifications tab open — the snapshot will send automatically once data is ready, or use Roadmap snapshot email → Capture & send to list.",
+            "Roadmap data was still loading. Keep Notifications open — the snapshot will send automatically once data is ready, or open Roadmap snapshot email and use Capture & send to list.",
         });
         return;
       }
@@ -1472,7 +1664,7 @@ function DigestAdmin() {
           description:
             err instanceof Error
               ? err.message
-              : "Use Roadmap snapshot email → Capture & send to list to retry.",
+              : "Open Roadmap snapshot email and use Capture & send to list to retry.",
         });
       } finally {
         setRoadmapWorking(false);
@@ -1494,12 +1686,12 @@ function DigestAdmin() {
           </h2>
           <p className="mt-1 text-xs text-wp-slate">
             Rolls up this week's <strong>submitted</strong> status updates and emails the{" "}
-            <span className="font-medium text-wp-ink">Email distribution list</span> above.
+            <span className="font-medium text-wp-ink">Digest &amp; announcement list</span>.
             Saved drafts are excluded until owners click Submit. Runs automatically at the digest time on the{" "}
-            <span className="font-medium text-wp-ink">Status schedule</span> tab; use these buttons to
+            <span className="font-medium text-wp-ink">Status schedule</span>; use these buttons to
             preview or send on demand. After a successful digest send (manual or scheduled),
             the roadmap snapshot email is queued and captured in this browser for the same list —
-            keep the Notifications tab open (or reopen it) so the follow-up can run.
+            keep Notifications open (or reopen Weekly digest / Roadmap snapshot) so the follow-up can run.
             Skips silently when the group has zero completed updates or zero
             recipients. Scoped to the group you're currently viewing.
           </p>
