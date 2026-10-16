@@ -13,6 +13,9 @@ export type WeeklyStatusSchedule = {
   reminder_time: string;
   digest_day: number;
   digest_time: string;
+  /** Google Chat PM nudge (status + roadmap). */
+  google_chat_day: number;
+  google_chat_time: string;
 };
 
 export type WeeklyStatusScheduleInput = {
@@ -23,6 +26,8 @@ export type WeeklyStatusScheduleInput = {
   reminder_time?: string | null;
   digest_day?: number | null;
   digest_time?: string | null;
+  google_chat_day?: number | null;
+  google_chat_time?: string | null;
 };
 
 export const DEFAULT_WEEKLY_STATUS_SCHEDULE: WeeklyStatusSchedule = {
@@ -33,6 +38,8 @@ export const DEFAULT_WEEKLY_STATUS_SCHEDULE: WeeklyStatusSchedule = {
   reminder_time: "08:00",
   digest_day: 5,
   digest_time: "17:00",
+  google_chat_day: 4,
+  google_chat_time: "05:00",
 };
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -71,6 +78,8 @@ export function resolveWeeklyStatusSchedule(
     reminder_time: validateTime(input.reminder_time) ?? d.reminder_time,
     digest_day: validateDow(input.digest_day) ?? d.digest_day,
     digest_time: validateTime(input.digest_time) ?? d.digest_time,
+    google_chat_day: validateDow(input.google_chat_day) ?? d.google_chat_day,
+    google_chat_time: validateTime(input.google_chat_time) ?? d.google_chat_time,
   };
 }
 
@@ -110,7 +119,7 @@ export function reminderAtForWeekFromSchedule(
   return atLocalDayTime(weekOf, schedule, schedule.reminder_day, schedule.reminder_time);
 }
 
-export type WeeklyStatusScheduleSlot = "reminder" | "digest";
+export type WeeklyStatusScheduleSlot = "reminder" | "digest" | "google_chat";
 
 /** True when `now` falls on the configured local day + minute for a slot. */
 export function isWeeklyStatusScheduleSlot(
@@ -121,8 +130,18 @@ export function isWeeklyStatusScheduleSlot(
   const tz = schedule.timezone;
   const dow = Number(formatInTimeZone(now, tz, "i"));
   const hm = formatInTimeZone(now, tz, "HH:mm");
-  const day = slot === "reminder" ? schedule.reminder_day : schedule.digest_day;
-  const time = slot === "reminder" ? schedule.reminder_time : schedule.digest_time;
+  const day =
+    slot === "reminder"
+      ? schedule.reminder_day
+      : slot === "digest"
+        ? schedule.digest_day
+        : schedule.google_chat_day;
+  const time =
+    slot === "reminder"
+      ? schedule.reminder_time
+      : slot === "digest"
+        ? schedule.digest_time
+        : schedule.google_chat_time;
   return dow === day && hm === time;
 }
 

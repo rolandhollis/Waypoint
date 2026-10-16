@@ -11,6 +11,12 @@ export type User = {
   color: string;
   prefs: Record<string, unknown>;
   /**
+   * Per-tenant Plan → Team flag. Populated on the admin users roster
+   * (GET /users) from `user_groups.is_product_manager`. Absent/false
+   * for callers that don't join that column.
+   */
+  is_product_manager?: boolean;
+  /**
    * Soft cap on the number of concurrent active (roadmap-scheduled)
    * projects this user can own. Null = no cap. Enforced only by
    * client-side warnings — the backend never blocks a save on this.
@@ -83,6 +89,8 @@ export type WeeklyStatusSchedule = {
   reminder_time: string;
   digest_day: number;
   digest_time: string;
+  google_chat_day: number;
+  google_chat_time: string;
 };
 
 export type WeeklyStatusScheduleInput = {
@@ -93,6 +101,8 @@ export type WeeklyStatusScheduleInput = {
   reminder_time?: string | null;
   digest_day?: number | null;
   digest_time?: string | null;
+  google_chat_day?: number | null;
+  google_chat_time?: string | null;
 };
 
 /**
@@ -114,6 +124,8 @@ export type AppConstants = {
    * Used by Jira sync + CSV export. Unset → default "RMN".
    */
   jira_brand_code?: string | null;
+  /** Google Chat incoming webhook for the weekly PM reminder. */
+  google_chat_webhook_url?: string | null;
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */
   weekly_status_schedule_effective?: WeeklyStatusSchedule;
@@ -182,6 +194,7 @@ export type PhaseDateKey =
 export type Team = {
   id: string;
   name: string;
+  description: string;
   color: string;
   order: number;
   /** See User.capacity — same semantics, applied to team membership. */
@@ -198,6 +211,33 @@ export type Kpi = {
   order: number;
   created_at: string;
   updated_at: string;
+};
+
+export type System = {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  order: number;
+  /** At most one product area (team); null = unassigned. */
+  team_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProductManagerArea = {
+  id: string;
+  name: string;
+  color: string;
+  description: string;
+  kpis: Array<{ id: string; name: string; color: string; description?: string }>;
+  systems: Array<{ id: string; name: string; color: string; description?: string }>;
+};
+
+/** One product manager card on Plan → Team. */
+export type ProductManager = {
+  user: User;
+  areas: ProductManagerArea[];
 };
 
 /**

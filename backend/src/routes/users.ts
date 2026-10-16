@@ -245,18 +245,22 @@ usersRouter.post("/me/password", async (req, res) => {
 // -----------------------------------------------------------------
 
 usersRouter.get("/", groupScope, requireAdmin, async (req, res) => {
-  const { rows } = await query<UserRow>(
-    `SELECT u.*
+  const { rows } = await query<UserRow & { is_product_manager: boolean }>(
+    `SELECT u.*, COALESCE(ug.is_product_manager, FALSE) AS is_product_manager
        FROM users u
+       LEFT JOIN user_groups ug
+         ON ug.user_id = u.id AND ug.group_id = $1
       WHERE u.is_super_user = TRUE
-         OR EXISTS (
-              SELECT 1 FROM user_groups ug
-               WHERE ug.user_id = u.id AND ug.group_id = $1
-            )
+         OR ug.user_id IS NOT NULL
       ORDER BY u.name ASC`,
     [req.groupId!],
   );
-  res.json(scrubUsers(rows));
+  res.json(
+    rows.map((r) => ({
+      ...scrubUser(r),
+      is_product_manager: Boolean(r.is_product_manager),
+    })),
+  );
 });
 
 /**
@@ -584,29 +588,44 @@ const patchUserSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   role: roleEnum.optional(),
   capacity: z.number().int().min(1).max(1000).nullable().optional(),
+  /** Per-tenant Plan → Team flag (stored on user_groups). */
+  is_product_manager: z.boolean().optional(),
 });
 
 usersRouter.patch("/:id", groupScope, requireAdmin, assertTargetInGroup, async (req, res) => {
   const body = patchUserSchema.parse(req.body);
-  const sets: string[] = [];
+  const target = (req as Request & { targetUser: UserRow }).targetUser;
+  const userSets: string[] = [];
   const values: unknown[] = [];
   for (const [k, v] of Object.entries(body)) {
-    if (v === undefined) continue;
+    if (v === undefined || k === "is_product_manager") continue;
     values.push(v);
-    sets.push(`${k} = $${values.length}`);
+    userSets.push(`${k} = $${values.length}`);
   }
-  if (!sets.length) {
-    // No changes requested — return the pre-loaded row untouched.
-    res.json(scrubUser((req as Request & { targetUser: UserRow }).targetUser));
+  if (!userSets.length && body.is_product_manager === undefined) {
+    const { rows: flagRows } = await query<{ is_product_manager: boolean }>(
+      `SELECT COALESCE(is_product_manager, FALSE) AS is_product_manager
+         FROM user_groups WHERE user_id = $1 AND group_id = $2`,
+      [target.id, req.groupId!],
+    );
+    res.json({
+      ...scrubUser(target),
+      is_product_manager: Boolean(flagRows[0]?.is_product_manager),
+    });
     return;
   }
-  values.push(req.params.id);
+
   const updated = await withTransaction(async (client) => {
-    const { rows } = await client.query<UserRow>(
-      `UPDATE users SET ${sets.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
-      values,
-    );
-    if (!rows[0]) throw new HttpError(404, "user not found");
+    let user = target;
+    if (userSets.length) {
+      values.push(req.params.id);
+      const { rows } = await client.query<UserRow>(
+        `UPDATE users SET ${userSets.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+        values,
+      );
+      if (!rows[0]) throw new HttpError(404, "user not found");
+      user = rows[0]!;
+    }
     // Keep the per-group role in sync with the "global" one when a
     // role change came through: everything downstream (useIsAdmin,
     // useCanWrite, requireAdmin) reads the per-group role, so if we
@@ -620,9 +639,29 @@ usersRouter.patch("/:id", groupScope, requireAdmin, assertTargetInGroup, async (
         [body.role, req.params.id, req.groupId!],
       );
     }
-    return rows[0]!;
+    if (body.is_product_manager !== undefined) {
+      // Upsert membership so super-users (implicit members) can still
+      // be flagged as PMs without a pre-existing user_groups row.
+      await client.query(
+        `INSERT INTO user_groups (user_id, group_id, role, is_product_manager)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id, group_id) DO UPDATE
+           SET is_product_manager = EXCLUDED.is_product_manager`,
+        [req.params.id, req.groupId!, body.role ?? user.role, body.is_product_manager],
+      );
+    }
+    return user;
   });
-  res.json(scrubUser(updated));
+
+  const { rows: flagRows } = await query<{ is_product_manager: boolean }>(
+    `SELECT COALESCE(is_product_manager, FALSE) AS is_product_manager
+       FROM user_groups WHERE user_id = $1 AND group_id = $2`,
+    [updated.id, req.groupId!],
+  );
+  res.json({
+    ...scrubUser(updated),
+    is_product_manager: Boolean(flagRows[0]?.is_product_manager),
+  });
 });
 
 // Back-compat wrapper: /users/:id/role → /users/:id { role }.

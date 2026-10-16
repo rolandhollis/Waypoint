@@ -27,6 +27,7 @@ teamsRouter.get("/", async (req, res) => {
 
 const createSchema = z.object({
   name: z.string().min(1).max(64),
+  description: z.string().max(2000).optional(),
   color: z.string().max(32).optional(),
   capacity: z.number().int().min(1).max(1000).nullable().optional(),
 });
@@ -43,9 +44,9 @@ teamsRouter.post("/", requireAdmin, async (req, res) => {
     const color = body.color ?? DEFAULT_PALETTE[n % DEFAULT_PALETTE.length]!;
     const capacity = body.capacity === undefined ? 3 : body.capacity;
     const { rows } = await client.query<TeamRow>(
-      `INSERT INTO teams (group_id, name, color, capacity, "order", created_by)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [groupId, body.name, color, capacity, n, req.user!.id],
+      `INSERT INTO teams (group_id, name, description, color, capacity, "order", created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [groupId, body.name, body.description ?? "", color, capacity, n, req.user!.id],
     );
     return rows[0];
   });
@@ -54,6 +55,7 @@ teamsRouter.post("/", requireAdmin, async (req, res) => {
 
 const patchSchema = z.object({
   name: z.string().min(1).max(64).optional(),
+  description: z.string().max(2000).optional(),
   color: z.string().max(32).optional(),
   capacity: z.number().int().min(1).max(1000).nullable().optional(),
 });

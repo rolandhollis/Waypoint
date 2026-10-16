@@ -183,6 +183,12 @@ export const KPI_PALETTE = [
   "#EC4899", "#22C55E", "#F43F5E", "#6366F1", "#14B8A6",
 ] as const;
 
+export const SYSTEM_PALETTE = [
+  "#6366F1", "#14B8A6", "#F97316", "#EAB308",
+  "#EC4899", "#0EA5E9", "#22C55E", "#F43F5E",
+  "#8B5CF6", "#0891B2",
+] as const;
+
 export const GROUP_PALETTE = [
   "#6366F1", "#DC2626", "#059669", "#D97706", "#7C3AED",
   "#DB2777", "#0891B2", "#EA580C", "#65A30D", "#0F766E",

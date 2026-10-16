@@ -182,7 +182,10 @@ export function useJiffResolvedPage(path: string) {
     staleTime: 60_000,
     // No refetchInterval: a background swap from built-in/error → layout
     // (or old layout → new) reads as homepage flicker.
-    retry: 2,
+    // One quick retry only — a dead local CMS (e.g. :4200) must not
+    // keep the homepage blank while exponential backoff drains.
+    retry: 1,
+    retryDelay: 400,
   });
 }
 

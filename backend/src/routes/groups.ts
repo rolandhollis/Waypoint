@@ -268,6 +268,8 @@ const weeklyStatusSchedulePatchSchema = z
     reminder_time: timeHmSchema.nullable().optional(),
     digest_day: z.number().int().min(1).max(7).nullable().optional(),
     digest_time: timeHmSchema.nullable().optional(),
+    google_chat_day: z.number().int().min(1).max(7).nullable().optional(),
+    google_chat_time: timeHmSchema.nullable().optional(),
   })
   .strict();
 
@@ -281,6 +283,7 @@ const tabLabelsPatchSchema = z
     roadmap: tabLabelValueSchema.optional(),
     status_report: tabLabelValueSchema.optional(),
     ezestimates: tabLabelValueSchema.optional(),
+    team: tabLabelValueSchema.optional(),
     kpis: tabLabelValueSchema.optional(),
     completed: tabLabelValueSchema.optional(),
     phases: tabLabelValueSchema.optional(),
@@ -302,6 +305,9 @@ const constantsPatchSchema = z
       .min(1)
       .max(40)
       .nullable()
+      .optional(),
+    google_chat_webhook_url: z
+      .union([z.string().trim().url().max(2000), z.literal(""), z.null()])
       .optional(),
     tab_labels: tabLabelsPatchSchema.nullable().optional(),
     weekly_status_schedule: weeklyStatusSchedulePatchSchema.nullable().optional(),
@@ -330,6 +336,14 @@ function mergeConstantsBag(
   if (body.jira_brand_code !== undefined) {
     if (body.jira_brand_code === null) delete bag.jira_brand_code;
     else bag.jira_brand_code = body.jira_brand_code;
+  }
+
+  if (body.google_chat_webhook_url !== undefined) {
+    if (body.google_chat_webhook_url === null || body.google_chat_webhook_url === "") {
+      delete bag.google_chat_webhook_url;
+    } else {
+      bag.google_chat_webhook_url = body.google_chat_webhook_url;
+    }
   }
 
   if (body.tab_labels !== undefined) {

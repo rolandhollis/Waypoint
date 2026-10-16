@@ -17,6 +17,7 @@ import {
   reportingTodayIso,
   runOverdueCompletionReminders,
 } from "../notifications/overdueCompletion.js";
+import { runGoogleChatPmReminder } from "../notifications/googleChatPmReminder.js";
 import { verifyUnsubscribeToken } from "../notifications/unsubscribe.js";
 import { config } from "../config.js";
 import { authenticate, groupScope, requireAdmin } from "../middleware/auth.js";
@@ -142,6 +143,31 @@ notificationsRouter.post(
     const result = await runStatusReportReminders({
       dryRun: body.dry_run,
       scopeGroupId: req.groupId!,
+    });
+    res.json(result);
+  },
+);
+
+const runGoogleChatPmSchema = z.object({
+  dry_run: z.boolean().optional().default(false),
+});
+
+/**
+ * Admin trigger for the Google Chat PM reminder (status reports +
+ * roadmap updates). Scope is the caller's current group. Real runs
+ * force-send even if the week already posted (for testing).
+ */
+notificationsRouter.post(
+  "/google-chat-pm-reminder/run",
+  authenticate,
+  groupScope,
+  requireAdmin,
+  async (req, res) => {
+    const body = runGoogleChatPmSchema.parse(req.body ?? {});
+    const result = await runGoogleChatPmReminder({
+      dryRun: body.dry_run,
+      scopeGroupId: req.groupId!,
+      force: !body.dry_run,
     });
     res.json(result);
   },

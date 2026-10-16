@@ -77,9 +77,11 @@ export function HomeView() {
 
   // CMS configured and resolve still in flight — hold an empty shell so
   // we don't flash the built-in homepage before a published layout
-  // arrives. On error (e.g. local JiffContent down), fall through to
-  // the built-in overview instead of leaving a blank page.
-  if (cmsConfigured && resolved.isPending) {
+  // arrives. Use isLoading (pending + fetching), not isPending alone:
+  // when local JiffContent is down, retries leave isPending true
+  // between attempts and would otherwise blank the page for seconds.
+  // On error, fall through to the built-in overview.
+  if (cmsConfigured && resolved.isLoading) {
     return <HomeShell busy />;
   }
 

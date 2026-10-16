@@ -10,6 +10,7 @@ import {
 import { runStatusReportReminders } from "../notifications/statusReminders.js";
 import { runStatusReportDigest } from "../notifications/statusDigest.js";
 import { runOverdueCompletionReminders } from "../notifications/overdueCompletion.js";
+import { runGoogleChatPmReminder } from "../notifications/googleChatPmReminder.js";
 
 /**
  * Weekly rollover — Monday 00:05 in reporting timezone.
@@ -57,10 +58,12 @@ async function tickWeeklyStatusJobs() {
   );
   const reminderGroupIds: string[] = [];
   const digestGroupIds: string[] = [];
+  const googleChatGroupIds: string[] = [];
   for (const row of rows) {
     const schedule = weeklyStatusScheduleForConstants(deriveConstants(row.constants));
     if (isWeeklyStatusScheduleSlot(now, schedule, "reminder")) reminderGroupIds.push(row.id);
     if (isWeeklyStatusScheduleSlot(now, schedule, "digest")) digestGroupIds.push(row.id);
+    if (isWeeklyStatusScheduleSlot(now, schedule, "google_chat")) googleChatGroupIds.push(row.id);
   }
   if (reminderGroupIds.length) {
     try {
@@ -74,6 +77,13 @@ async function tickWeeklyStatusJobs() {
       await runStatusReportDigest({ scopeGroupIds: digestGroupIds });
     } catch (err) {
       console.error("[cron] status digest job failed:", err);
+    }
+  }
+  if (googleChatGroupIds.length) {
+    try {
+      await runGoogleChatPmReminder({ scopeGroupIds: googleChatGroupIds });
+    } catch (err) {
+      console.error("[cron] google chat PM reminder failed:", err);
     }
   }
 }
@@ -93,6 +103,6 @@ export function startCron() {
     { timezone: tz },
   );
   console.log(
-    `[cron] scheduled weekly jobs in ${tz}; status emails use per-group schedule; overdue-completion daily at 08:00`,
+    `[cron] scheduled weekly jobs in ${tz}; status emails + Google Chat PM nudge use per-group schedule; overdue-completion daily at 08:00`,
   );
 }

@@ -33,6 +33,11 @@ export function deriveConstants(raw: unknown): AppConstants {
     if (v === null) out.jira_brand_code = null;
     else if (typeof v === "string") out.jira_brand_code = v;
   }
+  if ("google_chat_webhook_url" in bag) {
+    const v = bag.google_chat_webhook_url;
+    if (v === null) out.google_chat_webhook_url = null;
+    else if (typeof v === "string") out.google_chat_webhook_url = v;
+  }
   if ("tab_labels" in bag) {
     const v = bag.tab_labels;
     if (v === null) out.tab_labels = null;
@@ -80,6 +85,17 @@ export function deriveConstants(raw: unknown): AppConstants {
         const val = sched.digest_time;
         if (val === null) partial.digest_time = null;
         else if (typeof val === "string") partial.digest_time = val;
+      }
+      if (
+        "google_chat_day" in sched &&
+        (sched.google_chat_day === null || typeof sched.google_chat_day === "number")
+      ) {
+        partial.google_chat_day = sched.google_chat_day as number | null;
+      }
+      if ("google_chat_time" in sched) {
+        const val = sched.google_chat_time;
+        if (val === null) partial.google_chat_time = null;
+        else if (typeof val === "string") partial.google_chat_time = val;
       }
       out.weekly_status_schedule = partial;
     }

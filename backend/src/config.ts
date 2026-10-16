@@ -84,6 +84,11 @@ export const config = {
    */
   publicAppUrl: process.env.PUBLIC_APP_URL ?? "http://localhost:5173",
   /**
+   * Optional default Google Chat incoming webhook. Per-workspace
+   * `groups.constants.google_chat_webhook_url` wins when set.
+   */
+  googleChatWebhookUrl: process.env.GOOGLE_CHAT_WEBHOOK_URL ?? "",
+  /**
    * Resend transactional email config. When apiKey is unset the
    * notification code short-circuits and logs instead of sending —
    * so the app boots cleanly on local dev / preview envs without a

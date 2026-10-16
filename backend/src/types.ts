@@ -100,6 +100,11 @@ export type AppConstants = {
    * Used by Jira sync + CSV export. Unset → default "RMN".
    */
   jira_brand_code?: string | null;
+  /**
+   * Google Chat incoming webhook for the weekly PM reminder.
+   * Falls back to env `GOOGLE_CHAT_WEBHOOK_URL` when unset.
+   */
+  google_chat_webhook_url?: string | null;
   /** Admin overrides for weekly status cadence (partial — unset keys use defaults). */
   weekly_status_schedule?: WeeklyStatusScheduleInput | null;
   /** Resolved schedule after merging overrides with deployment defaults. */
@@ -114,6 +119,8 @@ export type WeeklyStatusScheduleInput = {
   reminder_time?: string | null;
   digest_day?: number | null;
   digest_time?: string | null;
+  google_chat_day?: number | null;
+  google_chat_time?: string | null;
 };
 
 export type WeeklyStatusSchedule = {
@@ -124,6 +131,8 @@ export type WeeklyStatusSchedule = {
   reminder_time: string;
   digest_day: number;
   digest_time: string;
+  google_chat_day: number;
+  google_chat_time: string;
 };
 
 /**
@@ -203,6 +212,8 @@ export type TeamRow = {
   /** Tenant scope; every list/create/update filters by this. */
   group_id: string;
   name: string;
+  /** Free-form blurb shown on Plan → Team under the area name. */
+  description: string;
   color: string;
   order: number;
   /** Max concurrent active projects for the team; see users.capacity. */
@@ -221,6 +232,20 @@ export type KpiRow = {
   description: string;
   color: string;
   order: number;
+  created_by: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type SystemRow = {
+  id: string;
+  group_id: string;
+  name: string;
+  description: string;
+  color: string;
+  order: number;
+  /** At most one product area (team); null = unassigned. */
+  team_id: string | null;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;

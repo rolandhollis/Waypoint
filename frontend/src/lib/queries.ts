@@ -14,6 +14,7 @@ import type {
   AuditEventsListResponse,
   Group,
   Kpi,
+  ProductManager,
   OverdueCompletionResponse,
   PendingStatusResponse,
   Project,
@@ -32,6 +33,7 @@ import type {
   FeatureGroupSummary,
   StatusReportResponse,
   SwimLane,
+  System,
   Team,
   TshirtSize,
   User,
@@ -287,6 +289,22 @@ export function useKpis() {
   return useQuery({
     queryKey: ["kpis"],
     queryFn: () => api<Kpi[]>("/kpis"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+export function useSystems() {
+  return useQuery({
+    queryKey: ["systems"],
+    queryFn: () => api<System[]>("/systems"),
+    refetchInterval: POLL_MS,
+  });
+}
+
+export function useProductManagers() {
+  return useQuery({
+    queryKey: ["productManagers"],
+    queryFn: () => api<ProductManager[]>("/product-managers"),
     refetchInterval: POLL_MS,
   });
 }

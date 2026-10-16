@@ -29,6 +29,8 @@ function scheduleFromEffective(
     reminder_time: effective?.reminder_time ?? "08:00",
     digest_day: effective?.digest_day ?? 5,
     digest_time: effective?.digest_time ?? "17:00",
+    google_chat_day: effective?.google_chat_day ?? 4,
+    google_chat_time: effective?.google_chat_time ?? "05:00",
   };
 }
 
@@ -74,8 +76,17 @@ function WeeklyStatusScheduleForm({
     setDraft(scheduleFromEffective(effective));
   }, [effective]);
 
+  const [webhookUrl, setWebhookUrl] = useState(
+    constantsQ.data?.google_chat_webhook_url ?? "",
+  );
+  useEffect(() => {
+    setWebhookUrl(constantsQ.data?.google_chat_webhook_url ?? "");
+  }, [constantsQ.data?.google_chat_webhook_url]);
+
   const patch = useMutation({
-    mutationFn: (body: Pick<AppConstants, "weekly_status_schedule">) =>
+    mutationFn: (
+      body: Pick<AppConstants, "weekly_status_schedule" | "google_chat_webhook_url">,
+    ) =>
       api<AppConstants>(`/groups/${groupId}/constants`, {
         method: "PATCH",
         body: JSON.stringify(body),
@@ -85,6 +96,7 @@ function WeeklyStatusScheduleForm({
     },
   });
 
+  const persistedWebhook = constantsQ.data?.google_chat_webhook_url ?? "";
   const isDirty =
     draft.timezone !== persisted.timezone ||
     draft.due_day !== persisted.due_day ||
@@ -92,9 +104,14 @@ function WeeklyStatusScheduleForm({
     draft.reminder_day !== persisted.reminder_day ||
     draft.reminder_time !== persisted.reminder_time ||
     draft.digest_day !== persisted.digest_day ||
-    draft.digest_time !== persisted.digest_time;
+    draft.digest_time !== persisted.digest_time ||
+    draft.google_chat_day !== persisted.google_chat_day ||
+    draft.google_chat_time !== persisted.google_chat_time ||
+    webhookUrl.trim() !== persistedWebhook.trim();
 
-  const hasOverrides = constantsQ.data?.weekly_status_schedule != null;
+  const hasOverrides =
+    constantsQ.data?.weekly_status_schedule != null ||
+    Boolean(constantsQ.data?.google_chat_webhook_url);
 
   return (
     <section className="card-surface p-4">
@@ -134,7 +151,7 @@ function WeeklyStatusScheduleForm({
         </Field>
       </div>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+      <div className="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
         <ScheduleRow
           title="Status due"
           description="Owners must submit before this day and time each week."
@@ -162,6 +179,34 @@ function WeeklyStatusScheduleForm({
           onDayChange={(v) => setDraft((d) => ({ ...d, digest_day: v }))}
           onTimeChange={(v) => setDraft((d) => ({ ...d, digest_time: v }))}
         />
+        <ScheduleRow
+          title="Google Chat PM nudge"
+          description="Posts to a Chat space reminding product managers about status reports and roadmap updates."
+          day={draft.google_chat_day}
+          time={draft.google_chat_time}
+          disabled={constantsQ.isLoading || patch.isPending}
+          onDayChange={(v) => setDraft((d) => ({ ...d, google_chat_day: v }))}
+          onTimeChange={(v) => setDraft((d) => ({ ...d, google_chat_time: v }))}
+        />
+      </div>
+
+      <div className="mt-4">
+        <label className="text-xs font-medium text-wp-slate">
+          Google Chat webhook URL
+          <input
+            className="input mt-1 font-mono text-xs"
+            type="url"
+            placeholder="https://chat.googleapis.com/v1/spaces/…/messages?key=…&token=…"
+            value={webhookUrl}
+            disabled={constantsQ.isLoading || patch.isPending}
+            onChange={(e) => setWebhookUrl(e.target.value)}
+          />
+        </label>
+        <p className="mt-1 text-[11px] text-wp-slate">
+          Create an incoming webhook in the target Google Chat space, then paste the URL here.
+          Leave blank to use the server env <code className="rounded bg-wp-stone/40 px-1">GOOGLE_CHAT_WEBHOOK_URL</code>{" "}
+          if set. Test from Admin → Notifications → Google Chat PM nudge.
+        </p>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -179,7 +224,10 @@ function WeeklyStatusScheduleForm({
                 reminder_time: draft.reminder_time,
                 digest_day: draft.digest_day,
                 digest_time: draft.digest_time,
+                google_chat_day: draft.google_chat_day,
+                google_chat_time: draft.google_chat_time,
               },
+              google_chat_webhook_url: webhookUrl.trim() || null,
             })
           }
         >
@@ -194,10 +242,13 @@ function WeeklyStatusScheduleForm({
               !(await confirm({
                 title: "Reset weekly status schedule?",
                 description:
-                  "Reset weekly status schedule to the built-in defaults for this workspace?",
+                  "Reset weekly status schedule and Google Chat webhook to the built-in defaults for this workspace?",
               }))
             ) return;
-            patch.mutate({ weekly_status_schedule: null });
+            patch.mutate({
+              weekly_status_schedule: null,
+              google_chat_webhook_url: null,
+            });
           }}
         >
           <RotateCcw size={13} />
@@ -206,7 +257,13 @@ function WeeklyStatusScheduleForm({
       </div>
 
       <p className="mt-3 text-[11px] text-wp-slate">
-        Active schedule: reminder{" "}
+        Active schedule: Google Chat{" "}
+        {formatScheduleSlot(
+          persisted.google_chat_day,
+          persisted.google_chat_time,
+          persisted.timezone,
+        )}
+        ; reminder{" "}
         {formatScheduleSlot(persisted.reminder_day, persisted.reminder_time, persisted.timezone)};
         digest{" "}
         {formatScheduleSlot(persisted.digest_day, persisted.digest_time, persisted.timezone)};

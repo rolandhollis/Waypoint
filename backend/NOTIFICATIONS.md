@@ -36,6 +36,12 @@ because Fly.io blocks outbound SMTP.
      sent on demand to the same `status_digest_recipients` roster
      as the weekly digest. Manual only (no cron). Unsubscribe uses
      the digest token and removes the address from that shared list.
+  5. **Google Chat PM nudge** — one Chat space message per tenant
+     on the configured day/time (default Thursday 05:00 in
+     `REPORTING_TIMEZONE`), listing product managers and linking
+     to Status report / Roadmap / Team. Webhook URL is set under
+     Admin → Status schedule (or env `GOOGLE_CHAT_WEBHOOK_URL`).
+     Preview / Send now under Admin → Notifications.
 
 ## Fly.io secrets to set
 

@@ -7,10 +7,11 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowDownAZ, CalendarClock, GripVertical, Mail, Megaphone, Send, Sparkles, Trash2, Users } from "lucide-react";
+import { ArrowDownAZ, CalendarClock, ChevronRight, GripVertical, Mail, Megaphone, Send, Sparkles, Trash2, Users } from "lucide-react";
 import { api } from "../lib/api";
 import {
   useAiEstimatorHealth,
+  useGroupConstants,
   useGroupMembers,
   useGroups,
   useHealth,
@@ -26,7 +27,7 @@ import {
   useUserGroups,
   useUsers,
 } from "../lib/queries";
-import type { Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, TshirtSize, User } from "../lib/types";
+import type { AppConstants, Group, Kpi, PhaseDateKey, Project, Role, SwimLane, Team, TshirtSize, User } from "../lib/types";
 import { AuditTrailAdmin } from "../components/AuditTrailAdmin";
 import { useAppDialog } from "../components/AppDialogProvider";
 import { AdminConstants } from "../components/AdminConstants";
@@ -34,6 +35,7 @@ import { WeeklyStatusScheduleAdmin } from "../components/WeeklyStatusScheduleAdm
 import { AiReferenceEstimatesAdmin } from "../components/AiReferenceEstimatesAdmin";
 import { CsvExportAdmin } from "../components/CsvExportAdmin";
 import { JiraSyncAdmin } from "../components/JiraSyncAdmin";
+import { SystemsAdmin } from "../components/SystemsAdmin";
 import { RoadmapSnapshotEmailAdmin } from "../components/RoadmapSnapshotEmailAdmin";
 import {
   RoadmapSnapshotSendProvider,
@@ -46,6 +48,7 @@ import { RichTextEditor, isEmptyRichText } from "../components/RichTextEditor";
 import { ViewPageHeader } from "../components/ViewPageHeader";
 import { PasswordField } from "../components/PasswordField";
 import { passwordIsValid } from "../lib/password";
+import { formatWeekday } from "../lib/weeklyStatusSchedule";
 import { GROUP_PALETTE, KPI_PALETTE, SWIM_LANE_PALETTE, TEAM_PALETTE, USER_PALETTE } from "../lib/colors";
 import { useAutoColor } from "../lib/useAutoColor";
 import { RevealPasswordCard } from "../components/RevealPasswordCard";
@@ -90,8 +93,9 @@ const TOP_TABS: TopTabDef[] = [
     subTabs: [
       { key: "groups", label: "Groups",     render: () => <GroupsAdmin />, superUserOnly: true },
       { key: "lanes",  label: "Swim lanes", render: () => <SwimLanesAdmin /> },
-      { key: "teams",  label: "Teams",      render: () => <TeamsAdmin /> },
-      { key: "kpis",   label: "KPIs",       render: () => <KpisAdmin /> },
+      { key: "teams",    label: "Teams",    render: () => <TeamsAdmin /> },
+      { key: "kpis",     label: "KPIs",     render: () => <KpisAdmin /> },
+      { key: "systems",  label: "Systems",  render: () => <SystemsAdmin /> },
     ],
   },
   { key: "users",                  label: "Users",                 render: () => <UsersAdmin /> },
@@ -132,10 +136,11 @@ const TOP_TABS: TopTabDef[] = [
  * The pair `{ parent, sub }` is applied by the resolver below.
  */
 const LEGACY_TAB_TO_PARENT: Record<string, { parent: AdminTopTabKey; sub: string }> = {
-  lanes:  { parent: "workspace", sub: "lanes" },
-  teams:  { parent: "workspace", sub: "teams" },
-  kpis:   { parent: "workspace", sub: "kpis" },
-  groups: { parent: "workspace", sub: "groups" },
+  lanes:   { parent: "workspace", sub: "lanes" },
+  teams:   { parent: "workspace", sub: "teams" },
+  kpis:    { parent: "workspace", sub: "kpis" },
+  systems: { parent: "workspace", sub: "systems" },
+  groups:  { parent: "workspace", sub: "groups" },
   import: { parent: "csv",       sub: "import" },
   export: { parent: "csv",       sub: "export" },
 };
@@ -556,6 +561,7 @@ function NotificationsAdmin() {
     <RoadmapSnapshotSendProvider>
       <div className="flex flex-col gap-4">
         <ReminderAdmin />
+        <GoogleChatPmReminderAdmin />
         <DigestRecipientsAdmin />
         <DigestAdmin />
         <AnnouncementAdmin />
@@ -564,6 +570,154 @@ function NotificationsAdmin() {
         <AiEstimatorStatusRow />
       </div>
     </RoadmapSnapshotSendProvider>
+  );
+}
+
+type GoogleChatPmRunResult = {
+  weekOf: string;
+  dryRun: boolean;
+  groups: number;
+  sent: number;
+  skippedNoWebhook: number;
+  skippedNoPms: number;
+  errors: number;
+};
+
+function GoogleChatPmReminderAdmin() {
+  const { confirm } = useAppDialog();
+  const qc = useQueryClient();
+  const me = useMe();
+  const groupId = me.data?.current_group_id ?? null;
+  const constantsQ = useGroupConstants(groupId);
+  const [webhookUrl, setWebhookUrl] = useState(
+    constantsQ.data?.google_chat_webhook_url ?? "",
+  );
+  useEffect(() => {
+    setWebhookUrl(constantsQ.data?.google_chat_webhook_url ?? "");
+  }, [constantsQ.data?.google_chat_webhook_url]);
+
+  const saveWebhook = useMutation({
+    mutationFn: (url: string | null) =>
+      api<AppConstants>(`/groups/${groupId}/constants`, {
+        method: "PATCH",
+        body: JSON.stringify({ google_chat_webhook_url: url }),
+      }),
+    onSuccess: () => {
+      if (groupId) qc.invalidateQueries({ queryKey: ["groupConstants", groupId] });
+    },
+  });
+
+  const run = useMutation({
+    mutationFn: (dry_run: boolean) =>
+      api<GoogleChatPmRunResult>("/notifications/google-chat-pm-reminder/run", {
+        method: "POST",
+        body: JSON.stringify({ dry_run }),
+      }),
+  });
+  const busy = run.isPending || saveWebhook.isPending;
+  const last = run.data;
+  const persisted = (constantsQ.data?.google_chat_webhook_url ?? "").trim();
+  const draft = webhookUrl.trim();
+  const webhookDirty = draft !== persisted;
+  const schedule = constantsQ.data?.weekly_status_schedule_effective;
+
+  return (
+    <section className="card-surface p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-700">
+          <Megaphone size={16} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold text-wp-ink">Google Chat PM nudge</h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Posts to a Google Chat space reminding product managers to finish status reports
+            and roadmap updates
+            {schedule
+              ? ` (scheduled ${formatWeekday(schedule.google_chat_day)} at ${schedule.google_chat_time} ${schedule.timezone})`
+              : " (default Thursday 5:00am)"}
+            . Change day/time on the{" "}
+            <span className="font-medium text-wp-ink">Status schedule</span> tab. Mark PMs under Users.
+          </p>
+        </div>
+      </div>
+
+      <label className="mt-3 block text-xs font-medium text-wp-slate">
+        Webhook URL
+        <input
+          className="input mt-1 font-mono text-xs"
+          type="url"
+          placeholder="https://chat.googleapis.com/v1/spaces/…/messages?key=…&token=…"
+          value={webhookUrl}
+          disabled={!groupId || constantsQ.isLoading || saveWebhook.isPending}
+          onChange={(e) => setWebhookUrl(e.target.value)}
+        />
+      </label>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn-secondary text-xs"
+          disabled={!groupId || !webhookDirty || saveWebhook.isPending}
+          onClick={() => saveWebhook.mutate(draft || null)}
+        >
+          {saveWebhook.isPending ? "Saving…" : "Save webhook"}
+        </button>
+        {persisted ? (
+          <span className="text-[11px] text-emerald-700">Webhook saved for this workspace.</span>
+        ) : (
+          <span className="text-[11px] text-wp-slate">
+            Paste the URL from Google Chat → space → Apps &amp; integrations → Webhooks.
+          </span>
+        )}
+      </div>
+      <MutationErrorBanner mutation={saveWebhook} className="mt-3" />
+      <MutationErrorBanner mutation={run} className="mt-3" />
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={busy || (!persisted && !draft)}
+          onClick={() => run.mutate(true)}
+        >
+          {busy && run.variables === true ? "Previewing…" : "Preview"}
+        </button>
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={busy || (!persisted && !draft)}
+          onClick={async () => {
+            if (webhookDirty) {
+              await saveWebhook.mutateAsync(draft || null);
+            }
+            if (
+              !(await confirm({
+                title: "Post Google Chat reminder now?",
+                description:
+                  "Posts to the configured Chat space for this workspace, even if one already went out this week.",
+                confirmLabel: "Send now",
+              }))
+            ) {
+              return;
+            }
+            run.mutate(false);
+          }}
+        >
+          {busy && run.variables === false ? "Sending…" : "Send now"}
+        </button>
+      </div>
+      {last ? (
+        <div className="mt-3 rounded-md border border-wp-stone bg-wp-stone/20 px-3 py-2 text-xs text-wp-ink">
+          <div className="font-semibold">
+            {last.dryRun ? "Preview" : "Sent"} — week of {last.weekOf || "—"}
+          </div>
+          <div className="mt-0.5 text-wp-slate">
+            posted {last.sent}
+            {last.skippedNoWebhook ? ` · skipped (no webhook) ${last.skippedNoWebhook}` : ""}
+            {last.skippedNoPms ? ` · no PMs marked ${last.skippedNoPms}` : ""}
+            {last.errors ? ` · errors ${last.errors}` : ""}
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -2189,6 +2343,7 @@ function KpisAdmin() {
   const kpis = useKpis();
   const projects = useProjects();
   const qc = useQueryClient();
+  const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [color, setColor, resetColor] = useAutoColor(
@@ -2197,6 +2352,13 @@ function KpisAdmin() {
   );
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
+  function closeCreate() {
+    setShowCreate(false);
+    setName("");
+    setDescription("");
+    resetColor();
+  }
+
   const create = useMutation({
     mutationFn: () => api<Kpi>("/kpis", {
       method: "POST",
@@ -2204,9 +2366,7 @@ function KpisAdmin() {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["kpis"] });
-      setName("");
-      setDescription("");
-      resetColor();
+      closeCreate();
     },
   });
   const patch = useMutation({
@@ -2282,22 +2442,33 @@ function KpisAdmin() {
             KPIs appear on the KPIs report tab.
           </p>
         </div>
-        <button
-          type="button"
-          className="btn-secondary text-xs"
-          disabled={!canSortKpis || reorder.isPending}
-          title={
-            kpiList.length < 2
-              ? "Add another KPI to enable sorting"
-              : !canSortKpis
-              ? "KPIs are already in alphabetical order"
-              : "Reorder KPIs A→Z and save"
-          }
-          onClick={() => reorder.mutate(alphaSortIdsByName(kpiList))}
-        >
-          <ArrowDownAZ size={13} />
-          Sort A→Z
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            className="btn-secondary text-xs"
+            disabled={!canSortKpis || reorder.isPending}
+            title={
+              kpiList.length < 2
+                ? "Add another KPI to enable sorting"
+                : !canSortKpis
+                ? "KPIs are already in alphabetical order"
+                : "Reorder KPIs A→Z and save"
+            }
+            onClick={() => reorder.mutate(alphaSortIdsByName(kpiList))}
+          >
+            <ArrowDownAZ size={13} />
+            Sort A→Z
+          </button>
+          {!showCreate ? (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => setShowCreate(true)}
+            >
+              Add KPI
+            </button>
+          ) : null}
+        </div>
       </div>
       <MutationErrorBanner mutation={create} className="mt-3" />
       <MutationErrorBanner mutation={patch} className="mt-3" />
@@ -2319,26 +2490,55 @@ function KpisAdmin() {
           </ul>
         </SortableContext>
       </DndContext>
-      <div className="mt-4 grid grid-cols-[1fr_auto_auto] items-end gap-2">
-        <label className="text-xs font-medium text-wp-slate">
-          New KPI name
-          <input className="input mt-1" value={name} onChange={(e) => setName(e.target.value)} />
-        </label>
-        <label className="text-xs font-medium text-wp-slate">
-          Color
-          <input type="color" className="mt-1 h-8 w-16 cursor-pointer rounded border border-wp-stone" value={color} onChange={(e) => setColor(e.target.value)} />
-        </label>
-        <button className="btn-primary" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>Add KPI</button>
-        <label className="col-span-3 text-xs font-medium text-wp-slate">
-          Description <span className="text-wp-slate/70">(optional — shown on the KPIs report)</span>
-          <textarea
-            className="input mt-1 min-h-[3rem]"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="What does this KPI measure? Any thresholds to know about?"
-          />
-        </label>
-      </div>
+      {showCreate ? (
+        <div className="mt-4 grid grid-cols-[1fr_auto_auto] items-end gap-2 rounded-md border border-wp-stone bg-wp-stone/10 p-3">
+          <label className="text-xs font-medium text-wp-slate">
+            New KPI name
+            <input
+              className="input mt-1"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+            />
+          </label>
+          <label className="text-xs font-medium text-wp-slate">
+            Color
+            <input
+              type="color"
+              className="mt-1 h-8 w-16 cursor-pointer rounded border border-wp-stone"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+            />
+          </label>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={closeCreate}
+              disabled={create.isPending}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={!name.trim() || create.isPending}
+              onClick={() => create.mutate()}
+            >
+              {create.isPending ? "Adding…" : "Add KPI"}
+            </button>
+          </div>
+          <label className="col-span-3 text-xs font-medium text-wp-slate">
+            Description <span className="text-wp-slate/70">(optional — shown on the KPIs report)</span>
+            <textarea
+              className="input mt-1 min-h-[3rem]"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What does this KPI measure? Any thresholds to know about?"
+            />
+          </label>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2351,35 +2551,66 @@ function SortableKpiRow(props: {
   onDelete: () => void;
 }) {
   const { kpi, onRecolor, onRename, onRedescribe, onDelete } = props;
+  const [descOpen, setDescOpen] = useState(false);
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: kpi.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   return (
-    <li ref={setNodeRef} style={style} className="grid grid-cols-[auto_auto_1fr_auto] items-start gap-3 py-3">
-      <button {...attributes} {...listeners} className="btn-ghost !p-1" aria-label="Drag to reorder">
+    <li
+      ref={setNodeRef}
+      style={style}
+      className="grid grid-cols-[auto_auto_auto_1fr_auto] items-start gap-3 py-2"
+    >
+      <button
+        {...attributes}
+        {...listeners}
+        className="btn-ghost !p-1 mt-1.5"
+        aria-label="Drag to reorder"
+      >
         <GripVertical size={14} />
+      </button>
+      <button
+        type="button"
+        className="btn-ghost !p-1 mt-1.5 text-wp-slate hover:text-wp-ink"
+        onClick={() => setDescOpen((v) => !v)}
+        aria-expanded={descOpen}
+        aria-label={descOpen ? "Collapse description" : "Expand description"}
+        title={descOpen ? "Hide description" : "Show description"}
+      >
+        <ChevronRight
+          size={14}
+          className={`transition ${descOpen ? "rotate-90" : ""}`}
+        />
       </button>
       <input
         type="color"
-        className="h-7 w-10 cursor-pointer rounded border border-wp-stone"
+        className="mt-1 h-7 w-10 cursor-pointer rounded border border-wp-stone"
         value={kpi.color}
         onChange={(e) => onRecolor(e.target.value)}
       />
-      <div className="flex flex-col gap-1.5">
+      <div className="flex min-w-0 flex-col gap-1.5">
         <input
           key={`name-${kpi.id}-${kpi.updated_at}`}
           className="input"
           defaultValue={kpi.name}
           onBlur={(e) => { if (e.target.value !== kpi.name) onRename(e.target.value); }}
         />
-        <textarea
-          key={`desc-${kpi.id}-${kpi.updated_at}`}
-          className="input min-h-[2.5rem] text-xs"
-          placeholder="What this KPI measures (optional)."
-          defaultValue={kpi.description}
-          onBlur={(e) => { if (e.target.value !== kpi.description) onRedescribe(e.target.value); }}
-        />
+        {descOpen ? (
+          <textarea
+            key={`desc-${kpi.id}-${kpi.updated_at}`}
+            className="input min-h-[2.5rem] text-xs"
+            placeholder="What this KPI measures (optional)."
+            defaultValue={kpi.description}
+            onBlur={(e) => { if (e.target.value !== kpi.description) onRedescribe(e.target.value); }}
+          />
+        ) : null}
       </div>
-      <button className="btn-ghost !p-1 text-red-600" aria-label="Delete KPI" onClick={onDelete}><Trash2 size={14} /></button>
+      <button
+        className="btn-ghost !p-1 mt-1.5 text-red-600"
+        aria-label="Delete KPI"
+        onClick={onDelete}
+      >
+        <Trash2 size={14} />
+      </button>
     </li>
   );
 }
@@ -2794,6 +3025,17 @@ function UsersAdmin() {
       api<User>(`/users/${v.id}`, { method: "PATCH", body: JSON.stringify({ capacity: v.capacity }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   });
+  const patchPm = useMutation({
+    mutationFn: (v: { id: string; is_product_manager: boolean }) =>
+      api<User>(`/users/${v.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_product_manager: v.is_product_manager }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["users"] });
+      qc.invalidateQueries({ queryKey: ["productManagers"] });
+    },
+  });
   const delUser = useMutation({
     mutationFn: (id: string) => api<void>(`/users/${id}`, { method: "DELETE" }),
     onSuccess: () => {
@@ -2826,7 +3068,8 @@ function UsersAdmin() {
           <h2 className="text-base font-semibold">Users &amp; roles</h2>
           <p className="mt-1 text-xs text-wp-slate">
             Capacity is a soft cap on concurrent active (roadmap-scheduled) projects the user owns.
-            Leave blank for no cap.
+            Leave blank for no cap. Product manager marks who appears on{" "}
+            <span className="font-medium text-wp-ink">Plan → Team</span>.
           </p>
         </div>
         <button
@@ -2842,6 +3085,7 @@ function UsersAdmin() {
       </div>
       <MutationErrorBanner mutation={patchRole} className="mt-3" />
       <MutationErrorBanner mutation={patchCapacity} className="mt-3" />
+      <MutationErrorBanner mutation={patchPm} className="mt-3" />
       <MutationErrorBanner mutation={delUser} className="mt-3" />
       <MutationErrorBanner mutation={resendInvite} className="mt-3" />
       <ul className="mt-3 divide-y divide-wp-stone">
@@ -2882,10 +3126,32 @@ function UsersAdmin() {
                       Invite pending
                     </span>
                   ) : null}
+                  {u.is_product_manager ? (
+                    <span
+                      className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-800"
+                      title="Shown on Plan → Team"
+                    >
+                      PM
+                    </span>
+                  ) : null}
                 </div>
                 <div className="text-xs text-wp-slate">{u.email}</div>
               </div>
             </button>
+            <label
+              className="flex items-center gap-1.5 text-xs text-wp-slate"
+              title="Show this person on Plan → Team"
+            >
+              <input
+                type="checkbox"
+                className="rounded border-wp-stone"
+                checked={Boolean(u.is_product_manager)}
+                onChange={(e) =>
+                  patchPm.mutate({ id: u.id, is_product_manager: e.target.checked })
+                }
+              />
+              PM
+            </label>
             <label className="flex items-center gap-1 text-xs text-wp-slate">
               Cap
               <input
