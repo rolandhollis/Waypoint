@@ -287,8 +287,8 @@ export function RoadmapSnapshotSendProvider({ children }: { children: ReactNode 
     [dataReady, sendRoadmapSnapshot],
   );
 
-  // Drain digest-queued follow-ups while Notifications is open
-  // (covers scheduled digests that ran while an admin is in the app).
+  // Fallback: drain follow-ups queued when server-side capture failed.
+  // Primary path is headless Chromium after the status digest cron.
   useEffect(() => {
     if (!dataReady) return;
     let cancelled = false;

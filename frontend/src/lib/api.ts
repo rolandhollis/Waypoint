@@ -71,6 +71,13 @@ export async function api<T = unknown>(
     // requests (they surface their own error state).
     const isAuthProbe = path === "/auth/login" || path === "/auth/logout";
     if (res.status === 401 && !isAuthProbe) {
+      // Best-effort: clear the HttpOnly session cookie so a dead
+      // session id doesn't keep /users/me (and "Signing in…") looping.
+      // Fire-and-forget — the handler below owns the UI transition.
+      void fetch(`${API_BASE}/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      }).catch(() => undefined);
       onUnauthorized?.();
     }
     throw new ApiError(res.status, message, body);

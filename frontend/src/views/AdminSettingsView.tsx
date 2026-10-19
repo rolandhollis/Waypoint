@@ -647,7 +647,7 @@ const NOTIFICATION_SECTIONS: Array<{
   {
     key: "roadmap-snapshot",
     label: "Roadmap snapshot email",
-    description: "Capture per-team roadmap images and email the list.",
+    description: "Sent after the weekly digest; manual capture & send also available.",
     icon: Camera,
     iconClass: "bg-indigo-100 text-indigo-700",
   },
@@ -691,77 +691,93 @@ function NotificationsAdmin() {
     setParams(next, { replace: true });
   }
 
-  if (!active) {
-    return (
-      <div>
-        <p className="mb-3 text-sm text-wp-slate">
-          Choose a schedule or channel to configure and send.
-        </p>
-        <ul className="divide-y divide-wp-stone overflow-hidden rounded-md border border-wp-stone bg-white">
-          {NOTIFICATION_SECTIONS.map((section) => {
-            const Icon = section.icon;
-            return (
-              <li key={section.key}>
-                <button
-                  type="button"
-                  onClick={() => openSection(section.key)}
-                  className="flex w-full items-start gap-3 px-4 py-3 text-left transition hover:bg-wp-stone/20"
-                >
-                  <span
-                    className={
-                      "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full " +
-                      section.iconClass
-                    }
-                  >
-                    <Icon size={16} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-wp-ink">
-                      {section.label}
-                    </span>
-                    <span className="mt-0.5 block text-xs text-wp-slate">
-                      {section.description}
-                    </span>
-                  </span>
-                  <ChevronRight
-                    size={16}
-                    className="mt-1 shrink-0 text-wp-slate"
-                    aria-hidden
-                  />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    );
-  }
-
-  const meta = NOTIFICATION_SECTIONS.find((s) => s.key === active)!;
-
+  // Provider wraps the index too so a failed server-side capture can
+  // still be drained here (browser fallback) while Notifications is open.
   return (
     <RoadmapSnapshotSendProvider>
-      <div className="space-y-3">
-        <button
-          type="button"
-          onClick={backToIndex}
-          className="inline-flex items-center gap-1 text-xs font-medium text-wp-slate hover:text-wp-ink"
-        >
-          <ChevronLeft size={14} aria-hidden />
-          All notifications
-        </button>
-        <div className="sr-only">{meta.label}</div>
-        {active === "status-schedule" ? <WeeklyStatusScheduleAdmin /> : null}
-        {active === "status-reminders" ? <ReminderAdmin /> : null}
-        {active === "google-chat" ? <GoogleChatPmReminderAdmin /> : null}
-        {active === "digest-recipients" ? <DigestRecipientsAdmin /> : null}
-        {active === "weekly-digest" ? <DigestAdmin /> : null}
-        {active === "announcement" ? <AnnouncementAdmin /> : null}
-        {active === "roadmap-snapshot" ? <RoadmapSnapshotEmailAdmin /> : null}
-        {active === "overdue-completion" ? <OverdueCompletionAdmin /> : null}
-        {active === "ai-estimator" ? <AiEstimatorStatusRow /> : null}
-      </div>
+      {!active ? (
+        <NotificationsIndex onOpen={openSection} />
+      ) : (
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={backToIndex}
+            className="inline-flex items-center gap-1 text-xs font-medium text-wp-slate hover:text-wp-ink"
+          >
+            <ChevronLeft size={14} aria-hidden />
+            All notifications
+          </button>
+          <div className="sr-only">
+            {NOTIFICATION_SECTIONS.find((s) => s.key === active)?.label}
+          </div>
+          {active === "status-schedule" ? <WeeklyStatusScheduleAdmin /> : null}
+          {active === "status-reminders" ? <ReminderAdmin /> : null}
+          {active === "google-chat" ? <GoogleChatPmReminderAdmin /> : null}
+          {active === "digest-recipients" ? <DigestRecipientsAdmin /> : null}
+          {active === "weekly-digest" ? <DigestAdmin /> : null}
+          {active === "announcement" ? <AnnouncementAdmin /> : null}
+          {active === "roadmap-snapshot" ? <RoadmapSnapshotEmailAdmin /> : null}
+          {active === "overdue-completion" ? <OverdueCompletionAdmin /> : null}
+          {active === "ai-estimator" ? <AiEstimatorStatusRow /> : null}
+        </div>
+      )}
     </RoadmapSnapshotSendProvider>
+  );
+}
+
+function NotificationsIndex({
+  onOpen,
+}: {
+  onOpen: (key: NotificationSectionKey) => void;
+}) {
+  const { followUpStatus } = useRoadmapSnapshotSend();
+  return (
+    <div>
+      <p className="mb-3 text-sm text-wp-slate">
+        Choose a schedule or channel to configure and send.
+      </p>
+      {followUpStatus ? (
+        <p className="mb-3 rounded-md border border-wp-stone bg-wp-stone/20 px-3 py-2 text-xs text-wp-ink">
+          {followUpStatus}
+        </p>
+      ) : null}
+      <ul className="divide-y divide-wp-stone overflow-hidden rounded-md border border-wp-stone bg-white">
+        {NOTIFICATION_SECTIONS.map((section) => {
+          const Icon = section.icon;
+          return (
+            <li key={section.key}>
+              <button
+                type="button"
+                onClick={() => onOpen(section.key)}
+                className="flex w-full items-start gap-3 px-4 py-3 text-left transition hover:bg-wp-stone/20"
+              >
+                <span
+                  className={
+                    "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full " +
+                    section.iconClass
+                  }
+                >
+                  <Icon size={16} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-wp-ink">
+                    {section.label}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-wp-slate">
+                    {section.description}
+                  </span>
+                </span>
+                <ChevronRight
+                  size={16}
+                  className="mt-1 shrink-0 text-wp-slate"
+                  aria-hidden
+                />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -1600,9 +1616,8 @@ function DigestRecipientsAdmin() {
 }
 
 function DigestAdmin() {
-  const { confirm, alert } = useAppDialog();
-  const { dataReady, drainPendingRoadmapSnapshot, followUpStatus } =
-    useRoadmapSnapshotSend();
+  const { confirm } = useAppDialog();
+  const { followUpStatus } = useRoadmapSnapshotSend();
   const recipients = useQuery({
     queryKey: ["digestRecipients"],
     queryFn: () => api<DigestRecipient[]>("/notifications/digest-recipients"),
@@ -1616,7 +1631,6 @@ function DigestAdmin() {
   });
 
   const [digestAdminNote, setDigestAdminNote] = useState("");
-  const [roadmapWorking, setRoadmapWorking] = useState(false);
 
   const digestNoteTrimmed = digestAdminNote.trim();
   const digestNoteReady = !isEmptyRichText(digestNoteTrimmed);
@@ -1625,7 +1639,7 @@ function DigestAdmin() {
     admin_note: digestNoteReady ? digestNoteTrimmed : undefined,
   });
 
-  const busySend = runDigest.isPending || roadmapWorking;
+  const busySend = runDigest.isPending;
   const lastRun = runDigest.data;
   const recipientCount = recipients.data?.length ?? 0;
 
@@ -1634,7 +1648,7 @@ function DigestAdmin() {
       !(await confirm({
         title: "Send digest now?",
         description:
-          "Send the weekly digest to every recipient on this group's distribution list, then capture and email the roadmap snapshot to the same list.",
+          "Send the weekly digest to every recipient on this group's distribution list. The server will then capture and email the roadmap snapshot to the same list.",
         confirmLabel: "Send now",
       }))
     ) {
@@ -1642,33 +1656,7 @@ function DigestAdmin() {
     }
 
     try {
-      const digestResult = await runDigest.mutateAsync(digestRunArgs(false));
-      // Digest enqueue marks a follow-up when anyone was emailed.
-      if (digestResult.sent <= 0) {
-        return;
-      }
-      if (!dataReady) {
-        await alert({
-          title: "Digest sent; roadmap snapshot pending",
-          description:
-            "Roadmap data was still loading. Keep Notifications open — the snapshot will send automatically once data is ready, or open Roadmap snapshot email and use Capture & send to list.",
-        });
-        return;
-      }
-      setRoadmapWorking(true);
-      try {
-        await drainPendingRoadmapSnapshot();
-      } catch (err) {
-        await alert({
-          title: "Digest sent; roadmap snapshot failed",
-          description:
-            err instanceof Error
-              ? err.message
-              : "Open Roadmap snapshot email and use Capture & send to list to retry.",
-        });
-      } finally {
-        setRoadmapWorking(false);
-      }
+      await runDigest.mutateAsync(digestRunArgs(false));
     } catch {
       // runDigest error surfaces via MutationErrorBanner
     }
@@ -1690,8 +1678,7 @@ function DigestAdmin() {
             Saved drafts are excluded until owners click Submit. Runs automatically at the digest time on the{" "}
             <span className="font-medium text-wp-ink">Status schedule</span>; use these buttons to
             preview or send on demand. After a successful digest send (manual or scheduled),
-            the roadmap snapshot email is queued and captured in this browser for the same list —
-            keep Notifications open (or reopen Weekly digest / Roadmap snapshot) so the follow-up can run.
+            the server captures Compact roadmap images and emails the roadmap snapshot to the same list.
             Skips silently when the group has zero completed updates or zero
             recipients. Scoped to the group you're currently viewing.
           </p>
@@ -1740,21 +1727,13 @@ function DigestAdmin() {
         >
           <Send size={13} />
           {runDigest.isPending && runDigest.variables?.dry_run === false
-            ? "Sending digest…"
-            : roadmapWorking
-              ? "Sending roadmap…"
-              : "Send now"}
+            ? "Sending…"
+            : "Send now"}
         </button>
       </div>
 
       {followUpStatus ? (
-        <p
-          className={
-            "mt-3 text-xs " +
-            (roadmapWorking ? "font-medium text-wp-ink" : "text-wp-slate")
-          }
-          role="status"
-        >
+        <p className="mt-3 text-xs text-wp-slate" role="status">
           {followUpStatus}
         </p>
       ) : null}

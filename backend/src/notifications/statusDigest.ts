@@ -22,7 +22,7 @@ import {
 } from "../lib/weeklyStatusSchedule.js";
 import { sendEmail } from "./email.js";
 import { emailBodyToHtml, emailBodyToPlainText } from "./emailHtml.js";
-import { enqueueRoadmapSnapshotFollowup } from "./roadmapSnapshotEmail.js";
+import { runScheduledRoadmapSnapshot } from "./roadmapSnapshotCapture.js";
 import { makeUnsubscribeToken } from "./unsubscribe.js";
 
 /**
@@ -943,10 +943,6 @@ function renderDigest(input: {
 
   const missingHtml = renderMissingSectionHtml(missingByOwner, appUrl);
   const newBacklogHtml = renderNewBacklogSectionHtml(newBacklog, appUrl);
-  const summaryExtra =
-    missingCount > 0
-      ? ` · <strong>${missingCount}</strong> eligible item${missingCount === 1 ? "" : "s"} without a submitted update`
-      : "";
   const summaryHtml = renderDigestSummaryHtml(digestSummary);
 
   const html = `
@@ -954,7 +950,7 @@ function renderDigest(input: {
       <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;mso-hide:all;">${escapeHtml(preheader)}</span>
       <p>${escapeHtml(greeting)}</p>
       ${noteHtml}
-      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong> — ${updates.length} update${updates.length === 1 ? "" : "s"} across ${laneCount} swim lane${laneCount === 1 ? "" : "s"}${summaryExtra}.</p>
+      <p>Here's the <strong>${escapeHtml(groupName)}</strong> weekly status rollup for the week of <strong>${escapeHtml(weekLabel)}</strong>.</p>
       ${summaryHtml}
       ${laneHtml}
       ${missingHtml}
@@ -1142,19 +1138,27 @@ export async function runStatusReportDigest({
     }
   }
 
-  // Queue roadmap snapshot follow-up for every group that got at least
-  // one digest delivery. The admin UI drains this (browser capture).
+  // After a successful digest, capture Compact roadmap PNGs in headless
+  // Chromium and email the same roster. Run in the background so the
+  // digest HTTP response (admin Send now) and cron tick aren't blocked
+  // for minutes of Chromium work. On capture failure the runner
+  // enqueues a browser follow-up so an admin tab can still drain.
   if (!dryRun && groupsWithSuccessfulSend.size) {
-    for (const gid of groupsWithSuccessfulSend) {
-      try {
-        await enqueueRoadmapSnapshotFollowup(gid, weekIso);
-      } catch (err) {
-        console.error(`[digest] failed to enqueue roadmap snapshot followup for ${gid}:`, err);
+    const groupIds = [...groupsWithSuccessfulSend];
+    void (async () => {
+      for (const gid of groupIds) {
+        try {
+          const snap = await runScheduledRoadmapSnapshot(gid, { weekOf: weekIso });
+          if (snap) {
+            console.log(
+              `[digest] roadmap snapshot for ${gid}: sent=${snap.sent} errors=${snap.errors} teams=${snap.teamCount}`,
+            );
+          }
+        } catch (err) {
+          console.error(`[digest] roadmap snapshot failed for ${gid}:`, err);
+        }
       }
-    }
-    console.log(
-      `[digest] enqueued roadmap snapshot followup for ${groupsWithSuccessfulSend.size} group(s)`,
-    );
+    })();
   }
 
   console.log(

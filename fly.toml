@@ -54,7 +54,7 @@ primary_region = "iad"
   method = "get"
   path = "/api/health"
 
-# Modest VM — this app is IO-bound on Postgres, not CPU/RAM.
+# Chromium for scheduled roadmap-snapshot capture needs ~1GB.
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
+  memory = "1024mb"

@@ -1,9 +1,12 @@
 # Multi-stage build for Waypoint.
 #
-# Produces a single Node 20 alpine image that serves both the compiled
+# Produces a single Node 20 slim image that serves both the compiled
 # Express API (`/api/*`) and the Vite SPA (everything else) on the same
 # port, and runs pending migrations on boot so the deploy target doesn't
 # need an init container.
+#
+# Includes system Chromium so the weekly status digest can headlessly
+# capture Compact roadmap PNGs for the follow-on snapshot email.
 #
 # Local build:  docker build -t waypoint .
 # Fly.io:       `fly deploy` picks this up automatically.
@@ -15,7 +18,7 @@
 #     -t waypoint .
 
 # ---------- Stage 1: install + build frontend ----------
-FROM node:20-alpine AS frontend
+FROM node:20-bookworm-slim AS frontend
 WORKDIR /app/frontend
 
 # Declared early so Fly/Depot cache keys include the public site key.
@@ -53,17 +56,25 @@ RUN rm -f .env .env.local .env.production .env.production.local \
 RUN npm run build
 
 # ---------- Stage 2: install + build backend ----------
-FROM node:20-alpine AS backend
+FROM node:20-bookworm-slim AS backend
 WORKDIR /app/backend
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 COPY backend/ ./
 RUN npm run build
 
-# ---------- Stage 3: slim runtime with prod deps only ----------
-FROM node:20-alpine AS runtime
+# ---------- Stage 3: slim runtime with prod deps + Chromium ----------
+FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+
+# System Chromium for scheduled roadmap-snapshot capture (puppeteer-core).
+RUN apt-get update -qq \
+  && apt-get install --no-install-recommends -y chromium fonts-liberation \
+  && rm -rf /var/lib/apt/lists /var/cache/apt/archives
+
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 # Prod-only backend deps.
 COPY backend/package.json backend/package-lock.json ./backend/
@@ -77,10 +88,11 @@ COPY --from=backend  /app/backend/src/db/migrations   ./backend/dist/db/migratio
 # Compiled SPA assets served by Express.
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 
-# Non-root runtime user.
-RUN addgroup -S app && adduser -S -G app app \
- && chown -R app:app /app
+# Non-root runtime user. Chromium needs a writable home for its profile.
+RUN addgroup --system app && adduser --system --ingroup app app \
+  && mkdir -p /home/app && chown -R app:app /app /home/app
 USER app
+ENV HOME=/home/app
 
 ENV STATIC_DIR=/app/frontend/dist
 ENV PORT=4000

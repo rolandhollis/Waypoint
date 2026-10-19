@@ -25,8 +25,11 @@ export const SESSION_COOKIE = "waypoint.session";
  *   * REMEMBER — 30 days sliding. Opt-in at the login form; suited
  *     to trusted personal devices where re-typing the password each
  *     week is friction the PM shouldn't have to eat.
- * Both TTLs slide on every authenticated request via touchSession,
- * so an actively-used session effectively never expires.
+ * Both TTLs slide on every authenticated request via touchSession
+ * (DB row) and a refreshed Set-Cookie Max-Age (browser cookie). The
+ * cookie refresh is required — Max-Age is absolute from the last
+ * Set-Cookie, so without it an active user is bounced after 7/30
+ * calendar days even though the DB session would still be valid.
  */
 export const SESSION_TTL_DEFAULT_MS = 7 * 24 * 60 * 60 * 1000;
 export const SESSION_TTL_REMEMBER_MS = 30 * 24 * 60 * 60 * 1000;

@@ -173,9 +173,9 @@ export function RoadmapSnapshotEmailAdmin() {
             and send them to the{" "}
             <span className="font-medium text-wp-ink">Email distribution list</span>{" "}
             above. Each block lists items in development, then a chart that deep-links
-            to that team&apos;s filtered roadmap. Also queued automatically after a successful
-            weekly status digest (manual or scheduled) — keep this Notifications tab open so
-            charts can be captured in the browser.
+            to that team&apos;s filtered roadmap. After a successful weekly status digest
+            (scheduled or Send now), the server captures and sends this email
+            automatically — use the buttons below for an ad-hoc send.
           </p>
         </div>
       </div>

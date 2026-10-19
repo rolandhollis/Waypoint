@@ -1,9 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, Link, useLocation, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAppName, useHealth, useMe, useMockRoster } from "./lib/queries";
 import { useMockUserStore } from "./lib/mockUser";
-import { setUnauthorizedHandler } from "./lib/api";
+import { api, setUnauthorizedHandler } from "./lib/api";
 import { HomeView } from "./views/HomeView";
 import { BoardView } from "./views/BoardView";
 import { PrioritizationView } from "./views/PrioritizationView";
@@ -14,6 +14,7 @@ import { CompletedReportView } from "./views/CompletedReportView";
 import { EZEstimatesView } from "./views/EZEstimatesView";
 import { TeamView } from "./views/TeamView";
 import { AdminSettingsView } from "./views/AdminSettingsView";
+import { RoadmapSnapshotCapturePage } from "./views/RoadmapSnapshotCapturePage";
 import { PhasesView } from "./views/PhasesView";
 import { SimpleFeaturesView } from "./views/SimpleFeaturesView";
 import { DesignView } from "./views/DesignView";
@@ -44,7 +45,24 @@ import {
 
 const DEFAULT_NAVBAR_LOGO = "/brand/icon-light-transparent.png";
 
+/** How long to show "Signing in…" before falling through to login. */
+const ME_LOADING_GRACE_MS = 8_000;
+
+/** Puppeteer opens this path with `?actor=<userId>` in mock mode so we
+ *  can seed the mock store before the login gate runs (persist
+ *  rehydration is async and would otherwise flash MockLoginScreen). */
+function seedCaptureMockActorFromUrl() {
+  if (typeof window === "undefined") return;
+  if (window.location.pathname !== "/internal/roadmap-snapshot-capture") return;
+  const actor = new URLSearchParams(window.location.search).get("actor");
+  if (!actor) return;
+  if (useMockUserStore.getState().mockUserId !== actor) {
+    useMockUserStore.getState().setMockUserId(actor);
+  }
+}
+
 export function App() {
+  seedCaptureMockActorFromUrl();
   const health = useHealth();
   const mockUserId = useMockUserStore((s) => s.mockUserId);
   const isMockMode = health.data?.auth === "mock";
@@ -57,6 +75,18 @@ export function App() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
+
+  // After a grace period, stop blocking the shell on a hung /users/me
+  // (network stall, half-open tab) and show login instead.
+  const [meLoadTimedOut, setMeLoadTimedOut] = useState(false);
+  useEffect(() => {
+    if (!me.isLoading || me.data) {
+      setMeLoadTimedOut(false);
+      return;
+    }
+    const t = window.setTimeout(() => setMeLoadTimedOut(true), ME_LOADING_GRACE_MS);
+    return () => window.clearTimeout(t);
+  }, [me.isLoading, me.data]);
 
   // Wire a single global 401 handler that flips the shell back to
   // /login (password mode) or the mock picker (mock mode). Runs once
@@ -107,10 +137,18 @@ export function App() {
   // circuits `stashPostLoginRedirect`.
   useEffect(() => {
     if (!isPasswordMode) return;
-    if (me.isLoading) return;
+    if (me.isLoading && !me.isError && !meLoadTimedOut) return;
     if (me.data) return;
     stashPostLoginRedirect(location.pathname, location.search);
-  }, [isPasswordMode, me.isLoading, me.data, location.pathname, location.search]);
+  }, [
+    isPasswordMode,
+    me.isLoading,
+    me.isError,
+    meLoadTimedOut,
+    me.data,
+    location.pathname,
+    location.search,
+  ]);
 
   if (health.isLoading || !health.data) {
     return (
@@ -122,9 +160,11 @@ export function App() {
   }
 
   // Password mode: dedicated /login route. Everything else redirects
-  // to it until /users/me returns a user.
+  // to it until /users/me returns a user. Don't trap the user on
+  // "Signing in…" when /users/me errored or hung past the grace period.
   if (isPasswordMode) {
-    if (me.isLoading) {
+    const waitingOnMe = me.isLoading && !me.isError && !meLoadTimedOut;
+    if (waitingOnMe) {
       return (
         <>
           <DocumentFaviconSync />
@@ -136,6 +176,21 @@ export function App() {
       return (
         <>
           <DocumentFaviconSync />
+          {(me.isError || meLoadTimedOut) && !me.isLoading ? (
+            <AuthProbeFailedBanner
+              timedOut={meLoadTimedOut && !me.isError}
+              onRetry={() => {
+                setMeLoadTimedOut(false);
+                void qc.invalidateQueries({ queryKey: ["me"] });
+              }}
+              onClearSession={() => {
+                void api("/auth/logout", { method: "POST" }).catch(() => undefined);
+                setMeLoadTimedOut(false);
+                qc.setQueryData(["me"], null);
+                void qc.invalidateQueries({ queryKey: ["me"] });
+              }}
+            />
+          ) : null}
           <Routes>
             <Route path="/login" element={<LoginView />} />
             <Route path="/forgot-password" element={<ForgotPasswordView />} />
@@ -162,28 +217,45 @@ export function App() {
   // Legacy prod modes (Okta / Cloudflare Access): IdP has already
   // authenticated the browser session; /users/me is the source of
   // truth.
-  if (!isMockMode && !isPasswordMode && me.isLoading) {
-    return (
-      <>
-        <DocumentFaviconSync />
-        <FullscreenMessage title="Signing in…" />
-      </>
-    );
+  if (!isMockMode && !isPasswordMode) {
+    const waitingOnMe = me.isLoading && !me.isError && !meLoadTimedOut;
+    if (waitingOnMe) {
+      return (
+        <>
+          <DocumentFaviconSync />
+          <FullscreenMessage title="Signing in…" />
+        </>
+      );
+    }
+    if (!me.data) {
+      return (
+        <>
+          <DocumentFaviconSync />
+          <FullscreenMessage
+            title="You're not authorized"
+            body={
+              <>
+                You're signed in via <code>{health.data.auth}</code> but your account
+                is not provisioned in this app. Ask an admin to add you, then reload.
+              </>
+            }
+          />
+        </>
+      );
+    }
   }
-  if (!isMockMode && !isPasswordMode && !me.data) {
+
+  const isRoadmapCapturePage =
+    location.pathname === "/internal/roadmap-snapshot-capture";
+
+  // Headless capture: no chrome, banners, or nav — Chromium only needs
+  // the Compact renderer and the window.__ROADMAP_SNAPSHOT_CAPTURE hook.
+  if (isRoadmapCapturePage) {
     return (
-      <>
+      <AbSdkProvider userId={me.data?.id ?? null}>
         <DocumentFaviconSync />
-        <FullscreenMessage
-          title="You're not authorized"
-          body={
-            <>
-              You're signed in via <code>{health.data.auth}</code> but your account
-              is not provisioned in this app. Ask an admin to add you, then reload.
-            </>
-          }
-        />
-      </>
+        <RoadmapSnapshotCapturePage />
+      </AbSdkProvider>
     );
   }
 
@@ -216,6 +288,10 @@ export function App() {
           <Route path="/feature-groups" element={<FeatureGroupsView />} />
           <Route path="/feature-groups/:groupId" element={<FeatureGroupDetailView />} />
           <Route path="/admin" element={<AdminSettingsView />} />
+          <Route
+            path="/internal/roadmap-snapshot-capture"
+            element={<RoadmapSnapshotCapturePage />}
+          />
           {/* Standalone `/projects/:id` — bookmarkable / shareable
               item detail page. Renders the same shared body the
               right-side modal uses (`ProjectDetailBody`), so any
@@ -268,6 +344,35 @@ function FullscreenMessage({ title, body }: { title: string; body?: React.ReactN
         <h1 className="text-lg font-semibold text-wp-ink">{title}</h1>
         {body ? <div className="mt-2 text-sm text-wp-slate">{body}</div> : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Shown above the login form when /users/me failed or hung — so the
+ * shell never traps people on an endless "Signing in…" screen.
+ */
+function AuthProbeFailedBanner({
+  timedOut,
+  onRetry,
+  onClearSession,
+}: {
+  timedOut: boolean;
+  onRetry: () => void;
+  onClearSession: () => void;
+}) {
+  return (
+    <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-950">
+      {timedOut
+        ? "Sign-in is taking longer than expected — you can sign in below, or retry."
+        : "We couldn’t restore your session. Sign in below, or clear the saved session and try again."}{" "}
+      <button type="button" className="font-semibold underline" onClick={onRetry}>
+        Retry
+      </button>
+      {" · "}
+      <button type="button" className="font-semibold underline" onClick={onClearSession}>
+        Clear session
+      </button>
     </div>
   );
 }

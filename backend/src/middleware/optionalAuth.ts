@@ -1,14 +1,19 @@
 import type { NextFunction, Request, Response } from "express";
 import { config } from "../config.js";
 import { query } from "../db/pool.js";
-import { findSessionUser, readSessionCookie, touchSession } from "../auth/session.js";
+import {
+  findSessionUser,
+  readSessionCookie,
+  setSessionCookie,
+  touchSession,
+} from "../auth/session.js";
 import type { UserRow } from "../types.js";
 
 /**
  * Best-effort identity for public analytics endpoints.
  * Never 401s — attaches req.user when credentials are present and valid.
  */
-export async function optionalAuthenticate(req: Request, _res: Response, next: NextFunction) {
+export async function optionalAuthenticate(req: Request, res: Response, next: NextFunction) {
   try {
     if (config.authMode === "mock") {
       const id = req.header("x-mock-user-id");
@@ -25,7 +30,9 @@ export async function optionalAuthenticate(req: Request, _res: Response, next: N
       if (sessionId) {
         const found = await findSessionUser(sessionId);
         if (found) {
-          touchSession(sessionId, found.session.remember_me).catch(() => undefined);
+          const rememberMe = found.session.remember_me;
+          touchSession(sessionId, rememberMe).catch(() => undefined);
+          setSessionCookie(res, sessionId, rememberMe);
           req.user = found.user;
           req.sessionId = sessionId;
         }

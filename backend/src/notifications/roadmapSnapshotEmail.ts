@@ -10,12 +10,12 @@ import {
 import { makeUnsubscribeToken } from "./unsubscribe.js";
 
 /**
- * Ad-hoc roadmap snapshot email to the status-digest recipient roster.
+ * Roadmap snapshot email to the status-digest recipient roster.
  *
- * Manual-only (no cron). The admin UI captures one Compact 3-month
- * PNG per team in the browser, then POSTs the images here. We embed
- * each PNG inline (cid:) under a team headline so the message reads
- * as a vertical stack of team roadmaps.
+ * Scheduled after the weekly status digest (headless Chromium capture)
+ * and also available as an admin manual send. Callers capture one
+ * Compact 3-month PNG per team, then we embed each PNG inline (cid:)
+ * under a team headline.
  */
 
 export const ROADMAP_SNAPSHOT_KIND = "roadmap_snapshot";

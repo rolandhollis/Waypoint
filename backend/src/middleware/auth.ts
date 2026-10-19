@@ -2,7 +2,13 @@ import type { NextFunction, Request, Response } from "express";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { config } from "../config.js";
 import { query } from "../db/pool.js";
-import { findSessionUser, readSessionCookie, touchSession } from "../auth/session.js";
+import {
+  clearSessionCookie,
+  findSessionUser,
+  readSessionCookie,
+  setSessionCookie,
+  touchSession,
+} from "../auth/session.js";
 import type { Role, UserRow } from "../types.js";
 
 declare global {
@@ -85,9 +91,11 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
     }
 
     if (config.authMode === "password") {
-      // Session cookie is set at POST /auth/login and touched here on
-      // every hit to slide the expiry forward — a user who's
-      // actively working never gets bounced mid-session.
+      // Session cookie is set at POST /auth/login. On every hit we
+      // slide BOTH the DB row and the cookie Max-Age forward — the
+      // browser cookie is absolute from Set-Cookie time, so without
+      // refreshing it an active user gets bounced after 7/30 days
+      // even though the server session would still be valid.
       const sessionId = readSessionCookie(req);
       if (!sessionId) {
         res.status(401).json({ error: "not authenticated" });
@@ -95,16 +103,20 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       }
       const found = await findSessionUser(sessionId);
       if (!found) {
+        // Drop the stale cookie so the next page load doesn't keep
+        // probing /users/me with a dead session id.
+        clearSessionCookie(res);
         res.status(401).json({ error: "session expired" });
         return;
       }
-      // Fire-and-forget touch so the request path stays fast. Passes
-      // the session's own remember_me flag through so the expiry
-      // slides forward by the correct TTL — a 30-day remember-me
-      // session shouldn't get downgraded to 7 days on every hit.
-      touchSession(sessionId, found.session.remember_me).catch((err) =>
+      const rememberMe = found.session.remember_me;
+      // Fire-and-forget DB touch so the request path stays fast.
+      touchSession(sessionId, rememberMe).catch((err) =>
         console.error("touchSession failed", err),
       );
+      // Refresh cookie Max-Age synchronously on the response — cheap
+      // header write, critical for sliding browser expiry.
+      setSessionCookie(res, sessionId, rememberMe);
       req.user = found.user;
       req.sessionId = sessionId;
       next();

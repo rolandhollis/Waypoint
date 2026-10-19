@@ -67,6 +67,10 @@ export function useMe(enabled = true) {
       if (error && (error as { status?: number }).status === 401) return false;
       return failureCount < 2;
     },
+    // Don't hang the shell forever if the network stalls — App.tsx
+    // treats a long pending /users/me as "show login" after a grace
+    // period; keeping the request from retrying indefinitely helps.
+    networkMode: "online",
     enabled,
   });
 }
