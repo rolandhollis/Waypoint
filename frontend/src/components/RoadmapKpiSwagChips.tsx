@@ -40,7 +40,7 @@ export function RoadmapKpiSwagChips({
             "inline-flex max-w-full items-center gap-0.5 truncate rounded px-1 py-px text-[10px] font-medium leading-tight text-wp-slate [text-shadow:none] [-webkit-text-stroke:0]",
             onDark ? "bg-white" : "bg-wp-stone",
           )}
-          title={swag ? `${kpi.name} · SWAG ${swag}` : kpi.name}
+          title={swag ? `${kpi.name} - ${swag}` : kpi.name}
         >
           <span
             className="h-1.5 w-1.5 shrink-0 rounded-full"
@@ -50,7 +50,7 @@ export function RoadmapKpiSwagChips({
           <span className="truncate">{kpi.name}</span>
           {swag ? (
             <span className="shrink-0 font-semibold uppercase tracking-wide text-wp-slate/80">
-              {swag}
+              - {swag}
             </span>
           ) : null}
         </span>
