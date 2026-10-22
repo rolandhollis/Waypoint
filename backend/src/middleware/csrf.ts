@@ -28,6 +28,11 @@ function isCsrfExempt(path: string): boolean {
   if (path === "/api/webhooks/jira" || path.startsWith("/api/webhooks/jira/")) {
     return true;
   }
+  // Claude / MCP clients POST JSON-RPC without a browser Origin;
+  // auth is the personal API token, not the session cookie.
+  if (path === "/mcp" || path.startsWith("/mcp/")) {
+    return true;
+  }
   return false;
 }
 

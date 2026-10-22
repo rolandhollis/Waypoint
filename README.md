@@ -68,6 +68,19 @@ Auth mode is controlled by `AUTH_MODE` in `backend/.env`:
 
 Full setup + deployment notes: [DEPLOY.md](DEPLOY.md).
 
+## Claude connector (MCP)
+
+Waypoint exposes a remote [MCP](https://modelcontextprotocol.io) server so Claude can read roadmap/backlog data for a workspace.
+
+1. Sign in → **My profile** → **Claude / API access** → create a token (shown once).
+2. In Claude: **Settings → Connectors → Add custom connector**.
+3. Server URL: `https://<your-host>/mcp` (local: `http://localhost:4000/mcp`).
+4. Request header: `Authorization` = `Bearer wp_…` (or `X-Api-Key` = `wp_…`).
+
+Tools are read-only and scoped to the workspace the token was minted for: `whoami`, `list_projects`, `get_project`, `search_projects`, `list_kpis`, `list_teams`, `list_swim_lanes`.
+
+The same token also authenticates ordinary REST calls (`Authorization: Bearer wp_…` on `/api/*`).
+
 ## Verify with the smoke test
 
 ```bash

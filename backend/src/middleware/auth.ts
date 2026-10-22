@@ -3,6 +3,10 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { config } from "../config.js";
 import { query } from "../db/pool.js";
 import {
+  extractApiTokenFromRequest,
+  findActiveApiToken,
+} from "../auth/apiTokens.js";
+import {
   clearSessionCookie,
   findSessionUser,
   readSessionCookie,
@@ -22,6 +26,10 @@ declare global {
        * validated + narrowed by groupScope(). All group-scoped
        * routes read this instead of touching req.user directly so
        * they never accidentally read a stale value.
+       *
+       * When the request authenticated via a personal API token,
+       * this is forced to the token's pinned group_id (see
+       * `apiTokenGroupId`) so Claude / scripts can't roam tenants.
        */
       groupId?: string;
       /**
@@ -37,6 +45,15 @@ declare global {
        * it. Undefined in mock / okta / cloudflare-access modes.
        */
       sessionId?: string;
+      /**
+       * Set when authenticate() succeeded via a personal API token
+       * (`Authorization: Bearer wp_…` or `X-Api-Key`). Pins
+       * groupScope() to this tenant regardless of the user's
+       * current_group_id navbar selection.
+       */
+      apiTokenGroupId?: string;
+      /** Row id of the API token used for this request, if any. */
+      apiTokenId?: string;
     }
   }
 }
@@ -70,10 +87,39 @@ async function loadUserByEmail(email: string): Promise<UserRow | null> {
  *   - cloudflare-access → CF_Authorization cookie or Cf-Access-Jwt-Assertion header
  *                         verified against the team's JWKS (CF Access fronts the app
  *                         and does the OIDC dance with the upstream IdP).
+ *   - password          → HttpOnly session cookie.
+ *
+ * Personal API tokens (`wp_…` via `Authorization: Bearer` or
+ * `X-Api-Key`) are checked FIRST in every mode so Claude's MCP
+ * connector and scripts work the same way in mock / password /
+ * Okta / CF Access without needing a browser session.
+ *
  * Missing/invalid credentials → 401; unknown-but-authenticated email → 403.
  */
 export async function authenticate(req: Request, res: Response, next: NextFunction) {
   try {
+    const apiPlaintext = extractApiTokenFromRequest({
+      authorization: req.header("authorization") ?? undefined,
+      "x-api-key": req.header("x-api-key") ?? undefined,
+    });
+    if (apiPlaintext) {
+      const token = await findActiveApiToken(apiPlaintext);
+      if (!token) {
+        res.status(401).json({ error: "invalid or revoked API token" });
+        return;
+      }
+      const user = await loadUserById(token.user_id);
+      if (!user) {
+        res.status(401).json({ error: "token user not found" });
+        return;
+      }
+      req.user = user;
+      req.apiTokenGroupId = token.group_id;
+      req.apiTokenId = token.id;
+      next();
+      return;
+    }
+
     if (config.authMode === "mock") {
       const id = req.header("x-mock-user-id");
       if (!id) {
@@ -257,7 +303,9 @@ export async function groupScope(req: Request, res: Response, next: NextFunction
     res.status(401).json({ error: "not authenticated" });
     return;
   }
-  const groupId = req.user.current_group_id;
+  // API tokens pin the tenant at mint time so Claude can't switch
+  // workspaces mid-conversation by mutating current_group_id.
+  const groupId = req.apiTokenGroupId ?? req.user.current_group_id;
   if (!groupId) {
     res.status(400).json({ error: "no active group selected" });
     return;

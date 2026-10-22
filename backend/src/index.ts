@@ -42,6 +42,8 @@ import { featureGroupsRouter } from "./routes/featureGroups.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { jiraWebhooksRouter } from "./routes/jiraWebhooks.js";
 import { jiraSyncAdminRouter } from "./routes/jiraSyncAdmin.js";
+import { apiTokensRouter } from "./routes/apiTokens.js";
+import { handleMcpMethodNotAllowed, handleMcpPost } from "./mcp/http.js";
 import { startCron } from "./jobs/weeklyStatus.js";
 import { startJiraSyncCron } from "./jobs/jiraSync.js";
 
@@ -91,6 +93,20 @@ app.use("/api/users", (req, res, next) => {
 // Groups router only needs authenticate — it manages tenants, so
 // it explicitly must NOT be scoped to the caller's current group.
 app.use("/api/groups", authenticate, groupsRouter);
+
+// Personal API tokens (Claude MCP / scripts). Authenticate only —
+// create accepts an explicit group_id for any membership.
+app.use("/api/api-tokens", authenticate, apiTokensRouter);
+
+// Remote MCP connector for Claude.ai / Claude Desktop / Claude Code.
+// Auth via personal API token (Authorization: Bearer wp_… or
+// X-Api-Key). Mounted BEFORE the SPA catch-all so /mcp isn't
+// swallowed by index.html. CSRF-exempt (see middleware/csrf.ts).
+app.post("/mcp", authenticate, groupScope, (req, res) => {
+  void handleMcpPost(req, res);
+});
+app.get("/mcp", handleMcpMethodNotAllowed);
+app.delete("/mcp", handleMcpMethodNotAllowed);
 
 // Every product-facing router below is scoped to the caller's
 // current group by the groupScope middleware. Endpoints inside

@@ -1,12 +1,25 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { X } from "lucide-react";
+import { Copy, X } from "lucide-react";
 import { api } from "../lib/api";
 import { passwordIsValid } from "../lib/password";
 import type { User } from "../lib/types";
 import { useHealth, useMe } from "../lib/queries";
 import { MutationErrorBanner } from "./MutationErrorBanner";
 import { PasswordField } from "./PasswordField";
+
+type ApiToken = {
+  id: string;
+  group_id: string;
+  name: string;
+  token_prefix: string;
+  scopes: string[];
+  last_used_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+};
+
+type CreatedApiToken = ApiToken & { token: string };
 
 /**
  * Self-serve profile editor. Any authenticated user can open this
@@ -55,6 +68,7 @@ export function ProfileDialog({ onClose }: { onClose: () => void }) {
         <div className="max-h-[80vh] space-y-6 overflow-y-auto px-5 py-4">
           <ProfileSection user={me.data} />
           {isPasswordMode ? <PasswordSection user={me.data} /> : null}
+          <ApiTokensSection user={me.data} />
         </div>
 
         <div className="flex justify-end border-t border-wp-stone bg-white px-5 py-3">
@@ -320,6 +334,163 @@ function PasswordSection({ user }: { user: User }) {
           {change.isPending ? "Changing…" : "Change password"}
         </button>
       </div>
+    </section>
+  );
+}
+
+// ---------- Claude / API tokens ----------
+
+function ApiTokensSection({ user }: { user: User }) {
+  const qc = useQueryClient();
+  const [name, setName] = useState("Claude connector");
+  const [created, setCreated] = useState<CreatedApiToken | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const tokens = useQuery({
+    queryKey: ["api-tokens"],
+    queryFn: () => api<ApiToken[]>("/api-tokens"),
+  });
+
+  const create = useMutation({
+    mutationFn: () =>
+      api<CreatedApiToken>("/api-tokens", {
+        method: "POST",
+        body: JSON.stringify({
+          name: name.trim() || "Claude connector",
+          group_id: user.current_group_id ?? undefined,
+        }),
+      }),
+    onSuccess: (row) => {
+      setCreated(row);
+      setCopied(false);
+      qc.invalidateQueries({ queryKey: ["api-tokens"] });
+    },
+  });
+
+  const revoke = useMutation({
+    mutationFn: (id: string) =>
+      api<void>(`/api-tokens/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["api-tokens"] });
+    },
+  });
+
+  const mcpUrl =
+    typeof window !== "undefined" ? `${window.location.origin}/mcp` : "/mcp";
+  const groupLabel =
+    user.memberships?.find((m) => m.group_id === user.current_group_id)?.name ??
+    "current workspace";
+
+  return (
+    <section className="border-t border-wp-stone pt-5">
+      <h4 className="text-sm font-semibold text-wp-ink">Claude / API access</h4>
+      <p className="mt-0.5 text-xs text-wp-slate">
+        Personal tokens let Claude (or scripts) read this workspace via the MCP
+        connector at <code className="text-[11px]">{mcpUrl}</code>. Tokens are
+        pinned to <strong>{groupLabel}</strong> and are read-only.
+      </p>
+
+      <ol className="mt-3 list-decimal space-y-1 pl-4 text-[11px] text-wp-slate">
+        <li>Create a token below and copy it once.</li>
+        <li>
+          In Claude: Settings → Connectors → Add custom connector → URL{" "}
+          <code className="text-[11px]">{mcpUrl}</code>
+        </li>
+        <li>
+          Add header <code className="text-[11px]">Authorization</code> ={" "}
+          <code className="text-[11px]">Bearer wp_…</code> (or{" "}
+          <code className="text-[11px]">X-Api-Key</code>).
+        </li>
+      </ol>
+
+      <MutationErrorBanner mutation={create} className="mt-3" />
+      <MutationErrorBanner mutation={revoke} className="mt-3" />
+
+      {created ? (
+        <div
+          className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950"
+          role="status"
+        >
+          <p className="font-medium">Copy this token now — it won’t be shown again.</p>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="min-w-0 flex-1 break-all rounded bg-white/80 px-2 py-1 font-mono text-[11px]">
+              {created.token}
+            </code>
+            <button
+              type="button"
+              className="btn-secondary inline-flex shrink-0 items-center gap-1 px-2 py-1 text-xs"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(created.token);
+                  setCopied(true);
+                } catch {
+                  setCopied(false);
+                }
+              }}
+            >
+              <Copy size={12} />
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-3 flex flex-wrap items-end gap-2">
+        <label className="block min-w-[12rem] flex-1 text-xs font-medium text-wp-slate">
+          Token name
+          <input
+            className="input mt-1"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={120}
+            placeholder="Claude connector"
+          />
+        </label>
+        <button
+          type="button"
+          className="btn-primary"
+          disabled={!user.current_group_id || create.isPending}
+          onClick={() => create.mutate()}
+        >
+          {create.isPending ? "Creating…" : "Create token"}
+        </button>
+      </div>
+
+      <ul className="mt-4 divide-y divide-wp-stone rounded-md border border-wp-stone">
+        {(tokens.data ?? []).length === 0 ? (
+          <li className="px-3 py-2 text-xs text-wp-slate">No active tokens.</li>
+        ) : (
+          (tokens.data ?? []).map((t) => (
+            <li
+              key={t.id}
+              className="flex items-center justify-between gap-3 px-3 py-2 text-xs"
+            >
+              <div className="min-w-0">
+                <div className="truncate font-medium text-wp-ink">{t.name}</div>
+                <div className="text-wp-slate">
+                  {t.token_prefix}… · created{" "}
+                  {new Date(t.created_at).toLocaleDateString()}
+                  {t.last_used_at
+                    ? ` · last used ${new Date(t.last_used_at).toLocaleDateString()}`
+                    : ""}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn-secondary shrink-0 px-2 py-1 text-xs text-red-700"
+                disabled={revoke.isPending}
+                onClick={() => {
+                  if (window.confirm(`Revoke token “${t.name}”?`)) {
+                    revoke.mutate(t.id);
+                  }
+                }}
+              >
+                Revoke
+              </button>
+            </li>
+          ))
+        )}
+      </ul>
     </section>
   );
 }

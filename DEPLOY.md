@@ -243,6 +243,10 @@ Nothing about this app is Fly-specific except `fly.toml`. The same Dockerfile ru
 - **GHCR + a VPS** — add a workflow that builds and pushes to `ghcr.io/rolandhollis/waypoint`, then `docker run` it wherever you like.
 - **Kubernetes** — standard `Deployment` + `Service` + `Ingress`; `DATABASE_URL` from a secret. The image self-migrates on boot so no init container needed.
 
+## Claude MCP connector
+
+Remote MCP lives at `https://waypoint-qmh6xa.fly.dev/mcp` (Streamable HTTP). Users mint a personal `wp_…` token in **My profile → Claude / API access**, then add the URL as a custom connector in Claude with header `Authorization: Bearer wp_…`. See README “Claude connector (MCP)”.
+
 ## Health + smoke check
 
 - `GET /api/health` → `{"ok":true,"auth":"<mode>"}`. Wired into Fly's `[[http_service.checks]]` block.
