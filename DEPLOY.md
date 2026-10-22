@@ -245,7 +245,7 @@ Nothing about this app is Fly-specific except `fly.toml`. The same Dockerfile ru
 
 ## Claude MCP connector
 
-Remote MCP lives at `https://waypoint-qmh6xa.fly.dev/mcp` (Streamable HTTP). Users mint a personal `wp_…` token in **My profile → Claude / API access**, then add the URL as a custom connector in Claude with header `Authorization: Bearer wp_…`. See README “Claude connector (MCP)”.
+Remote MCP lives at `https://waypoint-qmh6xa.fly.dev/mcp` (Streamable HTTP). Users mint a personal `wp_…` token on **Profile** (`/profile` → Claude / API access), then add the URL as a custom connector in Claude with header `Authorization: Bearer wp_…`. See README “Claude connector (MCP)”.
 
 ## Health + smoke check
 

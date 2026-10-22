@@ -23,6 +23,7 @@ import { FeatureGroupsView } from "./views/FeatureGroupsView";
 import { FeatureGroupDetailView } from "./views/FeatureGroupDetailView";
 import { ProjectDetailPage } from "./views/ProjectDetailPage";
 import { UserAssignmentsView } from "./views/UserAssignmentsView";
+import { ProfileView } from "./views/ProfileView";
 import { LoginView } from "./views/LoginView";
 import { ForgotPasswordView } from "./views/ForgotPasswordView";
 import { RequestAccessView } from "./views/RequestAccessView";
@@ -305,6 +306,7 @@ export function App() {
               user back here. */}
           <Route path="/projects/:id" element={<ProjectDetailPage />} />
           <Route path="/users/:userId" element={<UserAssignmentsView />} />
+          <Route path="/profile" element={<ProfileView />} />
           {/* /login and /forgot-password only make sense while
               unauthenticated — bounce signed-in users home so they
               don't see the picker copy for a state they aren't in.

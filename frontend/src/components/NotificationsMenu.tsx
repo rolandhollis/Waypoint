@@ -1,7 +1,7 @@
 import * as Popover from "@radix-ui/react-popover";
 import { formatDistanceToNowStrict } from "date-fns";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { LogOut, User as UserIcon } from "lucide-react";
 import {
   useMarkMentionRead,
@@ -14,42 +14,25 @@ import { cn } from "../lib/cn";
 import { UserAvatar, UserAvatarButton } from "./UserAvatar";
 
 /**
- * Hover-triggered notifications popover anchored on the navbar
- * user-avatar. Renders the current user's latest 10 mentions;
- * clicking a row deep-links to `/projects/<id>#comment-<id>` (or
- * `#description`), marks the mention read, and closes the popover
- * so the target page's anchor scroll + highlight effect can run
- * without an overlapping popover in the viewport.
+ * Click-triggered notifications popover anchored on the navbar
+ * user-avatar. Opens on avatar click; stays open until the user
+ * clicks outside, presses Escape, picks a mention, or uses a
+ * footer action (Profile / Sign out).
  *
- * The same popover carries two secondary affordances in its
- * footer — Profile (open the self-serve editor dialog) and, in
- * password mode, Sign out — so the avatar is the ONE navbar
- * control that houses identity + notifications together (spec:
- * "the avatar becomes the trigger for that menu plus the new
- * mentions popover"). The parent (`UserSwitcher`) supplies the
- * two callbacks so the dialog / logout wiring stays there.
+ * Renders the current user's latest 10 mentions; clicking a row
+ * deep-links to `/projects/<id>#comment-<id>` (or `#description`),
+ * marks the mention read, and closes the popover so the target
+ * page's anchor scroll + highlight can run cleanly.
  *
- * Trigger UX
- * ----------
- * A ~150ms hover delay gates the open so a stray mouse-through
- * doesn't fire the popover on every navbar traversal; a matching
- * close delay lets the user's cursor cross the small gap between
- * the avatar and the popover surface without dismissing it. Click
- * on the avatar STILL toggles the popover (Radix's default) so
- * touch / keyboard users have a first-class path in — hover is
- * an accelerator, not a requirement.
+ * Footer also carries Profile (`/profile`) and, in password mode,
+ * Sign out — so the avatar is the ONE navbar control for identity
+ * + notifications. The parent (`UserSwitcher`) supplies logout.
  *
- * Data
- * ----
- * The unread-count query polls in the background regardless of
- * whether the popover is open (that's what drives the badge on
- * every page). The recent-list query only fires when
- * `enabled = open` so we don't pay the join cost on a background
- * render. Once opened the popover keeps the fetched rows around
- * (react-query's default) so a re-open doesn't blink.
+ * Data: unread-count polls in the background for the badge; the
+ * recent-list query only fires while `open` so we don't pay the
+ * join cost on every page.
  */
 export type NotificationsMenuProps = {
-  onOpenProfile: () => void;
   /** Provided only in password mode where a client-side logout makes sense. */
   onSignOut?: (() => void) | null;
   /** Disables the sign-out button while its mutation is in flight. */
@@ -57,14 +40,11 @@ export type NotificationsMenuProps = {
 };
 
 export function NotificationsMenu({
-  onOpenProfile,
   onSignOut,
   signOutBusy,
 }: NotificationsMenuProps) {
   const me = useMe();
   const [open, setOpen] = useState(false);
-  const openTimer = useRef<number | null>(null);
-  const closeTimer = useRef<number | null>(null);
 
   // Background poll for the badge. Runs whether the popover is
   // open or closed so a fresh mention shows up in the navbar
@@ -74,40 +54,6 @@ export function NotificationsMenu({
   const recent = useRecentMentions(open, 10);
   const markRead = useMarkMentionRead();
   const navigate = useNavigate();
-
-  // Cancel any pending timer whenever we switch modes so hover
-  // in → click out (or vice versa) can't leave an orphaned
-  // setTimeout that flips `open` back a beat later.
-  useEffect(() => () => {
-    if (openTimer.current !== null) window.clearTimeout(openTimer.current);
-    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
-  }, []);
-
-  const scheduleOpen = useCallback(() => {
-    if (closeTimer.current !== null) {
-      window.clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-    if (open) return;
-    if (openTimer.current !== null) return;
-    openTimer.current = window.setTimeout(() => {
-      openTimer.current = null;
-      setOpen(true);
-    }, 150);
-  }, [open]);
-
-  const scheduleClose = useCallback(() => {
-    if (openTimer.current !== null) {
-      window.clearTimeout(openTimer.current);
-      openTimer.current = null;
-    }
-    if (!open) return;
-    if (closeTimer.current !== null) return;
-    closeTimer.current = window.setTimeout(() => {
-      closeTimer.current = null;
-      setOpen(false);
-    }, 200);
-  }, [open]);
 
   const handleRowClick = useCallback(
     (row: MentionRow) => {
@@ -147,10 +93,6 @@ export function NotificationsMenu({
               ? `Notifications — ${unreadCount} unread`
               : "Notifications"
           }
-          onMouseEnter={scheduleOpen}
-          onMouseLeave={scheduleClose}
-          onFocus={scheduleOpen}
-          onBlur={scheduleClose}
         />
       </Popover.Trigger>
       <Popover.Portal>
@@ -158,20 +100,6 @@ export function NotificationsMenu({
           align="end"
           sideOffset={8}
           className="z-50 w-[22rem] rounded-md border border-wp-stone bg-white p-0 shadow-lg outline-none"
-          onMouseEnter={() => {
-            if (closeTimer.current !== null) {
-              window.clearTimeout(closeTimer.current);
-              closeTimer.current = null;
-            }
-          }}
-          onMouseLeave={scheduleClose}
-          // Popover is a passive surface — don't steal focus from
-          // whatever the user was doing in the underlying view
-          // just because a hover-open landed. Keyboard / click
-          // opens still focus normally.
-          onOpenAutoFocus={(e) => {
-            e.preventDefault();
-          }}
         >
           <div className="flex items-center justify-between border-b border-wp-stone px-3 py-2">
             <div className="flex min-w-0 items-baseline gap-2">
@@ -228,17 +156,14 @@ export function NotificationsMenu({
               password mode — the other auth modes (mock / okta /
               cf-access) have no meaningful client-side logout. */}
           <div className="flex items-center justify-between border-t border-wp-stone bg-wp-bg/40 px-3 py-2">
-            <button
-              type="button"
+            <Link
+              to="/profile"
               className="inline-flex items-center gap-1.5 text-xs text-wp-slate transition hover:text-wp-ink focus:text-wp-ink focus:outline-none"
-              onClick={() => {
-                setOpen(false);
-                onOpenProfile();
-              }}
+              onClick={() => setOpen(false)}
             >
               <UserIcon size={12} />
               Profile
-            </button>
+            </Link>
             {onSignOut ? (
               <button
                 type="button"

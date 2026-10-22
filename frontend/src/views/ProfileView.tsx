@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Copy, X } from "lucide-react";
+import { Copy } from "lucide-react";
+import { MutationErrorBanner } from "../components/MutationErrorBanner";
+import { PasswordField } from "../components/PasswordField";
 import { api } from "../lib/api";
 import { passwordIsValid } from "../lib/password";
-import type { User } from "../lib/types";
 import { useHealth, useMe } from "../lib/queries";
-import { MutationErrorBanner } from "./MutationErrorBanner";
-import { PasswordField } from "./PasswordField";
+import type { User } from "../lib/types";
 
 type ApiToken = {
   id: string;
@@ -22,73 +22,57 @@ type ApiToken = {
 type CreatedApiToken = ApiToken & { token: string };
 
 /**
- * Self-serve profile editor. Any authenticated user can open this
- * from the "Signed in as" strip in the top nav and update the two
- * things they see everywhere: their display name and avatar color.
- * In password mode a second section lets them rotate their own
- * password (current + new + confirm).
- *
- * Keeps the two sections independently submittable — a name-only
- * change shouldn't force retyping the current password, and a
- * password change shouldn't force a name edit. Each section owns
- * its own mutation, error banner, and busy state.
+ * Self-serve profile page. Opened from the avatar popover's Profile
+ * link. Sections stay independently submittable so a name-only change
+ * doesn't force a password retype, etc.
  */
-export function ProfileDialog({ onClose }: { onClose: () => void }) {
+export function ProfileView() {
   const me = useMe();
   const health = useHealth();
   const isPasswordMode = health.data?.auth === "password";
 
-  if (!me.data) return null;
+  if (!me.data) {
+    return (
+      <div className="flex h-full flex-col overflow-hidden">
+        <ProfilePageHeader />
+        <div className="p-6 text-sm text-wp-slate">Loading profile…</div>
+      </div>
+    );
+  }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      role="dialog"
-      aria-modal="true"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="card-surface w-full max-w-lg overflow-hidden p-0"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-wp-stone px-5 py-3">
-          <h3 className="text-base font-semibold text-wp-ink">My profile</h3>
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            className="rounded p-1 text-wp-slate hover:bg-wp-stone/30 hover:text-wp-ink"
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <div className="max-h-[80vh] space-y-6 overflow-y-auto px-5 py-4">
-          <ProfileSection user={me.data} />
-          {isPasswordMode ? <PasswordSection user={me.data} /> : null}
-          <ApiTokensSection user={me.data} />
-        </div>
-
-        <div className="flex justify-end border-t border-wp-stone bg-white px-5 py-3">
-          <button type="button" className="btn-secondary" onClick={onClose}>
-            Done
-          </button>
+    <div className="flex h-full flex-col overflow-hidden">
+      <ProfilePageHeader />
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-2xl space-y-6 p-6">
+          <div className="card-surface p-5">
+            <ProfileSection user={me.data} />
+          </div>
+          {isPasswordMode ? (
+            <div className="card-surface p-5">
+              <PasswordSection user={me.data} />
+            </div>
+          ) : null}
+          <div className="card-surface p-5">
+            <ApiTokensSection user={me.data} />
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-// ---------- Profile section (name + color) ----------
+function ProfilePageHeader() {
+  return (
+    <header className="shrink-0 border-b border-wp-stone bg-white px-5 py-3">
+      <h1 className="text-xl font-semibold text-wp-ink">My profile</h1>
+      <p className="mt-1 text-sm text-wp-slate">
+        Display name, password, and Claude / API tokens for this account.
+      </p>
+    </header>
+  );
+}
 
-/**
- * Palette for the avatar chip. Small, curated set — 12 hues that
- * read well on the white/stone background used across the app.
- * The values are picked from Tailwind's 500/600 range so contrast
- * against the white initials stays readable.
- */
 const AVATAR_PALETTE = [
   "#DC2626", "#EA580C", "#D97706", "#CA8A04",
   "#65A30D", "#16A34A", "#0D9488", "#0891B2",
@@ -119,10 +103,6 @@ function ProfileSection({ user }: { user: User }) {
         }),
       }),
     onSuccess: () => {
-      // Every surface that shows this user's badge or name needs to
-      // refresh — the shell nav, roster, project cards, comments,
-      // audit trail. Broad invalidation over surgical picks; profile
-      // saves are rare.
       qc.invalidateQueries({ queryKey: ["me"] });
       qc.invalidateQueries({ queryKey: ["users"] });
       qc.invalidateQueries({ queryKey: ["projects"] });
@@ -138,14 +118,14 @@ function ProfileSection({ user }: { user: User }) {
 
   return (
     <section>
-      <h4 className="text-sm font-semibold text-wp-ink">Profile</h4>
+      <h2 className="text-sm font-semibold text-wp-ink">Profile</h2>
       <p className="mt-0.5 text-xs text-wp-slate">
         Your name and avatar color show up on every card you own, comment on, or edit.
       </p>
 
       <MutationErrorBanner mutation={patch} className="mt-3" />
 
-      <div className="mt-3 flex items-start gap-4">
+      <div className="mt-4 flex items-start gap-4">
         <span
           className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-base font-semibold text-white shadow-sm"
           style={{ background: color }}
@@ -205,7 +185,7 @@ function ProfileSection({ user }: { user: User }) {
         </div>
       </div>
 
-      <div className="mt-4 flex justify-end">
+      <div className="mt-5 flex justify-end">
         <button
           type="button"
           className="btn-primary"
@@ -218,8 +198,6 @@ function ProfileSection({ user }: { user: User }) {
     </section>
   );
 }
-
-// ---------- Password section ----------
 
 function PasswordSection({ user }: { user: User }) {
   const [current, setCurrent] = useState("");
@@ -257,8 +235,8 @@ function PasswordSection({ user }: { user: User }) {
     !change.isPending;
 
   return (
-    <section className="border-t border-wp-stone pt-5">
-      <h4 className="text-sm font-semibold text-wp-ink">Change password</h4>
+    <section>
+      <h2 className="text-sm font-semibold text-wp-ink">Change password</h2>
       <p className="mt-0.5 text-xs text-wp-slate">
         You'll stay signed in on this device. Other browsers and phones will be signed out.
       </p>
@@ -273,7 +251,7 @@ function PasswordSection({ user }: { user: User }) {
         </div>
       ) : null}
 
-      <div className="mt-3 space-y-3">
+      <div className="mt-4 space-y-3">
         <label className="block text-xs font-medium text-wp-slate">
           Current password
           <input
@@ -324,7 +302,7 @@ function PasswordSection({ user }: { user: User }) {
         </label>
       </div>
 
-      <div className="mt-4 flex justify-end">
+      <div className="mt-5 flex justify-end">
         <button
           type="button"
           className="btn-primary"
@@ -337,8 +315,6 @@ function PasswordSection({ user }: { user: User }) {
     </section>
   );
 }
-
-// ---------- Claude / API tokens ----------
 
 function ApiTokensSection({ user }: { user: User }) {
   const qc = useQueryClient();
@@ -382,15 +358,15 @@ function ApiTokensSection({ user }: { user: User }) {
     "current workspace";
 
   return (
-    <section className="border-t border-wp-stone pt-5">
-      <h4 className="text-sm font-semibold text-wp-ink">Claude / API access</h4>
+    <section>
+      <h2 className="text-sm font-semibold text-wp-ink">Claude / API access</h2>
       <p className="mt-0.5 text-xs text-wp-slate">
         Personal tokens let Claude (or scripts) read this workspace via the MCP
         connector at <code className="text-[11px]">{mcpUrl}</code>. Tokens are
         pinned to <strong>{groupLabel}</strong> and are read-only.
       </p>
 
-      <ol className="mt-3 list-decimal space-y-1 pl-4 text-[11px] text-wp-slate">
+      <ol className="mt-3 list-decimal space-y-1 pl-4 text-xs text-wp-slate">
         <li>Create a token below and copy it once.</li>
         <li>
           In Claude: Settings → Connectors → Add custom connector → URL{" "}
@@ -435,7 +411,7 @@ function ApiTokensSection({ user }: { user: User }) {
         </div>
       ) : null}
 
-      <div className="mt-3 flex flex-wrap items-end gap-2">
+      <div className="mt-4 flex flex-wrap items-end gap-2">
         <label className="block min-w-[12rem] flex-1 text-xs font-medium text-wp-slate">
           Token name
           <input

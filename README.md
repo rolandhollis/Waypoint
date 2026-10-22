@@ -72,7 +72,7 @@ Full setup + deployment notes: [DEPLOY.md](DEPLOY.md).
 
 Waypoint exposes a remote [MCP](https://modelcontextprotocol.io) server so Claude can read roadmap/backlog data for a workspace.
 
-1. Sign in → **My profile** → **Claude / API access** → create a token (shown once).
+1. Sign in → avatar → **Profile** (`/profile`) → **Claude / API access** → create a token (shown once).
 2. In Claude: **Settings → Connectors → Add custom connector**.
 3. Server URL: `https://<your-host>/mcp` (local: `http://localhost:4000/mcp`).
 4. Request header: `Authorization` = `Bearer wp_…` (or `X-Api-Key` = `wp_…`).
