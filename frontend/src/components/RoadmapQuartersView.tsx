@@ -352,7 +352,7 @@ export function RoadmapQuartersView({
         // — each item appears exactly once, under its highest-ranked
         // KPI. Unknown KPI ids (deleted since save) fall through to
         // "(no KPI)" so a secondary KPI is never silently promoted.
-        const primaryKpiId = p.kpis[0] ?? null;
+        const primaryKpiId = p.kpis[0]?.kpi_id ?? null;
         const primaryKpi = primaryKpiId ? kpisById.get(primaryKpiId) : undefined;
         if (primaryKpi) {
           return [{ key: primaryKpi.id, label: primaryKpi.name, color: primaryKpi.color, sortKey: primaryKpi.order }];

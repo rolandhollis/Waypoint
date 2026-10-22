@@ -208,6 +208,13 @@ type Store = {
    */
   showConflicts: boolean;
   /**
+   * When true, roadmap listings (Compact bars + Rows labels) show
+   * each item's KPI assignments and impact SWAG under the title.
+   * Rows grow taller to fit the chips. Off by default so the dense
+   * Compact layout stays unchanged until a PM opts in.
+   */
+  showKpiSwags: boolean;
+  /**
    * Persisted Roadmap timeframe / zoom selection. Same field the
    * segmented timeframe control writes to — the five values map
    * 1:1 to the Gantt zoom buckets plus the "Quarters" swap-in that
@@ -310,6 +317,8 @@ type Store = {
    * computation, only whether the resulting visuals paint.
    */
   setShowConflicts: (v: boolean) => void;
+  /** Toggle for the Roadmap "Show KPIs" checkbox (KPI + SWAG chips). */
+  setShowKpiSwags: (v: boolean) => void;
   /**
    * Board swim-lane column visibility. Ids listed here are hidden
    * from the Board's column strip until the user restores them via
@@ -373,6 +382,7 @@ type Store = {
     groupBy?: GroupBy;
     roadmapSort?: RoadmapSort;
     showConflicts?: boolean;
+    showKpiSwags?: boolean;
     roadmapTimeframe?: Zoom;
   }) => void;
   clear: (view: ViewKey) => void;
@@ -471,6 +481,9 @@ export const useViewStore = create<Store>()(
       // roadmap has always rendered. Users who prefer the clean-
       // presentation mode opt in explicitly via the checkbox.
       showConflicts: true,
+      // KPI + SWAG chips off by default — Compact stays dense until
+      // a PM opts in via the Show KPIs checkbox.
+      showKpiSwags: false,
       // No Board columns hidden on first visit — every swim lane
       // renders. Users opt in to declutter via the per-column hide
       // control; the pick persists across reloads.
@@ -579,6 +592,7 @@ export const useViewStore = create<Store>()(
       clearRoadmapOverrides: () =>
         set((s) => ({ ...s, roadmapOverrideByGroup: {} })),
       setShowConflicts: (v) => set(() => ({ showConflicts: v })),
+      setShowKpiSwags: (v) => set(() => ({ showKpiSwags: v })),
       hideBoardSwimLane: (laneId) =>
         set((s) =>
           s.boardHiddenSwimLaneIds.includes(laneId)
@@ -631,6 +645,10 @@ export const useViewStore = create<Store>()(
               patch.showConflicts !== undefined
                 ? patch.showConflicts
                 : s.showConflicts,
+            showKpiSwags:
+              patch.showKpiSwags !== undefined
+                ? patch.showKpiSwags
+                : s.showKpiSwags,
             roadmapTimeframe: patch.roadmapTimeframe ?? s.roadmapTimeframe,
           };
         }),
@@ -650,7 +668,7 @@ export const useViewStore = create<Store>()(
       // through `version` + `migrate` so users don't lose their
       // filter picks when a default changes.
       name: "waypoint.viewState.v2",
-      version: 19,
+      version: 20,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       migrate: (persisted: any, version: number): any => {
         if (!persisted || typeof persisted !== "object") return persisted;
@@ -852,6 +870,12 @@ export const useViewStore = create<Store>()(
             || Array.isArray(persisted.roadmapGroupExpandOverrides)
           ) {
             persisted.roadmapGroupExpandOverrides = {};
+          }
+        }
+        // < v20: Show KPIs / SWAG chips on roadmap listings.
+        if (version < 20) {
+          if (typeof persisted.showKpiSwags !== "boolean") {
+            persisted.showKpiSwags = false;
           }
         }
         return persisted;

@@ -76,6 +76,8 @@ export function RoadmapView() {
   // through the already-shared DOM-snapshot path.
   const showConflicts = useViewStore((s) => s.showConflicts);
   const setShowConflicts = useViewStore((s) => s.setShowConflicts);
+  const showKpiSwags = useViewStore((s) => s.showKpiSwags);
+  const setShowKpiSwags = useViewStore((s) => s.setShowKpiSwags);
   const hasAnyOverride = useMemo(
     () => Object.values(roadmapOverrideByGroup).some((ids) => ids && ids.length > 0),
     [roadmapOverrideByGroup],
@@ -200,6 +202,7 @@ export function RoadmapView() {
         groupBy,
         roadmapSort,
         showConflicts,
+        showKpiSwags,
         roadmapTimeframe: zoom,
       });
       const qs = params.toString();
@@ -217,7 +220,7 @@ export function RoadmapView() {
         urlSyncTimerRef.current = null;
       }
     };
-  }, [filters, colorBy, groupBy, roadmapSort, showConflicts, zoom]);
+  }, [filters, colorBy, groupBy, roadmapSort, showConflicts, showKpiSwags, zoom]);
   const [helperOpen, setHelperOpen] = useState(false);
   // Ref-bound to the roadmap "content" wrapper — everything except
   // the FilterBar. Passed to the PDF exporter so the download
@@ -766,6 +769,18 @@ export function RoadmapView() {
                 />
                 Show conflicts
               </label>
+              <label
+                className="inline-flex cursor-pointer items-center gap-1.5 text-wp-slate select-none"
+                title="Show each item's KPI assignments and impact SWAG under the title. Rows grow taller to fit the chips."
+              >
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 cursor-pointer accent-wp-red"
+                  checked={showKpiSwags}
+                  onChange={(e) => setShowKpiSwags(e.target.checked)}
+                />
+                Show KPIs
+              </label>
             </div>
             {/* Actions cluster — Export PDF is always available;
                 Auto-schedule is admin/owner-only. `data-pdf-exclude`
@@ -921,6 +936,7 @@ export function RoadmapView() {
                 onOpen={setSelectedId}
                 pdfMode={pdfMode}
                 pinnedGroupKeys={pinnedGroupKeys}
+                showKpiSwags={showKpiSwags}
               />
             ) : (
               <GanttTimeline
@@ -947,6 +963,7 @@ export function RoadmapView() {
                   })
                 }
                 showConflicts={showConflicts}
+                showKpiSwags={showKpiSwags}
                 pinnedGroupKeys={pinnedGroupKeys}
               />
             )

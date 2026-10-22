@@ -271,7 +271,11 @@ function jpdCell(col: (typeof JPD_COLUMNS)[number], p: Project, m: Maps): string
       return teamNames(p, m).join(", ");
     case "Waypoint KPIs":
       return (p.kpis ?? [])
-        .map((id) => m.kpiById.get(id)?.name)
+        .map((a) => {
+          const name = m.kpiById.get(a.kpi_id)?.name;
+          if (!name) return null;
+          return a.impact_swag ? `${name} (${a.impact_swag})` : name;
+        })
         .filter((n): n is string => !!n)
         .join(", ");
     default: {

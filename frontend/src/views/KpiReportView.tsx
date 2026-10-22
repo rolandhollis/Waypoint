@@ -32,10 +32,10 @@ export function KpiReportView() {
   const projectsByKpi = useMemo(() => {
     const map = new Map<string, Project[]>();
     for (const p of scheduled) {
-      for (const kid of p.kpis ?? []) {
-        const arr = map.get(kid) ?? [];
+      for (const a of p.kpis ?? []) {
+        const arr = map.get(a.kpi_id) ?? [];
         arr.push(p);
-        map.set(kid, arr);
+        map.set(a.kpi_id, arr);
       }
     }
     return map;
@@ -93,6 +93,7 @@ export function KpiReportView() {
               return (
                 <KpiSection
                   key={k.id}
+                  kpiId={k.id}
                   name={k.name}
                   color={k.color}
                   description={k.description}
@@ -121,6 +122,7 @@ export function KpiReportView() {
 }
 
 function KpiSection(props: {
+  kpiId: string;
   name: string;
   color: string;
   description: string;
@@ -129,7 +131,7 @@ function KpiSection(props: {
   lanes: SwimLane[];
   onOpen: (id: string) => void;
 }) {
-  const { name, color, description, projects, teams, lanes, onOpen } = props;
+  const { kpiId, name, color, description, projects, teams, lanes, onOpen } = props;
   return (
     <section className="card-surface overflow-hidden">
       <header
@@ -163,6 +165,7 @@ function KpiSection(props: {
           <thead className="bg-wp-stone/30 text-xs uppercase tracking-wide text-wp-slate">
             <tr>
               <th className="px-4 py-2 text-left font-semibold">Project</th>
+              <th className="px-4 py-2 text-left font-semibold">SWAG</th>
               <th className="px-4 py-2 text-left font-semibold">Teams</th>
               <th className="px-4 py-2 text-left font-semibold">End date</th>
               <th className="px-4 py-2 text-left font-semibold">Swim lane</th>
@@ -173,6 +176,7 @@ function KpiSection(props: {
               <ProjectRow
                 key={p.id}
                 project={p}
+                kpiId={kpiId}
                 teams={teams}
                 lanes={lanes}
                 onOpen={() => onOpen(p.id)}
@@ -187,11 +191,14 @@ function KpiSection(props: {
 
 function ProjectRow(props: {
   project: Project;
+  kpiId: string;
   teams: Team[];
   lanes: SwimLane[];
   onOpen: () => void;
 }) {
-  const { project, teams, lanes, onOpen } = props;
+  const { project, kpiId, teams, lanes, onOpen } = props;
+  const impactSwag =
+    project.kpis?.find((a) => a.kpi_id === kpiId)?.impact_swag ?? null;
   const end = endDateOf(project);
   const lane = lanes.find((l) => l.id === project.swim_lane_id);
   // Iterate `project.teams` in its stored order so the KPI-report row
@@ -214,6 +221,9 @@ function ProjectRow(props: {
       onClick={onOpen}
     >
       <td className="px-4 py-2 font-medium text-wp-ink">{project.title}</td>
+      <td className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-wp-ink">
+        {impactSwag ?? <span className="font-normal text-wp-slate">—</span>}
+      </td>
       <td className="px-4 py-2">
         {projectTeams.length ? (
           <div className="flex flex-wrap gap-1">

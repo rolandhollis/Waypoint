@@ -78,6 +78,7 @@ export type RoadmapUrlState = {
   groupBy: GroupBy;
   roadmapSort: RoadmapSort;
   showConflicts: boolean;
+  showKpiSwags: boolean;
   roadmapTimeframe: Zoom;
 };
 
@@ -94,6 +95,7 @@ export type RoadmapUrlDecoded = {
   groupBy?: GroupBy;
   roadmapSort?: RoadmapSort;
   showConflicts?: boolean;
+  showKpiSwags?: boolean;
   roadmapTimeframe?: Zoom;
 };
 
@@ -108,6 +110,7 @@ export const ROADMAP_URL_PARAM_KEYS = [
   "color",
   "sort",
   "hideConflicts",
+  "showKpis",
   "owners",
   "teams",
   "lanes",
@@ -166,6 +169,7 @@ export function encodeRoadmapState(state: RoadmapUrlState): URLSearchParams {
   if (state.colorBy !== DEFAULT_COLOR) p.set("color", state.colorBy);
   if (state.roadmapSort !== DEFAULT_SORT) p.set("sort", state.roadmapSort);
   if (state.showConflicts !== DEFAULT_SHOW_CONFLICTS) p.set("hideConflicts", "1");
+  if (state.showKpiSwags) p.set("showKpis", "1");
   const f = state.filters;
   if (f.ownerIds.length) p.set("owners", f.ownerIds.join(","));
   if (f.teamIds.length) p.set("teams", f.teamIds.join(","));
@@ -207,6 +211,7 @@ export function decodeRoadmapState(params: URLSearchParams): RoadmapUrlDecoded {
   if (sort && isRoadmapSort(sort)) out.roadmapSort = sort;
 
   if (params.get("hideConflicts") === "1") out.showConflicts = false;
+  if (params.get("showKpis") === "1") out.showKpiSwags = true;
 
   const owners = splitCsv(params.get("owners"));
   if (owners.length) filters.ownerIds = owners;

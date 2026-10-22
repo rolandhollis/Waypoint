@@ -127,7 +127,7 @@ export function resolveProjectGroup(
     // promoting a secondary KPI — that promotion would be
     // invisible to the PM and hard to debug. Matches the Rows
     // view's inline routing.
-    const primaryKpiId = (project.kpis ?? [])[0] ?? null;
+    const primaryKpiId = (project.kpis ?? [])[0]?.kpi_id ?? null;
     const primary = primaryKpiId ? kpis.find((x) => x.id === primaryKpiId) : undefined;
     if (primary) {
       return {

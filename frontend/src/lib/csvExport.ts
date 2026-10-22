@@ -122,7 +122,11 @@ function cellFor(col: typeof COLUMNS[number], p: Project, l: Lookups): string {
       return (p.tags ?? []).join(", ");
     case "kpis":
       return (p.kpis ?? [])
-        .map((id) => l.kpiById.get(id)?.name)
+        .map((a) => {
+          const name = l.kpiById.get(a.kpi_id)?.name;
+          if (!name) return null;
+          return a.impact_swag ? `${name} (${a.impact_swag})` : name;
+        })
         .filter((n): n is string => !!n)
         .join(", ");
     case "type":

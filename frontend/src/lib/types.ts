@@ -333,6 +333,13 @@ export type ProjectLink = {
   updated_at: string;
 };
 
+/** One KPI assignment on a project, with optional impact SWAG. */
+export type ProjectKpiAssignment = {
+  kpi_id: string;
+  /** T-shirt label from the tenant ladder, or null when unset. */
+  impact_swag: string | null;
+};
+
 export type Project = {
   id: string;
   title: string;
@@ -365,8 +372,10 @@ export type Project = {
    * meaningful — PMs rank KPIs by importance on their project. Backend
    * preserves the order via a `position` column; frontend renders
    * left-to-right and offers drag-reorder on the detail panel.
+   * `impact_swag` is an optional t-shirt label for estimated impact
+   * on that KPI (same ladder as Admin → T-Shirt Sizes).
    */
-  kpis: string[];
+  kpis: ProjectKpiAssignment[];
   /**
    * Every project is either an epic (top-level) or a subtask (nested
    * under a parent, potentially many layers deep). Backend enforces

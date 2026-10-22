@@ -86,8 +86,8 @@ export function AuditEventBody({
   // change, so render the full before/after name list. Falls back to
   // the raw id when a KPI was deleted since the event landed.
   if (field === "kpis") {
-    const before = toStrArray(from).map((id) => kpis.find((k) => k.id === id)?.name ?? id);
-    const after = toStrArray(to).map((id) => kpis.find((k) => k.id === id)?.name ?? id);
+    const before = formatKpiAssignmentList(from, kpis);
+    const after = formatKpiAssignmentList(to, kpis);
     if (before.length === 0 && after.length === 0) return <>touched {label}.</>;
     if (before.length === 0) return <>set {label} to {strong(after.join(" › "))}.</>;
     if (after.length === 0) return <>cleared {label} (was {strong(before.join(" › "))}).</>;
@@ -374,6 +374,31 @@ function isBlank(v: unknown): boolean {
 function toStrArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.map(String);
+}
+
+/** Format KPI audit values — supports legacy uuid[] and new assignment objects. */
+function formatKpiAssignmentList(
+  v: unknown,
+  kpis: KpiLookup[],
+): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((item) => {
+    if (typeof item === "string") {
+      return kpis.find((k) => k.id === item)?.name ?? item;
+    }
+    if (item && typeof item === "object") {
+      const obj = item as { kpi_id?: unknown; impact_swag?: unknown };
+      const id = typeof obj.kpi_id === "string" ? obj.kpi_id : null;
+      if (!id) return JSON.stringify(item);
+      const name = kpis.find((k) => k.id === id)?.name ?? id;
+      const swag =
+        typeof obj.impact_swag === "string" && obj.impact_swag.trim()
+          ? obj.impact_swag.trim()
+          : null;
+      return swag ? `${name} (${swag})` : name;
+    }
+    return String(item);
+  });
 }
 
 function asMaybeString(v: unknown): string | null {

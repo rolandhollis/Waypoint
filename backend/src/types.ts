@@ -338,8 +338,9 @@ export type ProjectRow = {
    * KPI assignments, ordered by per-project position. The order is
    * user-controlled (drag-reorder on the detail panel), so the API
    * always preserves it and the UI can rely on it left-to-right.
+   * `impact_swag` is an optional t-shirt label for estimated impact.
    */
-  kpis: string[];
+  kpis: Array<{ kpi_id: string; impact_swag: string | null }>;
   /**
    * Every card is either a top-level epic or a subtask nested under
    * another card (which may itself be a subtask — the tree can be

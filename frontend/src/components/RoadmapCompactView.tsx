@@ -23,6 +23,7 @@ import type { ColorBy, GroupBy } from "../lib/viewState";
 import { useViewStore } from "../lib/viewState";
 import { useResizableRoadmapHeight } from "../lib/useResizableRoadmapHeight";
 import { HeightResizer } from "./HeightResizer";
+import { RoadmapKpiSwagChips } from "./RoadmapKpiSwagChips";
 import { cn } from "../lib/cn";
 
 /**
@@ -89,6 +90,8 @@ import { cn } from "../lib/cn";
  *  the body sizes itself as `rowCount * ROW_HEIGHT` per section,
  *  and each bar's `top` / `height` derive from the same value. */
 const ROW_HEIGHT = 42;
+/** Taller rows when KPI + SWAG chips sit under the in-bar title. */
+const ROW_HEIGHT_WITH_KPIS = 58;
 /** Vertical breathing room above / below each bar within a row.
  *  Kept minimal (2px above + 2px below = 4px inter-row gap) so a
  *  dense packed layout doesn't waste vertical real estate between
@@ -203,6 +206,7 @@ export function RoadmapCompactView({
   onOpen,
   pdfMode,
   pinnedGroupKeys,
+  showKpiSwags = false,
 }: {
   projects: Project[];
   lanes: SwimLane[];
@@ -212,7 +216,8 @@ export function RoadmapCompactView({
    * Full KPI catalog. Only consulted when `groupBy === "kpi"` (to
    * look up label + color for the primary KPI of each item);
    * passed unconditionally so a group-by flip doesn't require a
-   * parent re-render to plumb the array through.
+   * parent re-render to plumb the array through. Also used when
+   * `showKpiSwags` paints chips under each bar title.
    */
   kpis: Kpi[];
   colorBy: ColorBy;
@@ -242,7 +247,10 @@ export function RoadmapCompactView({
    * bit-identically. Undefined / empty → no pinning.
    */
   pinnedGroupKeys?: string[];
+  /** When true, paint KPI + SWAG chips under each bar title. */
+  showKpiSwags?: boolean;
 }) {
+  const rowHeight = showKpiSwags ? ROW_HEIGHT_WITH_KPIS : ROW_HEIGHT;
   const groupExpandOverrides = useViewStore((s) => s.roadmapGroupExpandOverrides);
   const setRoadmapGroupExpanded = useViewStore((s) => s.setRoadmapGroupExpanded);
   // Ref-bound to the horizontal + vertical scroll container so the
@@ -564,7 +572,7 @@ export function RoadmapCompactView({
       const headerHeight = section.label != null ? SECTION_HEADER_HEIGHT : 0;
       const expanded = sectionExpanded.get(section.key) ?? true;
       const barsTop = headerTop + headerHeight;
-      const barsHeight = expanded ? section.rowCount * ROW_HEIGHT : 0;
+      const barsHeight = expanded ? section.rowCount * rowHeight : 0;
       layouts.set(section.key, {
         headerTop,
         barsTop,
@@ -581,10 +589,10 @@ export function RoadmapCompactView({
     // measure.
     return {
       sectionLayouts: layouts,
-      bodyHeight: Math.max(ROW_HEIGHT, cursorY),
+      bodyHeight: Math.max(rowHeight, cursorY),
       totalBarCount: bars,
     };
-  }, [packedSections, sectionExpanded]);
+  }, [packedSections, sectionExpanded, rowHeight]);
 
   const today = new Date();
   const todayX = differenceInCalendarDays(today, start) * dayPx;
@@ -797,8 +805,8 @@ export function RoadmapCompactView({
               // per section, and each section stacks below the
               // previous one plus its own header + inter-section
               // gap. See `sectionLayouts` for the accumulator.
-              const top = layout.barsTop + bar.rowIndex * ROW_HEIGHT + BAR_PADDING;
-              const height = ROW_HEIGHT - BAR_PADDING * 2;
+              const top = layout.barsTop + bar.rowIndex * rowHeight + BAR_PADDING;
+              const height = rowHeight - BAR_PADDING * 2;
               const textColor = readableOn(bar.color);
 
               // Visible-slice label offsets, in bar-relative pixel
@@ -958,6 +966,10 @@ export function RoadmapCompactView({
                     clampLeft={clampLeft}
                     clampRight={clampRight}
                     visibleWidth={Math.max(0, barWidth - clampLeft - clampRight)}
+                    showKpiSwags={showKpiSwags}
+                    kpis={kpis}
+                    assignments={p.kpis}
+                    onDark={textColor === "#ffffff"}
                   />
                 </button>
               );
@@ -1200,6 +1212,10 @@ const CompactBarLabel = memo(function CompactBarLabel({
   clampLeft,
   clampRight,
   visibleWidth,
+  showKpiSwags = false,
+  kpis = [],
+  assignments,
+  onDark = false,
 }: {
   title: string;
   clampLeft: number;
@@ -1213,16 +1229,22 @@ const CompactBarLabel = memo(function CompactBarLabel({
    *  recomputes the visible slice (zoom change, container resize,
    *  today marker crosses the bar). */
   visibleWidth: number;
+  showKpiSwags?: boolean;
+  kpis?: Kpi[];
+  assignments?: Project["kpis"];
+  onDark?: boolean;
 }) {
   const [wrapped, setWrapped] = useState(false);
   const spanRef = useRef<HTMLSpanElement | null>(null);
 
   useLayoutEffect(() => {
     setWrapped(false);
-  }, [title, visibleWidth]);
+  }, [title, visibleWidth, showKpiSwags]);
 
   useLayoutEffect(() => {
-    if (wrapped) return;
+    // With KPI chips under the title we always keep a single-line
+    // truncate so the chip row has room inside the taller bar.
+    if (showKpiSwags || wrapped) return;
     const el = spanRef.current;
     if (!el) return;
     if (el.scrollWidth > el.clientWidth + 0.5) {
@@ -1232,19 +1254,34 @@ const CompactBarLabel = memo(function CompactBarLabel({
 
   return (
     <div
-      className="pointer-events-none absolute inset-y-0 flex items-center justify-start overflow-hidden px-2"
+      className={cn(
+        "pointer-events-none absolute inset-y-0 flex justify-start overflow-hidden px-2",
+        showKpiSwags
+          ? "flex-col items-stretch justify-center gap-0.5 py-0.5"
+          : "items-center",
+      )}
       style={{ left: clampLeft, right: clampRight }}
     >
       <span
         ref={spanRef}
         className={
-          wrapped
-            ? "min-w-0 flex-1 text-left text-xs font-semibold leading-tight line-clamp-2"
-            : "min-w-0 flex-1 truncate text-left text-sm font-bold leading-tight"
+          showKpiSwags
+            ? "min-w-0 truncate text-left text-xs font-bold leading-tight"
+            : wrapped
+              ? "min-w-0 flex-1 text-left text-xs font-semibold leading-tight line-clamp-2"
+              : "min-w-0 flex-1 truncate text-left text-sm font-bold leading-tight"
         }
       >
         {title}
       </span>
+      {showKpiSwags ? (
+        <RoadmapKpiSwagChips
+          assignments={assignments}
+          kpis={kpis}
+          onDark={onDark}
+          className="min-w-0"
+        />
+      ) : null}
     </div>
   );
 });

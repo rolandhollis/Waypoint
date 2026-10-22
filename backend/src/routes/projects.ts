@@ -127,7 +127,9 @@ function valuesEqual(a: unknown, b: unknown, ordered = false): boolean {
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
     if (ordered) {
-      return a.every((v, i) => String(v) === String(b[i]));
+      // KPI assignments are objects — stringify so reorder / SWAG
+      // changes compare correctly (String({}) === "[object Object]").
+      return a.every((v, i) => JSON.stringify(v) === JSON.stringify(b[i]));
     }
     const sortedA = [...a].map(String).sort();
     const sortedB = [...b].map(String).sort();
@@ -162,9 +164,15 @@ const PROJECT_COLUMNS = `
     ARRAY[]::UUID[]
   ) AS teams,
   COALESCE(
-    (SELECT array_agg(pk.kpi_id ORDER BY pk.position ASC)
+    (SELECT jsonb_agg(
+              jsonb_build_object(
+                'kpi_id', pk.kpi_id,
+                'impact_swag', pk.impact_swag
+              )
+              ORDER BY pk.position ASC
+            )
        FROM project_kpis pk WHERE pk.project_id = p.id),
-    ARRAY[]::UUID[]
+    '[]'::jsonb
   ) AS kpis,
   COALESCE(
     (SELECT jsonb_agg(
@@ -212,20 +220,58 @@ export async function replaceProjectTeams(client: PoolClient, projectId: string,
   );
 }
 
+export type ProjectKpiAssignmentInput = {
+  kpi_id: string;
+  impact_swag: string | null;
+};
+
 /**
  * Replace the full ordered set of KPI assignments for a project. Order
  * is derived from the array index — index 0 → position 0 — so the
  * per-project unique-position index stays gap-free after every write.
  * Full-replace strategy mirrors replaceProjectTeams; keeps the mutation
  * surface predictable when the client sends the whole list.
+ * `impact_swag` must be null or a label from this group's tshirt_sizes.
  */
-async function replaceProjectKpis(client: PoolClient, projectId: string, kpiIds: string[]) {
+async function replaceProjectKpis(
+  client: PoolClient,
+  projectId: string,
+  groupId: string,
+  assignments: ProjectKpiAssignmentInput[],
+) {
+  if (assignments.length) {
+    const { rows: sizes } = await client.query<{ label: string }>(
+      `SELECT label FROM tshirt_sizes WHERE group_id = $1`,
+      [groupId],
+    );
+    const allowed = new Set(sizes.map((s) => s.label));
+    for (const a of assignments) {
+      if (a.impact_swag != null && !allowed.has(a.impact_swag)) {
+        throw new HttpError(
+          400,
+          `Invalid impact_swag "${a.impact_swag}" — must match a t-shirt size label for this workspace`,
+        );
+      }
+    }
+  }
+
   await client.query(`DELETE FROM project_kpis WHERE project_id = $1`, [projectId]);
-  if (kpiIds.length === 0) return;
-  const values = kpiIds.map((_, i) => `($1, $${i + 2}, ${i})`).join(", ");
+  if (assignments.length === 0) return;
+  const values = assignments
+    .map((_, i) => {
+      const idParam = i * 2 + 2;
+      const swagParam = i * 2 + 3;
+      return `($1, $${idParam}, ${i}, $${swagParam})`;
+    })
+    .join(", ");
+  const params: unknown[] = [projectId];
+  for (const a of assignments) {
+    params.push(a.kpi_id, a.impact_swag);
+  }
   await client.query(
-    `INSERT INTO project_kpis (project_id, kpi_id, position) VALUES ${values}`,
-    [projectId, ...kpiIds],
+    `INSERT INTO project_kpis (project_id, kpi_id, position, impact_swag)
+     VALUES ${values}`,
+    params,
   );
 }
 
@@ -588,12 +634,30 @@ const projectBaseSchema = z.object({
   teams: z.array(z.string().uuid()).max(10).optional(),
   tags: z.array(z.string().max(64)).max(20).optional(),
   /**
-   * Ordered list of KPI ids this project contributes to. Order
-   * carries meaning (primary → tertiary), so we treat writes as
-   * full replacements — the client sends the whole array in the
-   * order it wants persisted. Empty array clears all assignments.
+   * Ordered KPI assignments. Prefer `{ kpi_id, impact_swag }`; bare
+   * UUID strings are still accepted and coerced (impact_swag=null)
+   * for older clients. Empty array clears all assignments.
    */
-  kpis: z.array(z.string().uuid()).max(20).optional(),
+  kpis: z
+    .array(
+      z.union([
+        z.string().uuid().transform((kpi_id) => ({
+          kpi_id,
+          impact_swag: null as string | null,
+        })),
+        z
+          .object({
+            kpi_id: z.string().uuid(),
+            impact_swag: z.string().trim().min(1).max(16).nullable().optional(),
+          })
+          .transform((a) => ({
+            kpi_id: a.kpi_id,
+            impact_swag: a.impact_swag ?? null,
+          })),
+      ]),
+    )
+    .max(20)
+    .optional(),
   type: z.enum(["epic", "subtask"]).optional(),
   parent_id: z.string().uuid().nullable().optional(),
   start_date: z.string().nullable().optional(),
@@ -918,7 +982,7 @@ projectsRouter.post("/", requireWrite, async (req, res) => {
       await replaceProjectTeams(client, projectId, body.teams);
     }
     if (body.kpis?.length) {
-      await replaceProjectKpis(client, projectId, body.kpis);
+      await replaceProjectKpis(client, projectId, groupId, body.kpis);
     }
     await client.query(
       `INSERT INTO status_history (project_id, from_swim_lane_id, to_swim_lane_id, moved_by_user_id)
@@ -1068,7 +1132,7 @@ projectsRouter.patch("/:id", requireWrite, async (req, res) => {
       await replaceProjectTeams(client, projectId, body.teams);
     }
     if (body.kpis !== undefined) {
-      await replaceProjectKpis(client, projectId, body.kpis);
+      await replaceProjectKpis(client, projectId, groupId, body.kpis);
     }
 
     const fields: string[] = [];

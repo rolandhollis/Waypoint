@@ -1255,14 +1255,17 @@ export function ProjectDetailBody({
           <Field
             label="KPIs"
             className="col-span-2"
-            hint={(merged.kpis?.length ?? 0) > 1
-              ? "Drag chips to reorder — first chip is the primary KPI, then secondary, and so on."
-              : undefined}
+            hint={
+              (merged.kpis?.length ?? 0) > 0
+                ? "Pick a t-shirt SWAG per KPI for estimated impact. Drag chips to reorder — first is primary."
+                : undefined
+            }
           >
             <KpiPicker
               value={merged.kpis ?? []}
               onChange={(next) => setDraft((d) => ({ ...d, kpis: next }))}
               kpis={kpis.data ?? []}
+              tshirtSizes={tshirtSizes.data}
               disabled={!canWrite}
             />
           </Field>

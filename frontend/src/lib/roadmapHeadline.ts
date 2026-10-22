@@ -98,7 +98,7 @@ function toPayload(p: Project, maps: ProjectMaps): AiHeadlineProjectPayload {
     .map((id) => maps.teamsById.get(id)?.name)
     .filter((n): n is string => Boolean(n));
   const kpiNames = (p.kpis ?? [])
-    .map((id) => maps.kpisById.get(id)?.name)
+    .map((a) => maps.kpisById.get(a.kpi_id)?.name)
     .filter((n): n is string => Boolean(n));
   const phases = computePhases(p);
   const start = phases.firstStart
@@ -181,7 +181,7 @@ export function computeHeadlineGroups(
       } else if (groupBy === "kpi") {
       // Multi-value dimension routed to a SINGLE bucket keyed on the
       // primary (index 0) KPI, matching the Gantt / Quarters views.
-      const primaryKpiId = (p.kpis ?? [])[0] ?? null;
+      const primaryKpiId = (p.kpis ?? [])[0]?.kpi_id ?? null;
       const primaryKpi = primaryKpiId ? maps.kpisById.get(primaryKpiId) : undefined;
       if (primaryKpi) {
         put(primaryKpi.id, primaryKpi.name, primaryKpi.order ?? Number.MAX_SAFE_INTEGER, p);

@@ -32,6 +32,7 @@ import { resolveGroupExpanded } from "../lib/roadmapGroupExpand";
 import { computeEpicSubtaskSegments, type EpicSubtaskSegment } from "../lib/epicSegments";
 import { useCanWrite, useKpis, useProjects } from "../lib/queries";
 import { childrenByParent, descendants, indexById, rootEpic } from "../lib/hierarchy";
+import { RoadmapKpiSwagChips } from "./RoadmapKpiSwagChips";
 import {
   ALL_ZOOM_FALLBACK_DAY_PX,
   DAY_PX,
@@ -225,6 +226,12 @@ type Props = {
    */
   showConflicts?: boolean;
   /**
+   * When true, each label-column row grows to fit KPI + impact-SWAG
+   * chips under the project title. Wired from RoadmapView's "Show
+   * KPIs" checkbox (and the matching URL / view-state slot).
+   */
+  showKpiSwags?: boolean;
+  /**
    * Group keys that should float to the TOP of the group-header
    * order, in the array's own order. Currently populated by
    * `RoadmapView` with the active Team filter ids when
@@ -242,6 +249,8 @@ type Props = {
 };
 
 const ROW_HEIGHT = 34;
+/** Taller rows when KPI + SWAG chips sit under the label-column title. */
+const ROW_HEIGHT_WITH_KPIS = 52;
 const HEADER_HEIGHT = 48;
 const GROUP_HEADER_HEIGHT = 28;
 // Blank strip between groups so each swim of bars reads as its own
@@ -316,8 +325,10 @@ export function GanttTimeline(props: Props) {
     onReorderOverride,
     onReorderCrossLaneRejected,
     showConflicts = true,
+    showKpiSwags = false,
     pinnedGroupKeys,
   } = props;
+  const rowHeight = showKpiSwags ? ROW_HEIGHT_WITH_KPIS : ROW_HEIGHT;
   // Row reorder is only wired up on the main Roadmap view: the
   // auto-schedule proposal preview passes `preserveInputOrder=true`
   // and no `sortMode`, so it keeps the exact byStart-free rendering
@@ -617,12 +628,12 @@ export function GanttTimeline(props: Props) {
       const expanded = groupExpanded.get(g.key) ?? true;
       if (!expanded) return;
       g.rows.forEach((row, idx) => {
-        out.set(row.project.id, { rowY: cursorY + idx * ROW_HEIGHT, project: row.project });
+        out.set(row.project.id, { rowY: cursorY + idx * rowHeight, project: row.project });
       });
-      cursorY += g.rows.length * ROW_HEIGHT;
+      cursorY += g.rows.length * rowHeight;
     });
     return out;
-  }, [groups, groupExpanded]);
+  }, [groups, groupExpanded, rowHeight]);
 
   // Total pixel height of the body content (everything below the
   // header strip). Used to size the body SVG in interactive mode and
@@ -636,10 +647,10 @@ export function GanttTimeline(props: Props) {
         s
         + (gi > 0 && g.label ? GROUP_GAP : 0)
         + (g.label ? GROUP_HEADER_HEIGHT : 0)
-        + (expanded ? g.rows.length * ROW_HEIGHT : 0)
+        + (expanded ? g.rows.length * rowHeight : 0)
       );
     }, 0)
-  ), [groups, groupExpanded]);
+  ), [groups, groupExpanded, rowHeight]);
 
   // Capacity overloads are a workspace-level truth, not a filtered one:
   // Alice is still overloaded on Aug 12 even if the current filter
@@ -1063,6 +1074,9 @@ export function GanttTimeline(props: Props) {
             reorderEnabled={rowReorderEnabled && canEdit}
             onOpen={onOpen}
             onToggleExpand={toggleEpicExpanded}
+            rowHeight={rowHeight}
+            showKpiSwags={showKpiSwags}
+            kpis={kpisQuery.data ?? []}
           />
         ))}
       </>
@@ -1347,14 +1361,14 @@ export function GanttTimeline(props: Props) {
           // affordance where they paint over this rect.
           const rowHitRects: React.ReactNode[] = visibleRows.map((row, idx) => {
             const p = row.project;
-            const rowY = cursorY + idx * ROW_HEIGHT;
+            const rowY = cursorY + idx * rowHeight;
             return (
               <rect
                 key={`row-hit-${p.id}`}
                 x={0}
                 y={rowY}
                 width={chartWidth}
-                height={ROW_HEIGHT}
+                height={rowHeight}
                 fill="transparent"
                 style={{ cursor: "pointer" }}
                 onClick={() => onOpen(p.id)}
@@ -1364,7 +1378,7 @@ export function GanttTimeline(props: Props) {
           const rowOverloadOverlays: React.ReactNode[] = [];
           const rows = visibleRows.map((row, idx) => {
             const p = row.project;
-            const rowY = cursorY + idx * ROW_HEIGHT;
+            const rowY = cursorY + idx * rowHeight;
             const activeDrag = drag?.projectId === p.id ? drag : null;
             const previewProject = activeDrag ? applyDragToProject(p, activeDrag) : p;
 
@@ -1410,8 +1424,8 @@ export function GanttTimeline(props: Props) {
                   }
                 >
                   <g className="cursor-help">
-                    <rect x={x1} y={rowY + 2} width={w} height={ROW_HEIGHT - 4} fill="#DC2626" fillOpacity={0.06} />
-                    <rect x={x1} y={rowY + ROW_HEIGHT - 3} width={w} height={2} fill="#DC2626" fillOpacity={0.7} />
+                    <rect x={x1} y={rowY + 2} width={w} height={rowHeight - 4} fill="#DC2626" fillOpacity={0.06} />
+                    <rect x={x1} y={rowY + rowHeight - 3} width={w} height={2} fill="#DC2626" fillOpacity={0.7} />
                   </g>
                 </OverloadTooltip>
               );
@@ -1422,6 +1436,7 @@ export function GanttTimeline(props: Props) {
                 key={p.id}
                 project={previewProject}
                 y={rowY}
+                rowHeight={rowHeight}
                 chartStart={start}
                 dayPx={dayPx}
                 lanes={lanes}
@@ -1441,7 +1456,7 @@ export function GanttTimeline(props: Props) {
               />
             );
           });
-          cursorY += visibleRows.length * ROW_HEIGHT;
+          cursorY += visibleRows.length * rowHeight;
           // Overload overlay: only meaningful when the group key IS
           // an entity id (owner or team mode). We paint a
           // translucent red band across the group's Y range for
@@ -1516,7 +1531,7 @@ export function GanttTimeline(props: Props) {
       <g pointerEvents="none">
         {(() => {
           const arrows: React.ReactNode[] = [];
-          const rowMid = ROW_HEIGHT / 2;
+          const rowMid = rowHeight / 2;
           for (const p of rowProjects) {
             const from = rowPositions.get(p.id);
             if (!from) continue;
@@ -1814,6 +1829,8 @@ export function GanttTimeline(props: Props) {
 function Bar(props: {
   project: Project;
   y: number;
+  /** Pixel height of the containing row (grows when Show KPIs is on). */
+  rowHeight?: number;
   chartStart: Date;
   dayPx: number;
   lanes: SwimLane[];
@@ -1858,7 +1875,7 @@ function Bar(props: {
   showConflicts?: boolean;
 }) {
   const {
-    project: p, y, chartStart, dayPx, lanes, teams, users, colorBy,
+    project: p, y, rowHeight = ROW_HEIGHT, chartStart, dayPx, lanes, teams, users, colorBy,
     canEdit, activeDrag, onStartDrag, onOpen,
     deadlineStatuses, dependencyStatuses, isSubtask, kids, pdfMode,
     showConflicts = true,
@@ -1881,10 +1898,11 @@ function Bar(props: {
 
   // Subtask bars sit a bit thinner so the epic stays visually dominant.
   // Same y-anchor so the row heights are constant and drag hitboxes
-  // don't shift when you expand a tree.
+  // don't shift when you expand a tree. Row height may grow when
+  // Show KPIs is on (taller label column); bars scale with the row.
   const extraPad = isSubtask ? 3 : 0;
   const barY = y + BAR_PADDING + extraPad;
-  const barH = ROW_HEIGHT - BAR_PADDING * 2 - extraPad * 2;
+  const barH = rowHeight - BAR_PADDING * 2 - extraPad * 2;
 
   // Each phase is now independently nullable — a project with only
   // (say) post-dev dates renders just the Optimization segment. The
@@ -2846,8 +2864,20 @@ function SortableLabelCluster(props: {
   reorderEnabled: boolean;
   onOpen: (id: string) => void;
   onToggleExpand: (id: string) => void;
+  rowHeight: number;
+  showKpiSwags: boolean;
+  kpis: Kpi[];
 }) {
-  const { cluster, groupKey, reorderEnabled, onOpen, onToggleExpand } = props;
+  const {
+    cluster,
+    groupKey,
+    reorderEnabled,
+    onOpen,
+    onToggleExpand,
+    rowHeight,
+    showKpiSwags,
+    kpis,
+  } = props;
   const sortable = useSortable({
     // Sortable id is namespaced by group so multi-value
     // groupings (team, kpi) that duplicate the same project
@@ -2889,8 +2919,11 @@ function SortableLabelCluster(props: {
                 onOpen(p.id);
               }
             }}
-            className="flex cursor-pointer items-center gap-1 border-b border-wp-stone bg-white px-2 text-left text-xs transition-colors hover:bg-wp-stone/30 focus:bg-wp-stone/40 focus:outline-none"
-            style={{ height: ROW_HEIGHT }}
+            className={cn(
+              "flex cursor-pointer gap-1 border-b border-wp-stone bg-white px-2 text-left text-xs transition-colors hover:bg-wp-stone/30 focus:bg-wp-stone/40 focus:outline-none",
+              showKpiSwags ? "items-start py-1" : "items-center",
+            )}
+            style={{ height: rowHeight }}
           >
             {/* Drag grip — only on the root row and only when
                 reorder is enabled. Uses `stopPropagation` on
@@ -2959,11 +2992,20 @@ function SortableLabelCluster(props: {
               aria-label={p.is_key_strategic ? "Key strategic item" : "Not key strategic"}
             />
 
-            <span
-              className={`min-w-0 flex-1 truncate ${row.depth > 0 ? "text-wp-slate" : "text-wp-ink"}`}
-              title={p.title}
-            >
-              {p.title}
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5 overflow-hidden">
+              <span
+                className={`min-w-0 truncate ${row.depth > 0 ? "text-wp-slate" : "text-wp-ink"}`}
+                title={p.title}
+              >
+                {p.title}
+              </span>
+              {showKpiSwags ? (
+                <RoadmapKpiSwagChips
+                  assignments={p.kpis}
+                  kpis={kpis}
+                  className="min-w-0"
+                />
+              ) : null}
             </span>
           </div>
         );

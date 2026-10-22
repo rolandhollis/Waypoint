@@ -7,7 +7,7 @@ import { SortableContext, arrayMove, rectSortingStrategy, useSortable } from "@d
 import { CSS } from "@dnd-kit/utilities";
 import { Check, GripVertical, Plus, X } from "lucide-react";
 import { useMemo } from "react";
-import type { Kpi } from "../lib/types";
+import type { Kpi, ProjectKpiAssignment, TshirtSize } from "../lib/types";
 import { cn } from "../lib/cn";
 
 /**
@@ -17,6 +17,9 @@ import { cn } from "../lib/cn";
  * KPIs as horizontally-arranged draggable chips and preserve that
  * order in the value array.
  *
+ * Each chip also carries an optional impact SWAG (t-shirt label from
+ * the tenant ladder), matching Dev estimate sizing language.
+ *
  * A separate "+ Add KPI" popover exposes any KPI not yet in the
  * selection; picking one appends it to the end of the list.
  */
@@ -24,14 +27,17 @@ export function KpiPicker({
   value,
   onChange,
   kpis,
+  tshirtSizes,
   disabled,
   className,
 }: {
-  /** Ordered list of KPI ids currently assigned to the project. */
-  value: string[] | undefined | null;
-  onChange: (next: string[]) => void;
+  /** Ordered KPI assignments currently on the project. */
+  value: ProjectKpiAssignment[] | undefined | null;
+  onChange: (next: ProjectKpiAssignment[]) => void;
   /** Full KPI catalog (from useKpis()). */
   kpis: Kpi[];
+  /** Tenant t-shirt ladder for the SWAG select (from useTshirtSizes()). */
+  tshirtSizes: TshirtSize[] | undefined;
   disabled?: boolean;
   className?: string;
 }) {
@@ -39,19 +45,27 @@ export function KpiPicker({
   // project rows won't have this field, and a downstream .map / .length
   // on undefined would crash the whole detail panel with no error
   // boundary above.
-  const ids = value ?? [];
+  const assignments = value ?? [];
+  const ids = useMemo(() => assignments.map((a) => a.kpi_id), [assignments]);
   const byId = useMemo(() => new Map(kpis.map((k) => [k.id, k])), [kpis]);
   // Preserve the caller's order for the selected list; skip any ids
   // whose KPI has been deleted since the project last saved.
   const selected = useMemo(
-    () => ids.map((id) => byId.get(id)).filter((k): k is Kpi => !!k),
-    [ids, byId],
+    () =>
+      assignments
+        .map((a) => {
+          const kpi = byId.get(a.kpi_id);
+          return kpi ? { assignment: a, kpi } : null;
+        })
+        .filter((x): x is { assignment: ProjectKpiAssignment; kpi: Kpi } => !!x),
+    [assignments, byId],
   );
   const unselected = useMemo(
     () => kpis.filter((k) => !ids.includes(k.id)),
     [kpis, ids],
   );
 
+  const sizes = tshirtSizes ?? [];
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   function handleDragEnd(e: DragEndEvent) {
@@ -60,29 +74,38 @@ export function KpiPicker({
     const oldIdx = ids.indexOf(String(active.id));
     const newIdx = ids.indexOf(String(over.id));
     if (oldIdx < 0 || newIdx < 0) return;
-    onChange(arrayMove(ids, oldIdx, newIdx));
+    onChange(arrayMove(assignments, oldIdx, newIdx));
   }
 
   function add(id: string) {
     if (ids.includes(id)) return;
-    onChange([...ids, id]);
+    onChange([...assignments, { kpi_id: id, impact_swag: null }]);
   }
 
   function remove(id: string) {
-    onChange(ids.filter((v) => v !== id));
+    onChange(assignments.filter((a) => a.kpi_id !== id));
+  }
+
+  function setSwag(id: string, impact_swag: string | null) {
+    onChange(
+      assignments.map((a) => (a.kpi_id === id ? { ...a, impact_swag } : a)),
+    );
   }
 
   return (
     <div className={cn("flex flex-wrap items-center gap-1.5", className)}>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={ids} strategy={rectSortingStrategy}>
-          {selected.map((k, i) => (
+          {selected.map(({ kpi, assignment }, i) => (
             <SortableKpiChip
-              key={k.id}
-              kpi={k}
+              key={kpi.id}
+              kpi={kpi}
               rank={i + 1}
+              impactSwag={assignment.impact_swag}
+              sizes={sizes}
               disabled={disabled}
-              onRemove={() => remove(k.id)}
+              onRemove={() => remove(kpi.id)}
+              onSwagChange={(swag) => setSwag(kpi.id, swag)}
             />
           ))}
         </SortableContext>
@@ -140,13 +163,19 @@ export function KpiPicker({
 function SortableKpiChip({
   kpi,
   rank,
+  impactSwag,
+  sizes,
   disabled,
   onRemove,
+  onSwagChange,
 }: {
   kpi: Kpi;
   rank: number;
+  impactSwag: string | null;
+  sizes: TshirtSize[];
   disabled?: boolean;
   onRemove: () => void;
+  onSwagChange: (swag: string | null) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: kpi.id });
   const style = {
@@ -154,6 +183,9 @@ function SortableKpiChip({
     transition,
     opacity: isDragging ? 0.6 : 1,
   };
+  const swagTitle = impactSwag
+    ? `Impact SWAG: ${impactSwag}`
+    : "Impact SWAG unset";
   return (
     <span
       ref={setNodeRef}
@@ -163,7 +195,7 @@ function SortableKpiChip({
         background: `${kpi.color}18`,
       }}
       className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs"
-      title={`#${rank} · ${kpi.name}${kpi.description ? ` — ${kpi.description}` : ""}`}
+      title={`#${rank} · ${kpi.name}${kpi.description ? ` — ${kpi.description}` : ""} · ${swagTitle}`}
     >
       {!disabled ? (
         <button
@@ -182,6 +214,31 @@ function SortableKpiChip({
         style={{ background: kpi.color }}
       />
       <span className="text-wp-ink">{kpi.name}</span>
+      {disabled ? (
+        <span
+          className={cn(
+            "rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+            impactSwag ? "bg-white/70 text-wp-ink" : "text-wp-slate/70",
+          )}
+        >
+          {impactSwag ?? "—"}
+        </span>
+      ) : (
+        <select
+          aria-label={`Impact SWAG for ${kpi.name}`}
+          className="max-w-[3.5rem] cursor-pointer rounded border-0 bg-white/70 py-0.5 pl-1 pr-0 text-[10px] font-semibold uppercase tracking-wide text-wp-ink outline-none hover:bg-white"
+          value={impactSwag ?? ""}
+          onChange={(e) => onSwagChange(e.target.value || null)}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <option value="">SWAG</option>
+          {sizes.map((s) => (
+            <option key={s.id} value={s.label}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+      )}
       {!disabled ? (
         <button
           type="button"

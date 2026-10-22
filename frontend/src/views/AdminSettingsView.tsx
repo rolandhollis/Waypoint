@@ -2584,7 +2584,9 @@ function KpisAdmin() {
   }
 
   async function handleDelete(k: Kpi) {
-    const count = (projects.data ?? []).filter((p) => p.kpis?.includes(k.id) && !p.deleted_at).length;
+    const count = (projects.data ?? []).filter(
+      (p) => (p.kpis ?? []).some((a) => a.kpi_id === k.id) && !p.deleted_at,
+    ).length;
     const description =
       count > 0
         ? `${count} active project${count === 1 ? "" : "s"} will lose this KPI assignment.`
