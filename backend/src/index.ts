@@ -43,6 +43,7 @@ import { analyticsRouter } from "./routes/analytics.js";
 import { jiraWebhooksRouter } from "./routes/jiraWebhooks.js";
 import { jiraSyncAdminRouter } from "./routes/jiraSyncAdmin.js";
 import { apiTokensRouter } from "./routes/apiTokens.js";
+import { publicIdeasRouter } from "./routes/publicIdeas.js";
 import { handleMcpMethodNotAllowed, handleMcpPost } from "./mcp/http.js";
 import { startCron } from "./jobs/weeklyStatus.js";
 import { startJiraSyncCron } from "./jobs/jiraSync.js";
@@ -78,6 +79,9 @@ app.use("/api/auth", authRouter);
 
 // Public experiment analytics (no login required; join key = ziffsplit_id).
 app.use("/api/analytics", analyticsRouter);
+
+// Public idea intake (no login). Creates backlog epics + emails admins.
+app.use("/api/public/ideas", publicIdeasRouter);
 
 // Jira webhooks (shared-secret auth; CSRF-exempt).
 app.use("/api/webhooks/jira", jiraWebhooksRouter);

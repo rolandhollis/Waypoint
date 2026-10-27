@@ -68,6 +68,14 @@ Auth mode is controlled by `AUTH_MODE` in `backend/.env`:
 
 Full setup + deployment notes: [DEPLOY.md](DEPLOY.md).
 
+## Public idea form
+
+Anyone can submit a backlog idea without signing in:
+
+`/ideas/<slug>` — e.g. `https://waypoint-qmh6xa.fly.dev/ideas/retailmenot`
+
+Slugs are set per workspace (Admin → Groups). UUID still works as a fallback. Three steps (welcome → form → success). Creates an epic in the default swim lane and emails workspace admins with ticket details plus a deep link to `/projects/<id>`.
+
 ## Claude connector (MCP)
 
 Waypoint exposes a remote [MCP](https://modelcontextprotocol.io) server so Claude can read roadmap/backlog data for a workspace.

@@ -24,6 +24,7 @@ import { FeatureGroupDetailView } from "./views/FeatureGroupDetailView";
 import { ProjectDetailPage } from "./views/ProjectDetailPage";
 import { UserAssignmentsView } from "./views/UserAssignmentsView";
 import { ProfileView } from "./views/ProfileView";
+import { PublicIdeaView } from "./views/PublicIdeaView";
 import { LoginView } from "./views/LoginView";
 import { ForgotPasswordView } from "./views/ForgotPasswordView";
 import { RequestAccessView } from "./views/RequestAccessView";
@@ -110,7 +111,9 @@ export function App() {
       if (
         path === "/reset-password" ||
         path === "/forgot-password" ||
-        path === "/request-access"
+        path === "/request-access" ||
+        path.startsWith("/submit-idea") ||
+        path.startsWith("/ideas")
       ) {
         return;
       }
@@ -160,6 +163,25 @@ export function App() {
     );
   }
 
+  // Public idea form — reachable without signing in (and without
+  // waiting on /users/me). Keep this above the auth gates so the
+  // shareable `/ideas/<slug>` link works for everyone.
+  if (
+    location.pathname.startsWith("/ideas") ||
+    location.pathname.startsWith("/submit-idea")
+  ) {
+    return (
+      <>
+        <DocumentFaviconSync />
+        <Routes>
+          <Route path="/ideas/:slugOrId" element={<PublicIdeaView />} />
+          <Route path="/submit-idea/:slugOrId" element={<PublicIdeaView />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </>
+    );
+  }
+
   // Password mode: dedicated /login route. Everything else redirects
   // to it until /users/me returns a user. Don't trap the user on
   // "Signing in…" when /users/me errored or hung past the grace period.
@@ -197,6 +219,8 @@ export function App() {
             <Route path="/forgot-password" element={<ForgotPasswordView />} />
             <Route path="/request-access" element={<RequestAccessView />} />
             <Route path="/reset-password" element={<ResetPasswordView />} />
+            <Route path="/ideas/:slugOrId" element={<PublicIdeaView />} />
+            <Route path="/submit-idea/:slugOrId" element={<PublicIdeaView />} />
             <Route path="*" element={<Navigate to="/login" replace state={{ from: location }} />} />
           </Routes>
         </>

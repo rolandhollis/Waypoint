@@ -13,6 +13,7 @@ import {
   Camera,
   ChevronLeft,
   ChevronRight,
+  Copy,
   GripVertical,
   Mail,
   Megaphone,
@@ -4113,9 +4114,15 @@ function GroupRow({
   const qc = useQueryClient();
   const [name, setName] = useState(group.name);
   const [color, setColor] = useState<string>(group.color ?? "#64748B");
+  const [slug, setSlug] = useState(group.public_slug ?? "");
+  const [slugCopied, setSlugCopied] = useState(false);
+
+  useEffect(() => {
+    setSlug(group.public_slug ?? "");
+  }, [group.public_slug]);
 
   const rename = useMutation({
-    mutationFn: (patch: { name?: string; color?: string }) =>
+    mutationFn: (patch: { name?: string; color?: string; public_slug?: string | null }) =>
       api<Group>(`/groups/${group.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -4139,6 +4146,12 @@ function GroupRow({
     setColor(next);
     if (next !== (group.color ?? "#64748B")) rename.mutate({ color: next });
   };
+  const commitSlug = () => {
+    const next = slug.trim().toLowerCase() || null;
+    const prev = group.public_slug ?? null;
+    if (next !== prev) rename.mutate({ public_slug: next });
+  };
+  const ideaShareUrl = `${window.location.origin}/ideas/${group.public_slug || group.id}`;
 
   return (
     <div className="p-3">
@@ -4195,8 +4208,58 @@ function GroupRow({
           {(remove.error as Error).message}
         </div>
       ) : null}
+      {rename.isError ? (
+        <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-700">
+          {(rename.error as Error).message}
+        </div>
+      ) : null}
 
-      {expanded ? <GroupMembersPanel groupId={group.id} /> : null}
+      {expanded ? (
+        <div className="mt-3 space-y-3 border-t border-wp-stone pt-3">
+          <div>
+            <label className="block text-xs font-medium text-wp-slate">
+              Public idea form URL
+              <span className="ml-1 font-normal text-wp-slate/70">
+                (shareable — no login required)
+              </span>
+            </label>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-wp-slate">{window.location.origin}/ideas/</span>
+              <input
+                type="text"
+                value={slug}
+                onChange={(e) => setSlug(e.target.value)}
+                onBlur={commitSlug}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  if (e.key === "Escape") setSlug(group.public_slug ?? "");
+                }}
+                placeholder="retailmenot"
+                className="input w-48 font-mono text-xs"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                className="btn-secondary inline-flex items-center gap-1 px-2 py-1 text-xs"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(ideaShareUrl);
+                    setSlugCopied(true);
+                    window.setTimeout(() => setSlugCopied(false), 1500);
+                  } catch {
+                    setSlugCopied(false);
+                  }
+                }}
+              >
+                <Copy size={12} />
+                {slugCopied ? "Copied" : "Copy link"}
+              </button>
+            </div>
+            <p className="mt-1 break-all text-[11px] text-wp-slate">{ideaShareUrl}</p>
+          </div>
+          <GroupMembersPanel groupId={group.id} />
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -123,6 +123,22 @@ groupsRouter.post("/", requireSuperUser, async (req, res) => {
 const patchSchema = z.object({
   name: z.string().min(1).max(80).optional(),
   color: z.string().max(32).nullable().optional(),
+  /** Pretty `/ideas/<slug>` segment. Null clears (falls back to UUID). */
+  public_slug: z
+    .string()
+    .trim()
+    .max(60)
+    .nullable()
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return undefined;
+      if (v === null || v === "") return null;
+      const slug = v.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      return slug || null;
+    })
+    .refine((v) => v === undefined || v === null || /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(v), {
+      message: "public_slug must be lowercase letters, digits, and hyphens",
+    }),
 });
 
 groupsRouter.patch("/:id", requireSuperUser, async (req, res) => {
@@ -141,12 +157,20 @@ groupsRouter.patch("/:id", requireSuperUser, async (req, res) => {
     return;
   }
   values.push(req.params.id);
-  const { rows } = await query<GroupRow>(
-    `UPDATE groups SET ${fields.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
-    values,
-  );
-  if (!rows[0]) throw new HttpError(404, "group not found");
-  res.json(scrubGroup(rows[0]));
+  try {
+    const { rows } = await query<GroupRow>(
+      `UPDATE groups SET ${fields.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+      values,
+    );
+    if (!rows[0]) throw new HttpError(404, "group not found");
+    res.json(scrubGroup(rows[0]));
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code;
+    if (code === "23505") {
+      throw new HttpError(409, "that public idea URL is already in use");
+    }
+    throw err;
+  }
 });
 
 /**

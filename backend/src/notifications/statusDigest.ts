@@ -559,15 +559,25 @@ function newBadgeHtml(): string {
   return `<span style="display:inline-block;font-size:10px;font-weight:700;line-height:1.3;padding:2px 6px;border-radius:4px;border:1px solid #6ee7b7;background:#d1fae5;color:#047857;letter-spacing:0.04em;vertical-align:middle;mso-line-height-rule:exactly;">NEW</span>`;
 }
 
+/**
+ * Tile headline: "Mobile Apps: App CMS Enablement V2". Multiple
+ * teams join with ", ". No teams → bare project title.
+ */
+function projectTitleWithTeams(title: string, teamNames: string[]): string {
+  const teams = teamNames.map((t) => t.trim()).filter(Boolean);
+  if (!teams.length) return title;
+  return `${teams.join(", ")}: ${title}`;
+}
+
 function formatUpdateTextLines(u: UpdateRow, appUrl: string): string[] {
   const projectUrl = `${appUrl}/projects/${u.project_id}`;
   const newTag = u.is_new ? " [NEW]" : "";
+  const headline = projectTitleWithTeams(u.project_title, u.team_names);
   const lines: string[] = [
-    `• ${u.project_title}${newTag} [${healthLabel(u.health_flag)}]`,
+    `• ${headline}${newTag} [${healthLabel(u.health_flag)}]`,
     `   ${projectUrl}`,
   ];
   if (u.owner_name) lines.push(`   Owner: ${u.owner_name}`);
-  if (u.team_names.length) lines.push(`   Teams: ${u.team_names.join(", ")}`);
   if (u.submitted_by_name) lines.push(`   Submitted by: ${u.submitted_by_name}`);
   if (u.executive_summary?.trim()) lines.push(`   ${u.executive_summary.trim()}`);
   const bs = bullets(u.detailed_update);
@@ -579,6 +589,7 @@ function formatUpdateTextLines(u: UpdateRow, appUrl: string): string[] {
 
 function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
   const projectUrl = `${appUrl}/projects/${u.project_id}`;
+  const headline = projectTitleWithTeams(u.project_title, u.team_names);
   const bs = bullets(u.detailed_update);
   const bulletsHtml = bs.length
     ? `<ul style="margin:6px 0 0;padding-left:18px;color:#334155;">${bs
@@ -592,9 +603,6 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
   const ownerHtml = u.owner_name
     ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Owner: ${escapeHtml(u.owner_name)}</div>`
     : "";
-  const teamsHtml = u.team_names.length
-    ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Teams: ${escapeHtml(u.team_names.join(", "))}</div>`
-    : "";
   const submitterHtml = u.submitted_by_name
     ? `<div style="font-size:11px;color:#64748b;margin-top:2px;">Submitted by: ${escapeHtml(u.submitted_by_name)}</div>`
     : "";
@@ -604,7 +612,7 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
             <tr>
               <td style="vertical-align:top;padding-right:12px;">
-                <a href="${projectUrl}" style="font-weight:600;color:#0f172a;text-decoration:none;">${escapeHtml(u.project_title)}</a>${newBadge}
+                <a href="${projectUrl}" style="font-weight:600;color:#0f172a;text-decoration:none;">${escapeHtml(headline)}</a>${newBadge}
               </td>
               <td align="right" style="vertical-align:top;white-space:nowrap;width:1%;">
                 ${healthBadgeHtml(u.health_flag)}
@@ -612,7 +620,6 @@ function renderUpdateArticleHtml(u: UpdateRow, appUrl: string): string {
             </tr>
           </table>
           ${ownerHtml}
-          ${teamsHtml}
           ${submitterHtml}
           ${summaryHtml}
           ${bulletsHtml}

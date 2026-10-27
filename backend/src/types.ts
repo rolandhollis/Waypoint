@@ -59,6 +59,11 @@ export type GroupRow = {
   id: string;
   name: string;
   color: string | null;
+  /**
+   * Pretty URL segment for the public idea form (`/ideas/<slug>`).
+   * Unique when set; UUID still works as a lookup fallback.
+   */
+  public_slug: string | null;
   created_by: string | null;
   /**
    * Admin-editable runtime "constants" for this tenant. Backed by
