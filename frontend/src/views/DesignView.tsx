@@ -33,7 +33,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { format } from "date-fns";
+import { differenceInCalendarDays, format } from "date-fns";
 import { KanbanItemCreateModal } from "../components/KanbanItemCreateModal";
 import { DesignDetailPanel } from "../components/DesignDetailPanel";
 import { MutationErrorBanner } from "../components/MutationErrorBanner";
@@ -1357,44 +1357,31 @@ function TicketCard({
           {item.team_name ? (
             <span className="chip text-[10px]">{item.team_name}</span>
           ) : null}
+          {item.due_date ? <DueDateChip dueDate={item.due_date} done={done} /> : null}
+          {item.is_blocked ? (
+            <span
+              className="relative inline-flex size-3.5 items-center justify-center text-red-700"
+              title={
+                item.blocked_reason?.trim()
+                  ? `Blocked: ${item.blocked_reason.trim()}`
+                  : "Blocked"
+              }
+              aria-label={
+                item.blocked_reason?.trim()
+                  ? `Blocked: ${item.blocked_reason.trim()}`
+                  : "Blocked"
+              }
+            >
+              <Octagon size={14} className="fill-red-600 text-red-700" />
+              <X
+                size={8}
+                strokeWidth={3}
+                className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white"
+                aria-hidden
+              />
+            </span>
+          ) : null}
         </div>
-        {(item.due_date || item.is_blocked) ? (
-          <div className="mt-2 flex items-center justify-between text-xs text-wp-slate">
-            <div className="flex items-center gap-2">
-              {item.due_date ? (
-                <span className="inline-flex items-center gap-1">
-                  <Calendar size={11} />
-                  {format(new Date(`${item.due_date}T00:00:00`), "MMM d")}
-                </span>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-2">
-              {item.is_blocked ? (
-                <span
-                  className="relative inline-flex size-3.5 items-center justify-center text-red-700"
-                  title={
-                    item.blocked_reason?.trim()
-                      ? `Blocked: ${item.blocked_reason.trim()}`
-                      : "Blocked"
-                  }
-                  aria-label={
-                    item.blocked_reason?.trim()
-                      ? `Blocked: ${item.blocked_reason.trim()}`
-                      : "Blocked"
-                  }
-                >
-                  <Octagon size={14} className="fill-red-600 text-red-700" />
-                  <X
-                    size={8}
-                    strokeWidth={3}
-                    className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white"
-                    aria-hidden
-                  />
-                </span>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
         {(item.links ?? []).length > 0 ? (
           <ul className="mt-1.5 space-y-0.5">
             {item.links.map((l) => (
@@ -1414,5 +1401,35 @@ function TicketCard({
         ) : null}
       </button>
     </article>
+  );
+}
+
+/** High-visibility due chip so dates aren't missed on kanban tiles. */
+function DueDateChip({ dueDate, done }: { dueDate: string; done: boolean }) {
+  const due = new Date(`${dueDate}T00:00:00`);
+  const days = differenceInCalendarDays(due, new Date());
+  const overdue = !done && days < 0;
+  const dueSoon = !done && days >= 0 && days <= 3;
+  const label = overdue
+    ? `Due ${format(due, "MMM d")} · overdue`
+    : days === 0 && !done
+      ? `Due today · ${format(due, "MMM d")}`
+      : `Due ${format(due, "MMM d")}`;
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide",
+        overdue
+          ? "border-red-300 bg-red-100 text-red-800"
+          : dueSoon
+            ? "border-amber-300 bg-amber-100 text-amber-900"
+            : "border-wp-ink/20 bg-wp-ink/5 text-wp-ink",
+      )}
+      title={format(due, "EEEE, MMM d, yyyy")}
+    >
+      <Calendar size={11} strokeWidth={2.5} aria-hidden />
+      {label}
+    </span>
   );
 }
