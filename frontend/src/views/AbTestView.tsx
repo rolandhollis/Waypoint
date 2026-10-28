@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import {
   DndContext,
   DragOverlay,
@@ -130,9 +131,30 @@ export function AbTestView() {
   const isAdmin = useIsAdmin();
   const qc = useQueryClient();
   const { confirm, prompt } = useAppDialog();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const lanes = lanesQuery.data ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Deep link from admin notify emails: `/ab-testing?item=<id>`.
+  useEffect(() => {
+    const raw = searchParams.get("item");
+    if (!raw) return;
+    setSelectedId(raw);
+  }, [searchParams]);
+
+  function selectItem(id: string | null) {
+    setSelectedId(id);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (id) next.set("item", id);
+        else next.delete("item");
+        return next;
+      },
+      { replace: true },
+    );
+  }
   const [showCreate, setShowCreate] = useState(false);
   const [showAddLane, setShowAddLane] = useState(false);
   const [name, setName] = useState("");
@@ -189,7 +211,7 @@ export function AbTestView() {
       setDescription("");
       setTeamId("");
       setAssignedTo("");
-      setSelectedId(null);
+      selectItem(null);
     },
   });
 
@@ -230,7 +252,7 @@ export function AbTestView() {
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api(`/ab-test-items/${id}`, { method: "DELETE" }),
     onSuccess: () => {
-      setSelectedId(null);
+      selectItem(null);
       qc.invalidateQueries({ queryKey: ["abTestItems"] });
       qc.invalidateQueries({ queryKey: ["abTestItemHistory"] });
     },
@@ -642,7 +664,7 @@ export function AbTestView() {
                   laneSortDisabled={!isAdmin || activeDragType === "ticket"}
                   ticketSortDisabled={!canWrite || activeDragType === "lane"}
                   selectedId={selectedId}
-                  onOpen={setSelectedId}
+                  onOpen={selectItem}
                   onRename={() => void handleRenameLane(lane)}
                   onDeleteLane={() => void handleDeleteLane(lane)}
                 />
@@ -677,8 +699,8 @@ export function AbTestView() {
         {selectedItem ? (
           <AbTestDetailPanel
             item={selectedItem}
-            onClose={() => setSelectedId(null)}
-            onOpenTicket={setSelectedId}
+            onClose={() => selectItem(null)}
+            onOpenTicket={selectItem}
             siblingIds={siblingIds}
             canWrite={canWrite}
             canDelete={canWrite}

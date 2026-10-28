@@ -720,7 +720,8 @@ export type AbTestItemRow = {
   blocked_reason: string | null;
   position: number;
   assigned_to: string | null;
-  created_by: string;
+  /** Null for public (unauthenticated) test-idea form submissions. */
+  created_by: string | null;
   created_at: Date;
   updated_at: Date;
   completed_at: Date | null;

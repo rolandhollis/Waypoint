@@ -980,12 +980,13 @@ export type AbTestItem = {
   blocked_reason: string | null;
   position: number;
   assigned_to: string | null;
-  created_by: string;
+  /** Null for public (unauthenticated) test-idea form submissions. */
+  created_by: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
   deleted_at: string | null;
-  creator_name: string;
+  creator_name: string | null;
   team_name: string | null;
   team_color: string | null;
   assignee_name: string | null;

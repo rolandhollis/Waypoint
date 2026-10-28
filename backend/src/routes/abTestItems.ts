@@ -17,7 +17,7 @@ import type { AbTestItemRow, DesignItemLink } from "../types.js";
 export const abTestItemsRouter = Router();
 
 type AbTestItemDto = AbTestItemRow & {
-  creator_name: string;
+  creator_name: string | null;
   team_name: string | null;
   team_color: string | null;
   assignee_name: string | null;
@@ -134,7 +134,7 @@ const LIST_SQL = `
          l.name AS lane_name,
          l.is_terminal AS lane_is_terminal
     FROM ab_test_items ai
-    JOIN users u ON u.id = ai.created_by
+    LEFT JOIN users u ON u.id = ai.created_by
     JOIN ab_test_board_lanes l ON l.id = ai.lane_id
     LEFT JOIN teams t ON t.id = ai.team_id
     LEFT JOIN users au ON au.id = ai.assigned_to
@@ -185,7 +185,7 @@ async function fetchDto(id: string): Promise<AbTestItemDto | undefined> {
             l.name AS lane_name,
             l.is_terminal AS lane_is_terminal
        FROM ab_test_items ai
-       JOIN users u ON u.id = ai.created_by
+       LEFT JOIN users u ON u.id = ai.created_by
        JOIN ab_test_board_lanes l ON l.id = ai.lane_id
        LEFT JOIN teams t ON t.id = ai.team_id
        LEFT JOIN users au ON au.id = ai.assigned_to

@@ -4116,6 +4116,7 @@ function GroupRow({
   const [color, setColor] = useState<string>(group.color ?? "#64748B");
   const [slug, setSlug] = useState(group.public_slug ?? "");
   const [slugCopied, setSlugCopied] = useState(false);
+  const [testSlugCopied, setTestSlugCopied] = useState(false);
 
   useEffect(() => {
     setSlug(group.public_slug ?? "");
@@ -4152,6 +4153,7 @@ function GroupRow({
     if (next !== prev) rename.mutate({ public_slug: next });
   };
   const ideaShareUrl = `${window.location.origin}/ideas/${group.public_slug || group.id}`;
+  const testIdeaShareUrl = `${window.location.origin}/test-ideas/${group.public_slug || group.id}`;
 
   return (
     <div className="p-3">
@@ -4256,6 +4258,36 @@ function GroupRow({
               </button>
             </div>
             <p className="mt-1 break-all text-[11px] text-wp-slate">{ideaShareUrl}</p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-wp-slate">
+              Public test idea form URL
+              <span className="ml-1 font-normal text-wp-slate/70">
+                (A/B Testing backlog — no login required)
+              </span>
+            </label>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <span className="break-all text-xs text-wp-slate">{testIdeaShareUrl}</span>
+              <button
+                type="button"
+                className="btn-secondary inline-flex items-center gap-1 px-2 py-1 text-xs"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(testIdeaShareUrl);
+                    setTestSlugCopied(true);
+                    window.setTimeout(() => setTestSlugCopied(false), 1500);
+                  } catch {
+                    setTestSlugCopied(false);
+                  }
+                }}
+              >
+                <Copy size={12} />
+                {testSlugCopied ? "Copied" : "Copy link"}
+              </button>
+            </div>
+            <p className="mt-1 text-[11px] text-wp-slate">
+              Uses the same workspace slug as the idea form above.
+            </p>
           </div>
           <GroupMembersPanel groupId={group.id} />
         </div>

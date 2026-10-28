@@ -25,6 +25,7 @@ import { ProjectDetailPage } from "./views/ProjectDetailPage";
 import { UserAssignmentsView } from "./views/UserAssignmentsView";
 import { ProfileView } from "./views/ProfileView";
 import { PublicIdeaView } from "./views/PublicIdeaView";
+import { PublicTestIdeaView } from "./views/PublicTestIdeaView";
 import { LoginView } from "./views/LoginView";
 import { ForgotPasswordView } from "./views/ForgotPasswordView";
 import { RequestAccessView } from "./views/RequestAccessView";
@@ -163,12 +164,14 @@ export function App() {
     );
   }
 
-  // Public idea form — reachable without signing in (and without
-  // waiting on /users/me). Keep this above the auth gates so the
-  // shareable `/ideas/<slug>` link works for everyone.
+  // Public idea / test-idea forms — reachable without signing in
+  // (and without waiting on /users/me). Keep this above the auth
+  // gates so shareable `/ideas/<slug>` and `/test-ideas/<slug>`
+  // links work for everyone.
   if (
     location.pathname.startsWith("/ideas") ||
-    location.pathname.startsWith("/submit-idea")
+    location.pathname.startsWith("/submit-idea") ||
+    location.pathname.startsWith("/test-ideas")
   ) {
     return (
       <>
@@ -176,6 +179,7 @@ export function App() {
         <Routes>
           <Route path="/ideas/:slugOrId" element={<PublicIdeaView />} />
           <Route path="/submit-idea/:slugOrId" element={<PublicIdeaView />} />
+          <Route path="/test-ideas/:slugOrId" element={<PublicTestIdeaView />} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </>
@@ -221,6 +225,7 @@ export function App() {
             <Route path="/reset-password" element={<ResetPasswordView />} />
             <Route path="/ideas/:slugOrId" element={<PublicIdeaView />} />
             <Route path="/submit-idea/:slugOrId" element={<PublicIdeaView />} />
+            <Route path="/test-ideas/:slugOrId" element={<PublicTestIdeaView />} />
             <Route path="*" element={<Navigate to="/login" replace state={{ from: location }} />} />
           </Routes>
         </>

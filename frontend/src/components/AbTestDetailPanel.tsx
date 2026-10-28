@@ -237,7 +237,7 @@ export function AbTestDetailPanel({
                 <div>
                   Created by{" "}
                   <span className="font-medium text-wp-ink">
-                    {item.creator_name || "Unknown"}
+                    {item.creator_name || "Public submission"}
                   </span>
                   {item.created_at ? (
                     <>

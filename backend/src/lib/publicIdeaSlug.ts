@@ -24,8 +24,9 @@ export function normalizePublicSlug(raw: string): string {
 
 /**
  * Resolve a workspace by public slug or UUID. Used by the public
- * idea form so shareable URLs stay pretty (`/ideas/retailmenot`)
- * while old UUID links still work.
+ * idea + test-idea forms so shareable URLs stay pretty
+ * (`/ideas/retailmenot`, `/test-ideas/retailmenot`) while old
+ * UUID links still work.
  */
 export async function resolvePublicIdeaGroup(
   slugOrId: string,

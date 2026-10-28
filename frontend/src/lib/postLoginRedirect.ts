@@ -36,9 +36,15 @@ const AUTH_PATHS = new Set([
  */
 export function stashPostLoginRedirect(pathname: string, search: string): void {
   if (AUTH_PATHS.has(pathname)) return;
-  // Public idea form is usable while signed out — don't bounce back
-  // here after an unrelated login.
-  if (pathname.startsWith("/submit-idea") || pathname.startsWith("/ideas")) return;
+  // Public idea / test-idea forms are usable while signed out —
+  // don't bounce back here after an unrelated login.
+  if (
+    pathname.startsWith("/submit-idea") ||
+    pathname.startsWith("/ideas") ||
+    pathname.startsWith("/test-ideas")
+  ) {
+    return;
+  }
   try {
     sessionStorage.setItem(POST_LOGIN_REDIRECT_STORAGE_KEY, `${pathname}${search}`);
   } catch {

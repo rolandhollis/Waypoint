@@ -76,6 +76,14 @@ Anyone can submit a backlog idea without signing in:
 
 Slugs are set per workspace (Admin → Groups). UUID still works as a fallback. Three steps (welcome → form → success). Creates an epic in the default swim lane and emails workspace admins with ticket details plus a deep link to `/projects/<id>`.
 
+## Public test idea form
+
+Same flow for A/B Testing backlog ideas:
+
+`/test-ideas/<slug>` — e.g. `https://waypoint-qmh6xa.fly.dev/test-ideas/retailmenot`
+
+Creates a card in the **Backlog (ideas)** lane on the A/B Testing board and emails workspace admins with a deep link to `/ab-testing?item=<id>`.
+
 ## Claude connector (MCP)
 
 Waypoint exposes a remote [MCP](https://modelcontextprotocol.io) server so Claude can read roadmap/backlog data for a workspace.
