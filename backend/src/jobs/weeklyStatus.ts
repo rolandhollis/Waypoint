@@ -9,6 +9,7 @@ import {
 } from "../lib/weeklyStatusSchedule.js";
 import { runStatusReportReminders } from "../notifications/statusReminders.js";
 import { runStatusReportDigest } from "../notifications/statusDigest.js";
+import { runDesignStatusDigest } from "../notifications/designStatusDigest.js";
 import { runOverdueCompletionReminders } from "../notifications/overdueCompletion.js";
 import { runGoogleChatPmReminder } from "../notifications/googleChatPmReminder.js";
 
@@ -102,7 +103,16 @@ export function startCron() {
       ),
     { timezone: tz },
   );
+  // Design board status — Friday 3:00pm reporting TZ (default America/Chicago).
+  cron.schedule(
+    "0 15 * * 5",
+    () =>
+      runDesignStatusDigest({ dryRun: false }).catch((err) =>
+        console.error("[cron] design status digest failed:", err),
+      ),
+    { timezone: tz },
+  );
   console.log(
-    `[cron] scheduled weekly jobs in ${tz}; status emails + Google Chat PM nudge use per-group schedule; overdue-completion daily at 08:00`,
+    `[cron] scheduled weekly jobs in ${tz}; status emails + Google Chat PM nudge use per-group schedule; overdue-completion daily at 08:00; design status digest Fri 15:00`,
   );
 }

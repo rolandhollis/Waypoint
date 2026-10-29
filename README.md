@@ -117,6 +117,7 @@ CI runs this on every PR against a disposable Postgres.
 - **Deadline** Thursday 23:59:59 in the configured `REPORTING_TIMEZONE` (`due_at`), computed via `date-fns-tz` so DST transitions are handled correctly.
 - **Reminder banner** appears from Thursday morning until either the deadline passes (then overdue styling) or the Owner completes all eligible updates for the week.
 - **Eligibility** is history-based: a project is eligible for a week if it sat in a `requires_weekly_status` lane at any point during that week.
+- **Design status update** emails the digest list every Friday at 15:00 in `REPORTING_TIMEZONE` (default America/Chicago): assigned Design tickets grouped by designer (name, description, due date), plus an Up Next section with the next 6 Backlog items. Admin → Notifications → Design status update for preview / send now.
 
 ## Notes
 

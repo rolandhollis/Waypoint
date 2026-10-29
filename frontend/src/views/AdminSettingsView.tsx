@@ -17,6 +17,7 @@ import {
   GripVertical,
   Mail,
   Megaphone,
+  Palette,
   Send,
   Sparkles,
   Trash2,
@@ -591,6 +592,7 @@ type NotificationSectionKey =
   | "google-chat"
   | "digest-recipients"
   | "weekly-digest"
+  | "design-status-digest"
   | "announcement"
   | "roadmap-snapshot"
   | "overdue-completion"
@@ -627,7 +629,8 @@ const NOTIFICATION_SECTIONS: Array<{
   {
     key: "digest-recipients",
     label: "Digest & announcement list",
-    description: "Who receives the Friday digest, announcements, and roadmap snapshots.",
+    description:
+      "Who receives the Friday digests, design status update, announcements, and roadmap snapshots.",
     icon: Users,
     iconClass: "bg-violet-100 text-violet-700",
   },
@@ -637,6 +640,14 @@ const NOTIFICATION_SECTIONS: Array<{
     description: "Friday rollup of completed work — preview or send to the list.",
     icon: Send,
     iconClass: "bg-emerald-100 text-emerald-700",
+  },
+  {
+    key: "design-status-digest",
+    label: "Design status update",
+    description:
+      "Friday 3pm CST — assigned design work by designer, plus Up Next backlog.",
+    icon: Palette,
+    iconClass: "bg-fuchsia-100 text-fuchsia-800",
   },
   {
     key: "announcement",
@@ -716,6 +727,7 @@ function NotificationsAdmin() {
           {active === "google-chat" ? <GoogleChatPmReminderAdmin /> : null}
           {active === "digest-recipients" ? <DigestRecipientsAdmin /> : null}
           {active === "weekly-digest" ? <DigestAdmin /> : null}
+          {active === "design-status-digest" ? <DesignStatusDigestAdmin /> : null}
           {active === "announcement" ? <AnnouncementAdmin /> : null}
           {active === "roadmap-snapshot" ? <RoadmapSnapshotEmailAdmin /> : null}
           {active === "overdue-completion" ? <OverdueCompletionAdmin /> : null}
@@ -1770,6 +1782,161 @@ function DigestAdmin() {
             </li>
             {lastRun.errors > 0 ? (
               <li className="col-span-2 text-red-700">
+                <span>Errors</span>
+                <span className="ml-1 font-mono">{lastRun.errors}</span>
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+type DesignStatusDigestRunResult = {
+  groups: number;
+  recipients: number;
+  assignedItems: number;
+  upNextItems: number;
+  sent: number;
+  skippedEmpty: number;
+  errors: number;
+  dayOf: string;
+  dryRun: boolean;
+};
+
+function designStatusDigestRunTitle(last: DesignStatusDigestRunResult): string {
+  if (last.dryRun) {
+    return `Preview ready — would email ${last.sent} recipient${last.sent === 1 ? "" : "s"}.`;
+  }
+  if (last.errors > 0 && last.sent === 0) {
+    return "Design status update failed to send.";
+  }
+  if (last.sent === 0 && last.recipients === 0) {
+    return "No recipients on the distribution list — nothing to send.";
+  }
+  if (last.sent === 0 && last.assignedItems === 0 && last.upNextItems === 0) {
+    return "No assigned design work or backlog items — nothing to send.";
+  }
+  if (last.sent === 0) return "No design status emails sent.";
+  return `Design status update sent to ${last.sent} recipient${last.sent === 1 ? "" : "s"}.`;
+}
+
+function DesignStatusDigestAdmin() {
+  const { confirm } = useAppDialog();
+  const recipients = useQuery({
+    queryKey: ["digestRecipients"],
+    queryFn: () => api<DigestRecipient[]>("/notifications/digest-recipients"),
+  });
+  const runDigest = useMutation({
+    mutationFn: (dry_run: boolean) =>
+      api<DesignStatusDigestRunResult>("/notifications/design-status-digest/run", {
+        method: "POST",
+        body: JSON.stringify({ dry_run }),
+      }),
+  });
+
+  const busy = runDigest.isPending;
+  const lastRun = runDigest.data;
+  const recipientCount = recipients.data?.length ?? 0;
+
+  return (
+    <section className="card-surface p-4">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-fuchsia-100 text-fuchsia-800">
+          <Palette size={16} />
+        </span>
+        <div>
+          <h2 className="text-base font-semibold text-wp-ink">Design status update</h2>
+          <p className="mt-1 text-xs text-wp-slate">
+            Emails the{" "}
+            <span className="font-medium text-wp-ink">Digest &amp; announcement list</span> with
+            every active Design ticket currently assigned to a designer (name, description, due
+            date), grouped by designer. Ends with an <strong>Up Next</strong> section — the next 6
+            items in the Design backlog. Runs automatically every{" "}
+            <span className="font-medium text-wp-ink">Friday at 3:00pm</span> in the reporting
+            timezone (America/Chicago / CST). Skips silently when the board has nothing to report
+            or the list is empty.
+          </p>
+        </div>
+      </div>
+
+      <MutationErrorBanner mutation={runDigest} className="mt-4" />
+
+      <p className="mt-4 text-[11px] text-wp-slate">
+        {recipientCount === 0
+          ? "No recipients on the distribution list yet."
+          : `Currently ${recipientCount} recipient${recipientCount === 1 ? "" : "s"} on the list.`}
+      </p>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn-secondary inline-flex items-center gap-1.5"
+          disabled={busy}
+          onClick={() => runDigest.mutate(true)}
+        >
+          <Mail size={13} />
+          {busy && runDigest.variables === true ? "Previewing…" : "Preview (dry run)"}
+        </button>
+        <button
+          type="button"
+          className="btn-primary inline-flex items-center gap-1.5"
+          disabled={busy || recipientCount === 0}
+          onClick={async () => {
+            if (
+              !(await confirm({
+                title: "Send design status update now?",
+                description:
+                  "Email the current Design board status (assigned work by designer + Up Next) to every recipient on this group's distribution list.",
+                confirmLabel: "Send now",
+              }))
+            ) {
+              return;
+            }
+            runDigest.mutate(false);
+          }}
+        >
+          <Send size={13} />
+          {busy && runDigest.variables === false ? "Sending…" : "Send now"}
+        </button>
+      </div>
+
+      {lastRun ? (
+        <div
+          className={
+            "mt-4 rounded-md border px-3 py-2 text-xs " +
+            notificationRunBannerClass(lastRun.errors, lastRun.sent, lastRun.dryRun)
+          }
+          role="status"
+          aria-live="polite"
+        >
+          <div className="font-semibold">{designStatusDigestRunTitle(lastRun)}</div>
+          <ul className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-4">
+            <li>
+              <span className="text-wp-slate">Day</span>
+              <span className="ml-1 font-mono">{lastRun.dayOf}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Recipients</span>
+              <span className="ml-1 font-mono">{lastRun.recipients}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Assigned</span>
+              <span className="ml-1 font-mono">{lastRun.assignedItems}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">Up Next</span>
+              <span className="ml-1 font-mono">{lastRun.upNextItems}</span>
+            </li>
+            <li>
+              <span className="text-wp-slate">
+                {lastRun.dryRun ? "Would send" : "Sent"}
+              </span>
+              <span className="ml-1 font-mono">{lastRun.sent}</span>
+            </li>
+            {lastRun.errors > 0 ? (
+              <li className="text-red-700">
                 <span>Errors</span>
                 <span className="ml-1 font-mono">{lastRun.errors}</span>
               </li>

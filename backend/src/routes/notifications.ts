@@ -6,6 +6,7 @@ import {
   removeDigestRecipient,
   runStatusReportDigest,
 } from "../notifications/statusDigest.js";
+import { runDesignStatusDigest } from "../notifications/designStatusDigest.js";
 import { runAnnouncement } from "../notifications/announcement.js";
 import {
   clearRoadmapSnapshotFollowup,
@@ -191,6 +192,26 @@ notificationsRouter.post(
       dryRun: body.dry_run,
       scopeGroupId: req.groupId!,
       adminNote: body.admin_note,
+    });
+    res.json(result);
+  },
+);
+
+/**
+ * Admin trigger for the Friday 3pm design-board status email.
+ * Assigned tickets grouped by designer + Up Next (first 6 backlog).
+ * Same digest recipient roster as the weekly status digest.
+ */
+notificationsRouter.post(
+  "/design-status-digest/run",
+  authenticate,
+  groupScope,
+  requireAdmin,
+  async (req, res) => {
+    const body = runReminderJobSchema.parse(req.body ?? {});
+    const result = await runDesignStatusDigest({
+      dryRun: body.dry_run,
+      scopeGroupId: req.groupId!,
     });
     res.json(result);
   },
